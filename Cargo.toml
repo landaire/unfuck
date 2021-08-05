@@ -1,0 +1,37 @@
+[package]
+name = "unfuck"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+zip = "0.5"
+structopt = "0.3"
+memmap = "0.7"
+byteorder = "1.3"
+py-marshal = { git = "https://github.com/landaire/py-marshal.git", features = ["python27"] }
+base64 = "0.13"
+anyhow = "1.0"
+thiserror = "1.0"
+flate2 = "1.0"
+pydis = { path = "../pydis" } #{ git = "https://github.com/landaire/pydis.git" }
+num-bigint = "0.2"
+cpython = { version = "0.5", default-features = false, features = ["python27-sys"]}
+log = "0.4"
+simplelog = "0.8"
+simple_logger = "1.11"
+num-traits = "0.2"
+pretty-hex = "0.2.1"
+petgraph = "0.5"
+bitflags = "1.0"
+once_cell = "1.5"
+csv = "1.1"
+serde = { version = "1", features = ["derive"] }
+stfu8 = "0.2"
+num_cpus = "1.13.0"
+crossbeam = "0.8"
+rayon = "1.5"
+
+[features]
+reduced_functionality = []
