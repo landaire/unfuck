@@ -1630,7 +1630,7 @@ pub(crate) mod tests {
     use super::*;
     use num_bigint::BigInt;
     use py_marshal::bstr::BString;
-    
+
     use std::sync::Arc;
 
     type TargetOpcode = pydis::opcode::Python27;
@@ -2170,7 +2170,13 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn setup_vm_vars() -> (VmStack<()>, VmVars<()>, VmNames<()>, VmNames<()>, LoadedNames) {
+    pub(crate) fn setup_vm_vars() -> (
+        VmStack<()>,
+        VmVars<()>,
+        VmNames<()>,
+        VmNames<()>,
+        LoadedNames,
+    ) {
         (
             VmStack::new(),
             VmVars::new(),

@@ -85,7 +85,10 @@ fn deobfuscate_codeobj(data: &[u8], files_processed: &AtomicUsize) -> Result<Vec
             );
         });
 
-        let out_results = Arc::try_unwrap(out_results).unwrap_or_else(|_| panic!("failed to unwrap mapped names")).into_inner().unwrap();
+        let out_results = Arc::try_unwrap(out_results)
+            .unwrap_or_else(|_| panic!("failed to unwrap mapped names"))
+            .into_inner()
+            .unwrap();
         for result in out_results {
             let result = result?;
             results.push((result.file_number, result.new_bytecode));

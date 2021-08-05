@@ -1,15 +1,7 @@
-
 use cpython::{PyBytes, PyDict, PyList, PyModule, PyObject, PyResult, Python, PythonObject};
 use log::{debug, trace};
 
-
-
-
-
-
-
-
-use py_marshal::{Code};
+use py_marshal::Code;
 use pydis::prelude::*;
 use std::collections::HashMap;
 

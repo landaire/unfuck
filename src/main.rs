@@ -19,8 +19,8 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use unfuck::strings::CodeObjString;
 use structopt::StructOpt;
+use unfuck::strings::CodeObjString;
 
 pub(crate) static ARGS: OnceCell<Opt> = OnceCell::new();
 pub(crate) static FILES_PROCESSED: OnceCell<AtomicUsize> = OnceCell::new();

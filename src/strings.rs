@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use serde::Serialize;
 use py_marshal::Code;
+use serde::Serialize;
 
 #[derive(Serialize, Debug)]
 pub enum StringType {
@@ -20,7 +20,12 @@ pub struct CodeObjString<'a> {
 }
 
 impl<'a> CodeObjString<'a> {
-    pub fn new(code_obj: &Code, pyc_file_name: &'a Path, typ: StringType, value: &str) -> CodeObjString<'a> {
+    pub fn new(
+        code_obj: &Code,
+        pyc_file_name: &'a Path,
+        typ: StringType,
+        value: &str,
+    ) -> CodeObjString<'a> {
         // Ensure this string is unescaped
         let value = if let Ok(decoded_str) = stfu8::decode_u8(value) {
             if let Ok(s) = std::str::from_utf8(decoded_str.as_slice()) {

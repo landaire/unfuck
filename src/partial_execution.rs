@@ -1,22 +1,16 @@
 use crate::code_graph::{BasicBlockFlags, CodeGraph, EdgeWeight};
 
-
-
-
 use crossbeam::channel::Sender;
 use log::{debug, error, trace};
 use num_bigint::ToBigInt;
 
-
-use petgraph::graph::{NodeIndex};
+use petgraph::graph::NodeIndex;
 use petgraph::visit::{Bfs, EdgeRef};
 use petgraph::Direction;
 
 use py_marshal::{Code, Obj};
 use pydis::prelude::*;
 use std::collections::{BTreeSet, HashMap};
-
-
 
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -96,7 +90,9 @@ pub(crate) fn perform_partial_execution<'a>(
     for (ins_idx, instr) in instrs {
         // We handle jumps
         if instr.opcode == TargetOpcode::RETURN_VALUE {
-            completed_paths_sender.send(execution_path_lock).expect("failed to send the completed execution path");
+            completed_paths_sender
+                .send(execution_path_lock)
+                .expect("failed to send the completed execution path");
             return;
         }
 
@@ -399,7 +395,9 @@ pub(crate) fn perform_partial_execution<'a>(
                 error!("Encountered error executing instruction: {:?}", e);
                 let _last_instr = current_node!().instrs.last().unwrap().unwrap();
 
-                completed_paths_sender.send(execution_path_lock).expect("failed to send the completed execution path");
+                completed_paths_sender
+                    .send(execution_path_lock)
+                    .expect("failed to send the completed execution path");
                 return;
             }
         }
@@ -420,7 +418,9 @@ pub(crate) fn perform_partial_execution<'a>(
 
     // This path is complete. We are about to fork this path down a branch
     // whose true execution path is unknown
-    completed_paths_sender.send(Mutex::new(execution_path.clone())).expect("failed to send the completed execution path");
+    completed_paths_sender
+        .send(Mutex::new(execution_path.clone()))
+        .expect("failed to send the completed execution path");
 
     // We reached the last instruction in this node -- go on to the next
     // We don't know which branch to take

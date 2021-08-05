@@ -5,8 +5,7 @@ use bitflags::bitflags;
 
 use crossbeam::channel::unbounded;
 
-
-use log::{trace};
+use log::trace;
 
 use petgraph::algo::astar;
 use petgraph::algo::dijkstra;
@@ -19,12 +18,12 @@ use py_marshal::{Code, Obj};
 use pydis::prelude::*;
 use std::fmt;
 
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::{
     collections::{BTreeSet, HashMap},
     sync::atomic::AtomicUsize,
 };
-use std::{sync::atomic::Ordering};
 
 type TargetOpcode = pydis::opcode::Python27;
 pub(crate) static DISABLE_GRAPHS: once_cell::sync::OnceCell<bool> =
@@ -1516,7 +1515,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::smallvm::tests::*;
-    use crate::{Instr};
+    use crate::Instr;
     use pydis::opcode::Instruction;
 
     type TargetOpcode = pydis::opcode::Python27;
