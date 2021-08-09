@@ -26,6 +26,7 @@ pub enum WalkerState {
 }
 
 impl WalkerState {
+    /// Returns whether we need to force queue the next instruction
     fn force_queue_next(&self) -> bool {
         matches!(
             self,
@@ -37,15 +38,30 @@ impl WalkerState {
 /// Represents a VM variable. The value is either `Some` (something we can)
 /// statically resolve or `None` (something that cannot be resolved statically)
 pub type VmVar = Option<Obj>;
+/// A VM variable and the data it tracks. Typically this will be a VmVarWithTracking<()>,
+/// or VmVarWithTracking<usize> where the usize represents an instruction index. But,
+/// this can be anything you'd like it to be within the context of how you'll be executing
+/// the instruction, and what data you'd like to track across instructions that share data.
 pub type VmVarWithTracking<T> = (VmVar, InstructionTracker<T>);
+/// The VM's stack state.
 pub type VmStack<T> = Vec<VmVarWithTracking<T>>;
+/// The VM's variable table
 pub type VmVars<T> = HashMap<u16, VmVarWithTracking<T>>;
+/// The VM's name table
 pub type VmNames<T> = HashMap<Arc<BString>, VmVarWithTracking<T>>;
+/// Names that get loaded while executing the VM. These are identifiers such as
+/// module names and names *from* modules.
 pub type LoadedNames = Arc<Mutex<Vec<Arc<BString>>>>;
 
+/// Implements high-level routines that are useful when performing taint tracking
+/// operations
 #[derive(Debug)]
 pub struct InstructionTracker<T>(pub Arc<Mutex<Vec<T>>>);
 
+/// We implement a custom Clone routine since, in some scenarios, we want to share
+/// the taint tracking across multiple objects in different locations. e.g. we may
+/// want to share taint tracking state between our saved objects in our tables (vm vars, names, etc.)
+/// and variables on the stack.
 impl<T> Clone for InstructionTracker<T>
 where
     T: Clone,
@@ -59,18 +75,23 @@ impl<T> InstructionTracker<T>
 where
     T: Clone,
 {
+    /// Creates a new instruction tracker with no tracked data.
     pub fn new() -> InstructionTracker<T> {
         InstructionTracker(Arc::new(Mutex::new(vec![])))
     }
 
+    /// Performs a deep clone of this instruction tracking state
     pub fn deep_clone(&self) -> InstructionTracker<T> {
         InstructionTracker(Arc::new(Mutex::new(self.0.lock().unwrap().clone())))
     }
 
+    /// Pushes new data into the instruction tracking vector
     pub fn push(&self, data: T) {
         self.0.lock().unwrap().push(data)
     }
 
+    /// Extends the state of this instruction tracker by copying all items from `other`'s
+    /// tracked state into this.
     pub fn extend(&self, other: &InstructionTracker<T>) {
         self.0
             .lock()
@@ -79,7 +100,9 @@ where
     }
 }
 
+/// SAFETY: The data in an `InstructionTracker` is wrapped in an Arc<Mutex<T>>
 unsafe impl<T: Sync + Send> Send for InstructionTracker<T> {}
+/// SAFETY: The data in an `InstructionTracker` is wrapped in an Arc<Mutex<T>>
 unsafe impl<T: Sync + Send> Sync for InstructionTracker<T> {}
 
 use py_marshal::ObjHashable;
@@ -101,6 +124,9 @@ pub(crate) const PYTHON27_COMPARE_OPS: [&str; 12] = [
     "BAD",
 ];
 
+/// Executes an instruction, altering the input state and returning an error
+/// when the instruction cannot be correctly emulated. For example, some complex
+/// instructions are not currently supported at this time.
 pub fn execute_instruction<F, T>(
     instr: &Instruction<TargetOpcode>,
     code: Arc<Code>,
@@ -1380,6 +1406,7 @@ where
     Ok(())
 }
 
+/// Represents an instruction that was parsed from its raw bytecode.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ParsedInstr {
     Good(Arc<Instruction<TargetOpcode>>),
