@@ -26,8 +26,6 @@ use std::{
 };
 
 type TargetOpcode = pydis::opcode::Python27;
-pub(crate) static DISABLE_GRAPHS: once_cell::sync::OnceCell<bool> =
-    once_cell::sync::OnceCell::new();
 
 bitflags! {
     #[derive(Default)]
@@ -153,11 +151,15 @@ pub struct CodeGraph {
     code: Arc<Code>,
     pub(crate) graph: Graph<BasicBlock, EdgeWeight>,
     file_identifier: usize,
+    /// Whether or not to generate dotviz graphs
+    enable_dotviz_graphs: bool,
+    /// Hashmap of graph file names and their data
+    pub(crate) dotviz_graphs: HashMap<String, String>,
 }
 
 impl CodeGraph {
     /// Converts bytecode to a graph. Returns the root node index and the graph.
-    pub fn from_code(code: Arc<Code>, file_identifier: usize) -> Result<CodeGraph, Error> {
+    pub fn from_code(code: Arc<Code>, file_identifier: usize, enable_dotviz_graphs: bool) -> Result<CodeGraph, Error> {
         let debug = false;
 
         let analyzed_instructions = crate::smallvm::const_jmp_instruction_walker(
@@ -414,38 +416,30 @@ impl CodeGraph {
             graph: code_graph,
             code: Arc::clone(&code),
             file_identifier,
+            enable_dotviz_graphs,
+            dotviz_graphs: HashMap::new(),
         })
     }
 
     /// Write out the current graph in dot format. The file will be output to current directory, named
     /// $FILENUMBER_$FILENAME_$NAME_$STAGE.dot. This function will check global args to see if
     /// dot writing was enabled
-    pub fn write_dot(&self, stage: &str) {
-        if DISABLE_GRAPHS.get().cloned().unwrap_or(true) {
+    pub fn generate_dot_graph(&mut self, stage: &str) {
+        if !self.enable_dotviz_graphs {
             return;
         }
 
-        self.force_write_dot(self.file_identifier, stage);
-    }
-
-    /// Write out the current graph in dot format. The file will be output to current directory, named
-    /// $FILENUMBER_$FILENAME_$NAME_$STAGE.dot
-    pub fn force_write_dot(&self, file_num: usize, stage: &str) {
         use petgraph::dot::{Config, Dot};
 
         let filename = format!(
             "{}_{}_{}_{}.dot",
-            file_num,
+            self.file_identifier,
             stage,
             self.code.filename.to_string().replace("/", ""),
             self.code.name.to_string().replace("/", ""),
         );
 
-        std::fs::write(
-            &filename,
-            format!("{}", Dot::with_config(&self.graph, &[Config::EdgeNoLabel])),
-        )
-        .unwrap_or_else(|e| panic!("failed to write dot file to {}: {}", filename, e));
+        self.dotviz_graphs.insert(filename, format!("{}", Dot::with_config(&self.graph, &[Config::EdgeNoLabel])));
     }
 
     fn invoke_partial_execution(
@@ -507,7 +501,7 @@ impl CodeGraph {
         mapped_function_names: &mut HashMap<String, String>,
     ) {
         let completed_paths = self.invoke_partial_execution(mapped_function_names);
-        self.write_dot("after_dead");
+        self.generate_dot_graph("after_dead");
 
         let mut nodes_to_remove = std::collections::BTreeSet::<NodeIndex>::new();
         let mut insns_to_remove = HashMap::<NodeIndex, std::collections::BTreeSet<usize>>::new();
@@ -602,7 +596,7 @@ impl CodeGraph {
             return;
         }
 
-        self.write_dot("unused_partially_removed_edges");
+        self.generate_dot_graph("unused_partially_removed_edges");
 
         // Now that we've figured out which instructions to remove, and which nodes
         // are required for execution, let's figure out the set of nodes which we
@@ -647,7 +641,7 @@ impl CodeGraph {
             }
         }
 
-        self.write_dot("unused_all_removed_edges");
+        self.generate_dot_graph("unused_all_removed_edges");
 
         for (nx, insns_to_remove) in insns_to_remove {
             for ins_idx in insns_to_remove.iter().rev().cloned() {
@@ -656,11 +650,11 @@ impl CodeGraph {
             }
         }
 
-        self.write_dot("instructions_removed");
+        self.generate_dot_graph("instructions_removed");
 
         // go over the empty nodes, merge them into their parent
         for node in self.graph.node_indices() {
-            self.write_dot("last_merged");
+            self.generate_dot_graph("last_merged");
             // TODO: This leaves some nodes that are empty
             if self.graph[node].instrs.is_empty() {
                 let outgoing_nodes = self
@@ -680,7 +674,7 @@ impl CodeGraph {
                     nodes_to_remove.insert(*child);
                 }
             }
-            self.write_dot("last_merged");
+            self.generate_dot_graph("last_merged");
         }
 
         let mut needs_new_root = false;
@@ -698,7 +692,7 @@ impl CodeGraph {
             }
         });
 
-        self.write_dot("target");
+        self.generate_dot_graph("target");
 
         if needs_new_root {
             trace!("{:#?}", self.graph.node_indices().collect::<Vec<_>>());
@@ -1534,7 +1528,7 @@ pub(crate) mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let mut code_graph = CodeGraph::from_code(code, 0).unwrap();
+        let mut code_graph = CodeGraph::from_code(code, 0, false).unwrap();
 
         code_graph.join_blocks();
 
@@ -1560,7 +1554,7 @@ pub(crate) mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let mut code_graph = CodeGraph::from_code(code, 0).unwrap();
+        let mut code_graph = CodeGraph::from_code(code, 0, false).unwrap();
 
         code_graph.join_blocks();
 
@@ -1587,7 +1581,7 @@ pub(crate) mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let mut code_graph = CodeGraph::from_code(code, 0).unwrap();
+        let mut code_graph = CodeGraph::from_code(code, 0, false).unwrap();
 
         code_graph.join_blocks();
 
@@ -1632,7 +1626,7 @@ pub(crate) mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let mut code_graph = CodeGraph::from_code(code, 0).unwrap();
+        let mut code_graph = CodeGraph::from_code(code, 0, false).unwrap();
 
         code_graph.join_blocks();
         code_graph.update_bb_offsets();
@@ -1757,7 +1751,7 @@ pub(crate) mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let mut code_graph = CodeGraph::from_code(code, 0).unwrap();
+        let mut code_graph = CodeGraph::from_code(code, 0, false).unwrap();
         code_graph.massage_returns_for_decompiler();
         code_graph.join_blocks();
         code_graph.update_bb_offsets();
@@ -1778,8 +1772,6 @@ pub(crate) mod tests {
 
     #[test]
     fn deobfuscate_known_file_compileall() {
-        DISABLE_GRAPHS.set(false).unwrap();
-
         let obfuscated = include_bytes!("../test_data/obfuscated/compiler/compileall_stage4.pyc");
         let source_of_truth = include_bytes!("../test_data/expected/compiler/compileall.pyc");
 
@@ -1791,8 +1783,8 @@ pub(crate) mod tests {
 
         let mut files_processed = 0;
         while let Some(py_marshal::Obj::Code(obj)) = code_objects.pop() {
-            let code_graph = CodeGraph::from_code(Arc::clone(&obj), files_processed).unwrap();
-            code_graph.write_dot("compileall");
+            let code_graph = CodeGraph::from_code(Arc::clone(&obj), files_processed, false).unwrap();
+            code_graph.generate_dot_graph("compileall");
             files_processed += 1;
             source_of_truth_bytecode.push(obj.code.as_ref().clone());
 

@@ -15,6 +15,7 @@ use rayon::Scope;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs::File;
+use std::hash::Hash;
 use std::io::prelude::*;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -37,44 +38,68 @@ pub mod smallvm;
 pub mod strings;
 
 #[derive(Debug)]
-struct Deobfuscator<'i, 'g, W: Write + Debug> {
+struct Deobfuscator<'a> {
     /// Input stream.
-    input: &'i [u8],
+    input: &'a [u8],
 
     /// Output to write dotviz graph to
-    graph_output: Option<&'g mut W>,
+    enable_dotviz_graphs: bool,
     files_processed: AtomicUsize,
+    graphviz_graphs: HashMap<String, String>,
 }
 
-impl<'i, 'o, 'g, W: Write + Debug> Deobfuscator<'i, 'g, W> {
+impl<'a> Deobfuscator<'a> {
     /// Creates a new instance of a deobfuscator
-    pub fn new(input: &'i [u8]) -> Deobfuscator<'i, 'g, W> {
+    pub fn new(input: &'a [u8]) -> Deobfuscator<'a> {
         Deobfuscator {
             input,
-            graph_output: None,
+            enable_dotviz_graphs: false,
             files_processed: AtomicUsize::new(0),
+            graphviz_graphs: HashMap::new(),
         }
     }
 
     /// Consumes the current Deobufscator object and returns a new one with graph
     /// output enabled.
-    pub fn enable_graphs(mut self, output: &'g mut W) -> Deobfuscator<'i, 'g, W> {
-        self.graph_output = Some(output);
+    pub fn enable_graphs(mut self) -> Deobfuscator<'a> {
+        self.enable_dotviz_graphs = true;
         self
     }
 
-    pub fn deobfuscate(&self) -> Result<Vec<u8>, Error> {
-        deobfuscate_codeobj(self.input, &self.files_processed)
+    /// Deobfuscates this code object
+    pub fn deobfuscate(&self) -> Result<DeobfuscatedCodeObject, Error> {
+        deobfuscate_codeobj(self.input, &self.files_processed, self.enable_dotviz_graphs)
     }
+
+    /// Returns the generated graphviz graphs after a [`deobfuscate`] has been called.
+    /// Keys are their filenames, values are the dot data.
+    pub fn graphs(&self) -> &HashMap<String, String> {
+        &self.graphviz_graphs
+    }
+}
+
+
+pub struct DeobfuscatedCodeObject {
+    /// Serialized code object with no header
+    data: Vec<u8>,
+    /// Graphs that were generated while deobfuscating this code object and any
+    /// nested objects. Keys represent file names and their deobfuscation pass
+    /// while the values represent the graphviz data in Dot format
+    graphs: HashMap<String, String>,
 }
 
 /// Deobfuscates a marshalled code object and returns either the deobfuscated code object
 /// or the [`crate::errors::Error`] encountered during execution
-fn deobfuscate_codeobj(data: &[u8], files_processed: &AtomicUsize) -> Result<Vec<u8>, Error> {
+fn deobfuscate_codeobj(
+    data: &[u8],
+    files_processed: &AtomicUsize,
+    enable_dotviz_graphs: bool,
+) -> Result<DeobfuscatedCodeObject, Error> {
     if let py_marshal::Obj::Code(code) = py_marshal::read::marshal_loads(data).unwrap() {
         // This vector will contain the input code object and all nested objects
         let mut results = vec![];
         let mut mapped_names = HashMap::new();
+        let mut graphs = HashMap::new();
         let out_results = Arc::new(Mutex::new(vec![]));
         rayon::scope(|scope| {
             deobfuscate_nested_code_objects(
@@ -82,6 +107,7 @@ fn deobfuscate_codeobj(data: &[u8], files_processed: &AtomicUsize) -> Result<Vec
                 scope,
                 Arc::clone(&out_results),
                 files_processed,
+                enable_dotviz_graphs,
             );
         });
 
@@ -93,6 +119,7 @@ fn deobfuscate_codeobj(data: &[u8], files_processed: &AtomicUsize) -> Result<Vec
             let result = result?;
             results.push((result.file_number, result.new_bytecode));
             mapped_names.extend(result.mapped_function_names);
+            graphs.extend(result.graphviz_graphs);
         }
 
         // sort these items by their file number. ordering matters since our python code pulls the objects as a
@@ -106,16 +133,20 @@ fn deobfuscate_codeobj(data: &[u8], files_processed: &AtomicUsize) -> Result<Vec
         )
         .unwrap();
 
-        Ok(output_data)
+        Ok(DeobfuscatedCodeObject {
+            data: output_data,
+            graphs,
+        })
     } else {
         Err(Error::InvalidCodeObject)
     }
 }
 
-struct DeobfuscatedBytecode {
+pub(crate) struct DeobfuscatedBytecode {
     file_number: usize,
     new_bytecode: Vec<u8>,
     mapped_function_names: HashMap<String, String>,
+    graphviz_graphs: HashMap<String, String>,
 }
 
 fn deobfuscate_nested_code_objects(
@@ -123,28 +154,16 @@ fn deobfuscate_nested_code_objects(
     scope: &Scope,
     out_results: Arc<Mutex<Vec<Result<DeobfuscatedBytecode, Error>>>>,
     files_processed: &AtomicUsize,
+    enable_dotviz_graphs: bool,
 ) {
     let file_number = files_processed.fetch_add(1, Ordering::Relaxed);
 
     let task_code = Arc::clone(&code);
     let thread_results = Arc::clone(&out_results);
-    scope.spawn(
-        move |_scope| match crate::deob::deobfuscate_code(task_code, file_number) {
-            Ok((new_bytecode, mapped_functions)) => {
-                thread_results
-                    .lock()
-                    .unwrap()
-                    .push(Ok(DeobfuscatedBytecode {
-                        file_number,
-                        new_bytecode,
-                        mapped_function_names: mapped_functions,
-                    }));
-            }
-            Err(e) => {
-                thread_results.lock().unwrap().push(Err(e));
-            }
-        },
-    );
+    scope.spawn(move |_scope| {
+        let res = crate::deob::deobfuscate_code(task_code, file_number, enable_dotviz_graphs);
+        thread_results.lock().unwrap().push(res);
+    });
 
     // We need to find and replace the code sections which may also be in the const data
     for c in code.consts.iter() {
@@ -153,7 +172,13 @@ fn deobfuscate_nested_code_objects(
             let thread_code = Arc::clone(const_code);
             // Call deobfuscate_bytecode first since the bytecode comes before consts and other data
 
-            deobfuscate_nested_code_objects(thread_code, scope, thread_results, files_processed);
+            deobfuscate_nested_code_objects(
+                thread_code,
+                scope,
+                thread_results,
+                files_processed,
+                enable_dotviz_graphs,
+            );
         }
     }
 }

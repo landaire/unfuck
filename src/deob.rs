@@ -7,8 +7,9 @@ use std::collections::HashMap;
 
 use std::sync::Arc;
 
-use crate::code_graph::*;
+use crate::{DeobfuscatedBytecode, code_graph::*};
 use crate::error::Error;
+
 
 /// Deobfuscate the given code object. This will remove opaque predicates where possible,
 /// simplify control flow to only go forward where possible, and rename local variables. This returns
@@ -16,10 +17,11 @@ use crate::error::Error;
 ///
 /// The returned HashMap is keyed by the code object's `$filename_$name` with a value of
 /// what the suspected function name is.
-pub fn deobfuscate_code(
+pub(crate) fn deobfuscate_code(
     code: Arc<Code>,
     file_identifier: usize,
-) -> Result<(Vec<u8>, HashMap<String, String>), Error> {
+    enable_dotviz_graphs: bool,
+) -> Result<DeobfuscatedBytecode, Error> {
     let debug = !true;
 
     let _bytecode = code.code.as_slice();
@@ -27,29 +29,29 @@ pub fn deobfuscate_code(
     let mut new_bytecode: Vec<u8> = vec![];
     let mut mapped_function_names = HashMap::new();
 
-    let mut code_graph = CodeGraph::from_code(Arc::clone(&code), file_identifier)?;
+    let mut code_graph = CodeGraph::from_code(Arc::clone(&code), file_identifier, enable_dotviz_graphs)?;
 
-    code_graph.write_dot("before");
+    code_graph.generate_dot_graph("before");
 
     code_graph.fix_bbs_with_bad_instr(code_graph.root, &code);
 
     code_graph.join_blocks();
 
-    code_graph.write_dot("joined");
+    code_graph.generate_dot_graph("joined");
 
     code_graph.remove_const_conditions(&mut mapped_function_names);
 
-    code_graph.write_dot("target");
+    code_graph.generate_dot_graph("target");
 
     code_graph.join_blocks();
 
-    code_graph.write_dot("joined");
+    code_graph.generate_dot_graph("joined");
 
     // update BB offsets
     //insert_jump_0(root_node_id, &mut code_graph);
     code_graph.update_bb_offsets();
 
-    code_graph.write_dot("updated_bb");
+    code_graph.generate_dot_graph("updated_bb");
 
     code_graph.massage_returns_for_decompiler();
     code_graph.update_bb_offsets();
@@ -57,7 +59,7 @@ pub fn deobfuscate_code(
     code_graph.insert_jump_0();
     code_graph.update_bb_offsets();
 
-    code_graph.write_dot("offsets");
+    code_graph.generate_dot_graph("offsets");
 
     code_graph.write_bytecode(code_graph.root, &mut new_bytecode);
 
@@ -71,7 +73,12 @@ pub fn deobfuscate_code(
         }
     }
 
-    Ok((new_bytecode, mapped_function_names))
+    Ok(DeobfuscatedBytecode{
+        file_number: file_identifier,
+        new_bytecode,
+        mapped_function_names,
+        graphviz_graphs: code_graph.dotviz_graphs,
+    })
 }
 
 pub fn rename_vars<'a>(
@@ -246,7 +253,7 @@ mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let (new_bytecode, _mapped_names) = deobfuscate_code(Arc::clone(&code), 0).unwrap();
+        let (new_bytecode, _mapped_names) = deobfuscate_code(Arc::clone(&code), 0, false).unwrap();
 
         // We now need to change this back into a graph for ease of testing
         let mut expected_bytecode = vec![];
