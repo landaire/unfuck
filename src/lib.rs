@@ -90,7 +90,7 @@ pub struct DeobfuscatedCodeObject {
 
 /// Deobfuscates a marshalled code object and returns either the deobfuscated code object
 /// or the [`crate::errors::Error`] encountered during execution
-fn deobfuscate_codeobj(
+pub(crate) fn deobfuscate_codeobj(
     data: &[u8],
     files_processed: &AtomicUsize,
     enable_dotviz_graphs: bool,
@@ -143,13 +143,13 @@ fn deobfuscate_codeobj(
 }
 
 pub(crate) struct DeobfuscatedBytecode {
-    file_number: usize,
-    new_bytecode: Vec<u8>,
-    mapped_function_names: HashMap<String, String>,
-    graphviz_graphs: HashMap<String, String>,
+    pub(crate) file_number: usize,
+    pub(crate) new_bytecode: Vec<u8>,
+    pub(crate) mapped_function_names: HashMap<String, String>,
+    pub(crate) graphviz_graphs: HashMap<String, String>,
 }
 
-fn deobfuscate_nested_code_objects(
+pub(crate) fn deobfuscate_nested_code_objects(
     code: Arc<Code>,
     scope: &Scope,
     out_results: Arc<Mutex<Vec<Result<DeobfuscatedBytecode, Error>>>>,

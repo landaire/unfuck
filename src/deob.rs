@@ -200,6 +200,7 @@ mod tests {
     use crate::smallvm::PYTHON27_COMPARE_OPS;
     use crate::{Instr, Long};
     use num_bigint::BigInt;
+    use py_marshal::Obj;
     use pydis::opcode::Instruction;
 
     type TargetOpcode = pydis::opcode::Python27;
@@ -253,7 +254,7 @@ mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let (new_bytecode, _mapped_names) = deobfuscate_code(Arc::clone(&code), 0, false).unwrap();
+        let res = deobfuscate_code(Arc::clone(&code), 0, false).unwrap();
 
         // We now need to change this back into a graph for ease of testing
         let mut expected_bytecode = vec![];
@@ -261,6 +262,6 @@ mod tests {
             serialize_instr(instr, &mut expected_bytecode);
         }
 
-        assert_eq!(new_bytecode, expected_bytecode);
+        assert_eq!(res.new_bytecode, expected_bytecode);
     }
 }
