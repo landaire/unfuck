@@ -1457,10 +1457,10 @@ impl CodeGraph {
                 let removed_instruction = parent_node.instrs.pop().unwrap();
 
                 trace!("{:?}", removed_instruction);
-                //assert!(!removed_instruction.unwrap().opcode.is_conditional_jump(), "Removed instruction is a conditional jump: {:#x?}", removed_instruction);
-                parent_node.instrs.push(ParsedInstr::Good(Arc::new(Instr!(TargetOpcode::POP_TOP))));
-                current_end_offset -= removed_instruction.unwrap().len() as u64;
-                current_end_offset += parent_node.instrs.last().unwrap().unwrap().len() as u64;
+                assert!(!removed_instruction.unwrap().opcode.is_conditional_jump(), "Removed instruction is a conditional jump: {:#x?}", removed_instruction);
+                // parent_node.instrs.push(ParsedInstr::Good(Arc::new(Instr!(TargetOpcode::POP_TOP))));
+                // current_end_offset -= removed_instruction.unwrap().len() as u64;
+                // current_end_offset += parent_node.instrs.last().unwrap().unwrap().len() as u64;
             }
         }
 

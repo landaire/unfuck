@@ -5,7 +5,7 @@ use py27_marshal::bstr::BString;
 use py27_marshal::*;
 use pydis::prelude::*;
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 use std::io::{Cursor, Read};
 use std::sync::{Arc, Mutex};
 type TargetOpcode = pydis::opcode::Python27;
@@ -1415,7 +1415,30 @@ where
             let (key, key_accesses) = stack.pop().unwrap();
             let (value, value_accesses) = stack.pop().unwrap();
             let (dict, dict_accesses) = stack.pop().unwrap();
-            panic!("{:?}{:?}{:?}", dict, key, value);
+
+            let mut new_accesses = dict_accesses;
+            new_accesses.extend(&value_accesses);
+            new_accesses.extend(&key_accesses);
+
+            if dict.is_none() || key.is_none() || value.is_none() {
+                // We cannot track the state of at least one of these variables. Corrupt
+                // the entire state.
+                // TODO: this is a bit aggressive. In the future when we develop a new map type
+                // we should be able to track individual keys
+                stack.push((None, new_accesses));
+
+                return Ok(());
+            }
+
+
+            let arc_dict = dict.unwrap().extract_dict().unwrap();
+            let mut dict = arc_dict.write().unwrap();
+            let hashable_key: ObjHashable = key.as_ref().unwrap().try_into().expect("key is not hashable");
+            dict.insert(hashable_key, value.unwrap());
+            
+            drop(dict);
+
+            stack.push((Some(Obj::Dict(arc_dict)), new_accesses));
         }
         other => {
             return Err(crate::error::ExecutionError::UnsupportedOpcode(other).into());
@@ -1701,6 +1724,13 @@ pub(crate) mod tests {
     macro_rules! Long {
         ($value:expr) => {
             py27_marshal::Obj::Long(Arc::new(BigInt::from($value)))
+        };
+    }
+
+    #[macro_export]
+    macro_rules! String {
+        ($value:expr) => {
+            py27_marshal::Obj::String(Arc::new(bstr::BString::from($value)))
         };
     }
 
@@ -2210,6 +2240,70 @@ pub(crate) mod tests {
         match &stack[0].0 {
             Some(Obj::Long(l)) => {
                 assert_eq!(*l.as_ref(), expected.to_bigint().unwrap());
+            }
+            Some(other) => panic!("unexpected type: {:?}", other.typ()),
+            _ => panic!("unexpected None value for TOS"),
+        }
+    }
+
+    #[test]
+    fn store_map() {
+        let (mut stack, mut vars, mut names, mut globals, names_loaded) = setup_vm_vars();
+        let mut code = default_code_obj();
+
+        let key = String!("key");
+        let value = Long!(0x41);
+
+        let mut expected_hashmap = HashMap::new();
+        expected_hashmap.insert(ObjHashable::try_from(&key).unwrap(), value.clone());
+
+        let consts = vec![Obj::Dict(Default::default()), key, value];
+
+        Arc::get_mut(&mut code).unwrap().consts = Arc::new(consts);
+
+        let instrs = [
+            // Load dict on to stack
+            Instr!(TargetOpcode::LOAD_CONST, 0),
+            // Load value on to stack
+            Instr!(TargetOpcode::LOAD_CONST, 2),
+            // Load key on to stack
+            Instr!(TargetOpcode::LOAD_CONST, 1),
+            Instr!(TargetOpcode::STORE_MAP),
+        ];
+
+        for instr in &instrs {
+            execute_instruction(
+                instr,
+                Arc::clone(&code),
+                &mut stack,
+                &mut vars,
+                &mut names,
+                &mut globals,
+                Arc::clone(&names_loaded),
+                |_f, _args, _kwargs| {
+                    panic!("functions should not be invoked");
+                },
+                (),
+            )
+            .expect("unexpected error")
+        }
+
+        // The dict should still be on the stack
+        assert_eq!(stack.len(), 1, "stack size is not 1");
+
+        match &stack[0].0 {
+            Some(Obj::Dict(dict)) => {
+                let actual_dict = dict.read().unwrap();
+                for (key, expected_value) in &expected_hashmap {
+                    let actual_value = actual_dict.get(key);
+
+                    assert!(actual_value.is_some());
+
+                    let actual_value = actual_value.unwrap().clone().extract_long();
+                    let expected_value = expected_value.clone().extract_long().unwrap();
+
+                    assert_eq!(expected_value, actual_value.unwrap());
+                }
             }
             Some(other) => panic!("unexpected type: {:?}", other.typ()),
             _ => panic!("unexpected None value for TOS"),
