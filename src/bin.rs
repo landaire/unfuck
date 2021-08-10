@@ -94,7 +94,11 @@ fn main() -> Result<()> {
             .unwrap();
     }
 
-    let file = File::open(&opt.input)?;
+    // Ensure the output directories are created
+    std::fs::create_dir_all(&opt.output_dir)?;
+    std::fs::create_dir_all(&opt.graphs_dir)?;
+
+    let file = File::open(&opt.input).with_context(|| format!("{:?}", opt.input))?;
     let mmap = unsafe { MmapOptions::new().map(&file)? };
 
     let reader = Cursor::new(&mmap);

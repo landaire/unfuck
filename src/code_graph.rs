@@ -434,7 +434,8 @@ impl CodeGraph {
     /// $FILENUMBER_$FILENAME_$NAME_$STAGE.dot. This function will check global args to see if
     /// dot writing was enabled
     pub fn generate_dot_graph(&mut self, stage: &str) {
-        if !self.enable_dotviz_graphs {
+        let force_graphs = std::env::var("UNFUCK_WRITE_GRAPHS").is_ok();
+        if !self.enable_dotviz_graphs && !force_graphs {
             return;
         }
 
@@ -452,7 +453,7 @@ impl CodeGraph {
         self.phase += 1;
 
         let dot_data= format!("{}", Dot::with_config(&self.graph, &[Config::EdgeNoLabel]));
-        if std::env::var("UNFUCK_WRITE_GRAPHS").is_ok() {
+        if !force_graphs{
             let mut output_file = File::create(&filename).expect("failed to create dot file");
             output_file.write_all(dot_data.as_bytes()).expect("failed to write dot data");
         }
@@ -1820,8 +1821,8 @@ pub(crate) mod tests {
 
     #[test]
     fn deobfuscate_known_file_compileall() {
-        let obfuscated = include_bytes!("../test_data/obfuscated/compiler/compileall_stage4.pyc");
-        let source_of_truth = vec![]; // TODO: include_bytes!("../test_data/expected/compiler/compileall.pyc");
+        let obfuscated = include_bytes!("../test_data/obfuscated/compileall_stage4.pyc");
+        let source_of_truth = include_bytes!("../test_data/expected/compileall.pyc");
 
         let deobfuscated = deobfuscate_codeobj(&obfuscated[8..]).expect("failed to deobfuscate");
 

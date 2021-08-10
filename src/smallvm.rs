@@ -1428,14 +1428,48 @@ where
             }
 
 
-            let arc_dict = dict.unwrap().extract_dict().unwrap();
-            let mut dict = arc_dict.write().unwrap();
+            let dict_lock = dict.unwrap().extract_dict().unwrap();
+            let mut dict = dict_lock.write().unwrap();
             let hashable_key: ObjHashable = key.as_ref().unwrap().try_into().expect("key is not hashable");
             dict.insert(hashable_key, value.unwrap());
 
             drop(dict);
 
-            stack.push((Some(Obj::Dict(arc_dict)), new_accesses));
+            stack.push((Some(Obj::Dict(dict_lock)), new_accesses));
+        }
+        TargetOpcode::MAP_ADD => {
+            return Err(crate::error::ExecutionError::UnsupportedOpcode(TargetOpcode::MAP_ADD).into());
+
+            // let (value, value_accesses) = stack.pop().unwrap();
+            // let (dict, dict_accesses) = stack.pop().unwrap();
+
+            // let mut new_accesses = dict_accesses;
+            // new_accesses.extend(&value_accesses);
+            // new_accesses.push(access_tracking);
+
+            // if dict.is_none() || key.is_none() || value.is_none() {
+            //     // We cannot track the state of at least one of these variables. Corrupt
+            //     // the entire state.
+            //     // TODO: this is a bit aggressive. In the future when we develop a new map type
+            //     // we should be able to track individual keys
+            //     stack.push((None, new_accesses));
+
+            //     return Ok(());
+            // }
+
+
+            // let arc_dict = dict.unwrap().extract_dict().unwrap();
+            // let mut dict = arc_dict.write().unwrap();
+            // let hashable_key: ObjHashable = key.as_ref().unwrap().try_into().expect("key is not hashable");
+            // dict.insert(hashable_key, value.unwrap());
+
+            // drop(dict);
+
+            // stack.push((Some(Obj::Dict(arc_dict)), new_accesses));
+        }
+        TargetOpcode::YIELD_VALUE => {
+            // todo: add to generator
+            let (_tos, _accesses) = stack.pop().unwrap();
         }
         other => {
             return Err(crate::error::ExecutionError::UnsupportedOpcode(other).into());
