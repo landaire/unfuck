@@ -38,7 +38,7 @@ pub mod smallvm;
 pub mod strings;
 
 #[derive(Debug)]
-struct Deobfuscator<'a> {
+pub struct Deobfuscator<'a> {
     /// Input stream.
     input: &'a [u8],
 
@@ -81,11 +81,11 @@ impl<'a> Deobfuscator<'a> {
 
 pub struct DeobfuscatedCodeObject {
     /// Serialized code object with no header
-    data: Vec<u8>,
+    pub data: Vec<u8>,
     /// Graphs that were generated while deobfuscating this code object and any
     /// nested objects. Keys represent file names and their deobfuscation pass
     /// while the values represent the graphviz data in Dot format
-    graphs: HashMap<String, String>,
+    pub graphs: HashMap<String, String>,
 }
 
 /// Deobfuscates a marshalled code object and returns either the deobfuscated code object
@@ -95,7 +95,7 @@ pub(crate) fn deobfuscate_codeobj(
     files_processed: &AtomicUsize,
     enable_dotviz_graphs: bool,
 ) -> Result<DeobfuscatedCodeObject, Error> {
-    if let py_marshal::Obj::Code(code) = py_marshal::read::marshal_loads(data).unwrap() {
+    if let py_marshal::Obj::Code(code) = py_marshal::read::marshal_loads(data)? {
         // This vector will contain the input code object and all nested objects
         let mut results = vec![];
         let mut mapped_names = HashMap::new();
@@ -185,7 +185,17 @@ pub(crate) fn deobfuscate_nested_code_objects(
 
 /// Dumps all strings from a Code object. This will go over all of the `names`, variable names (`varnames`),
 /// `consts`, and all strings from any nested code objects.
-pub fn dump_codeobject_strings(pyc_filename: &Path, code: Arc<Code>) -> Vec<CodeObjString> {
+pub fn dump_strings<'a>(pyc_filename: &'a Path, data: &[u8]) -> Result<Vec<CodeObjString<'a>>, Error> {
+    if let py_marshal::Obj::Code(code) = py_marshal::read::marshal_loads(data)? {
+        Ok(dump_codeobject_strings(pyc_filename, code))
+    } else {
+        Err(Error::InvalidCodeObject)
+    }
+}
+
+/// Dumps all strings from a Code object. This will go over all of the `names`, variable names (`varnames`),
+/// `consts`, and all strings from any nested code objects.
+fn dump_codeobject_strings(pyc_filename: &Path, code: Arc<Code>) -> Vec<CodeObjString> {
     let new_strings = Mutex::new(vec![]);
     code.names.par_iter().for_each(|name| {
         new_strings.lock().unwrap().push(CodeObjString::new(

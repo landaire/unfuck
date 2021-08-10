@@ -1,3 +1,4 @@
+use py_marshal::read::errors::ErrorKind;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -10,6 +11,8 @@ pub enum Error {
     InvalidCodeObject,
     #[error("error executing bytecode: {0}")]
     ExecutionError(#[from] ExecutionError),
+    #[error("error parsing data: {0}")]
+    ParserError(#[from] ErrorKind),
 }
 
 #[derive(Error, Debug)]
