@@ -1,5 +1,5 @@
 use log::{debug, trace};
-use num_bigint::ToBigInt;
+use num_bigint::{BigInt, ToBigInt};
 use num_traits::{Pow, ToPrimitive};
 use py27_marshal::bstr::BString;
 use py27_marshal::*;
@@ -897,52 +897,48 @@ where
             apply_operator!("-");
         }
         TargetOpcode::STORE_SUBSCR => {
-            return Err(
-                crate::error::ExecutionError::ComplexExpression(instr.clone(), None).into(),
-            );
-            let (_tos, _accessing_instrs) = stack.pop().unwrap();
-            let (_tos1, _tos1_accessing_instrs) = stack.pop().unwrap();
-            let (_tos2, _tos2_accessing_instrs) = stack.pop().unwrap();
-            return Ok(());
-            // accessing_instrs
-            //     .borrow_mut()
-            //     .extend_from_slice(tos1_accessing_instrs.borrow().as_slice());
-            // accessing_instrs
-            //     .borrow_mut()
-            //     .extend_from_slice(tos2_accessing_instrs.borrow().as_slice());
-            // accessing_instrs.borrow_mut().push(access_tracking);
+            let (key, key_accessing_instrs) = stack.pop().unwrap();
+            let (collection, collection_accessing_instrs) = stack.pop().unwrap();
+            let (value, value_accessing_instrs) = stack.pop().unwrap();
 
-            // if tos.is_none() || tos2.is_none() {
-            //     match tos1 {
-            //         Some(Obj::Dict(list_lock)) => {
-            //             let mut dict = list_lock.write().unwrap();
-            //             let key = ObjHashable::try_from(&tos).unwrap();
-            //             dict.insert(key, tos2);
-            //         }
-            //         Some(other) => {
-            //             panic!("need to implement BINARY_SUBSC for set");
-            //         }
-            //         None => {
-            //             stack.push((None, accessing_instrs));
-            //         }
-            //     }
-            // }
-            // let tos = tos.unwrap();
-            // let tos2 = tos2.unwrap();
+            collection_accessing_instrs
+                .extend(&key_accessing_instrs);
 
-            // match tos1 {
-            //     Some(Obj::Dict(list_lock)) => {
-            //         let mut dict = list_lock.write().unwrap();
-            //         let key = ObjHashable::try_from(&tos).unwrap();
-            //         dict.insert(key, tos2);
-            //     }
-            //     Some(other) => {
-            //         panic!("need to implement BINARY_SUBSC for set");
-            //     }
-            //     None => {
-            //         stack.push((None, accessing_instrs));
-            //     }
-            // }
+            collection_accessing_instrs
+                .extend(&value_accessing_instrs);
+
+            collection_accessing_instrs.push(access_tracking);
+
+            // If key, value, or the collection are `None`, we destroy the entire collection
+            // TODO: allow more granular failure of taint tracking at a per-index level
+
+            match (collection, key, value) {
+                (Some(collection), Some(key), Some(value)) => {
+                    match collection {
+                        Obj::Dict(list_lock) => {
+                            let mut dict = list_lock.write().unwrap();
+                            let key = ObjHashable::try_from(&key).expect("key is not hashable");
+                            dict.insert(key, value);
+                        }
+                        Obj::List(list_lock) => {
+                            let mut list = list_lock.write().unwrap();
+                            let index = key.extract_long().expect("key is not a long");
+                            let index = index.to_usize().expect("index cannot be converted to usize");
+                            if index > list.len() {
+                                panic!("index {} is greater than list length {}", index, list.len());
+                            }
+
+                            list[index] = value;
+                        }
+                        other => {
+                            panic!("need to implement STORE_SUBSCR for {:?}", other.typ());
+                        }
+                    }
+                }
+                _ => {
+                    // we do nothing
+                }
+            }
         }
         TargetOpcode::BINARY_SUBSC => {
             let (tos, accessing_instrs) = stack.pop().unwrap();
@@ -1419,6 +1415,7 @@ where
             let mut new_accesses = dict_accesses;
             new_accesses.extend(&value_accesses);
             new_accesses.extend(&key_accesses);
+            new_accesses.push(access_tracking);
 
             if dict.is_none() || key.is_none() || value.is_none() {
                 // We cannot track the state of at least one of these variables. Corrupt
@@ -1435,7 +1432,7 @@ where
             let mut dict = arc_dict.write().unwrap();
             let hashable_key: ObjHashable = key.as_ref().unwrap().try_into().expect("key is not hashable");
             dict.insert(hashable_key, value.unwrap());
-            
+
             drop(dict);
 
             stack.push((Some(Obj::Dict(arc_dict)), new_accesses));
@@ -1716,7 +1713,7 @@ pub(crate) mod tests {
     use num_bigint::BigInt;
     use py27_marshal::bstr::BString;
 
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     type TargetOpcode = pydis::opcode::Python27;
 
@@ -2243,6 +2240,124 @@ pub(crate) mod tests {
             }
             Some(other) => panic!("unexpected type: {:?}", other.typ()),
             _ => panic!("unexpected None value for TOS"),
+        }
+    }
+
+    #[test]
+    fn store_subscr_list() {
+        let (mut stack, mut vars, mut names, mut globals, names_loaded) = setup_vm_vars();
+        let mut code = default_code_obj();
+
+        let key = Long!(0);
+        let value = Long!(0x41);
+
+        let mut expected_list = vec![0x41];
+
+        let actual_list =Obj::List(Arc::new(RwLock::new(vec![Long!(0)])));
+        let consts = vec![actual_list.clone(), key, value];
+
+        Arc::get_mut(&mut code).unwrap().consts = Arc::new(consts);
+
+        let instrs = [
+            // Load value on to stack
+            Instr!(TargetOpcode::LOAD_CONST, 2),
+            // Load list on to stack
+            Instr!(TargetOpcode::LOAD_CONST, 0),
+            // Load key on to stack
+            Instr!(TargetOpcode::LOAD_CONST, 1),
+            Instr!(TargetOpcode::STORE_SUBSCR),
+        ];
+
+        for instr in &instrs {
+            execute_instruction(
+                instr,
+                Arc::clone(&code),
+                &mut stack,
+                &mut vars,
+                &mut names,
+                &mut globals,
+                Arc::clone(&names_loaded),
+                |_f, _args, _kwargs| {
+                    panic!("functions should not be invoked");
+                },
+                (),
+            )
+            .expect("unexpected error")
+        }
+
+        assert!(stack.is_empty());
+
+        match &actual_list {
+            Obj::List(list_lock) => {
+                let list = list_lock.read().unwrap();
+                assert_eq!(list.len(), 1);
+
+                assert_eq!(*list[0].clone().extract_long().unwrap(), BigInt::from(0x41));
+            }
+            other => panic!("unexpected type: {:?}", other.typ()),
+        }
+    }
+
+    #[test]
+    fn store_subscr_dict() {
+        let (mut stack, mut vars, mut names, mut globals, names_loaded) = setup_vm_vars();
+        let mut code = default_code_obj();
+
+        let key = String!("key");
+        let value = Long!(0x41);
+
+        let mut expected_hashmap = HashMap::new();
+        expected_hashmap.insert(ObjHashable::try_from(&key).unwrap(), value.clone());
+
+        let actual_dict = Obj::Dict(Default::default());
+        let consts = vec![actual_dict.clone(), key, value];
+
+        Arc::get_mut(&mut code).unwrap().consts = Arc::new(consts);
+
+        let instrs = [
+            // Load value on to stack
+            Instr!(TargetOpcode::LOAD_CONST, 2),
+            // Load dict on to stack
+            Instr!(TargetOpcode::LOAD_CONST, 0),
+            // Load key on to stack
+            Instr!(TargetOpcode::LOAD_CONST, 1),
+            Instr!(TargetOpcode::STORE_SUBSCR),
+        ];
+
+        for instr in &instrs {
+            execute_instruction(
+                instr,
+                Arc::clone(&code),
+                &mut stack,
+                &mut vars,
+                &mut names,
+                &mut globals,
+                Arc::clone(&names_loaded),
+                |_f, _args, _kwargs| {
+                    panic!("functions should not be invoked");
+                },
+                (),
+            )
+            .expect("unexpected error")
+        }
+
+        assert!(stack.is_empty());
+
+        match &actual_dict {
+            Obj::Dict(dict_lock) => {
+                let actual_dict = dict_lock.read().unwrap();
+                for (key, expected_value) in &expected_hashmap {
+                    let actual_value = actual_dict.get(key);
+
+                    assert!(actual_value.is_some());
+
+                    let actual_value = actual_value.unwrap().clone().extract_long();
+                    let expected_value = expected_value.clone().extract_long().unwrap();
+
+                    assert_eq!(expected_value, actual_value.unwrap());
+                }
+            }
+            other => panic!("unexpected type: {:?}", other.typ()),
         }
     }
 

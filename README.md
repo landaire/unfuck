@@ -7,14 +7,14 @@ Have fucked Python 2.7 bytecode? Let's `unfuck` it.
 `unfuck` can either be used as a library or a command-line utility. To `unfuck` a single file:
 
 ```
-unfuck obfuscated.pyc deobfuscated.pyc
+unfuck obfuscated.pyc ./
 ```
 
 You can also provide additional flags to dump strings to a file, or dump `dot` graphs that can be viewed in graphviz:
 
 ```
 # -g is for printing graphs
-unfuck -g obfuscated.pyc deobfuscated.pyc
+unfuck -g obfuscated.pyc ./
 # -s is for dumping just strings
 unfuck -s strings.csv deobufscated.pyc
 ```
