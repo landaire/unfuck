@@ -105,7 +105,31 @@ The 3 `POP_TOP` instructions will never be queued for disassembly since there is
 
 ## Debugging
 
-It may be useful to try to figure out why 
+### Graphs
+
+It may be useful to try figuring out why decompiling some deobfuscated code did not work. One of the most helpful debugging tools is viewing the Graphviz graphs betweeen passes in the deobfuscator and diffing changes. When using `unfuck` you can pass the `-g` flag which will create `.dot` files in your current directory. The names of these files are formatted as follows:
+
+```rust
+        let filename = format!(
+            "{}_phase{}_{}_{}_{}.dot",
+            self.file_identifier, // unique file index
+            self.phase, // phase number that can be used to find the first/last deobfuscation stage
+            stage, // the last "major" operation that occurred
+            self.code.filename.to_string().replace("/", ""), // the python code object's filename
+            self.code.name.to_string().replace("/", ""), // the python code object's name
+        );
+```
+
+You can paste paste the contents of these files on [https://dreampuf.github.io/GraphvizOnline] to generate an SVG of the bytecode's call graph.
+
+### Hand-Crafted, Artisan PYC Files
+
+@gabe_k developed a tool called `pyasm` which can disassemble `.pyc` files into a custom format called a `.pyasm` file. You can modify the contents of the `.pyasm` file to remove unwanted unwanted instructions, recompile-it with the `makepy` command, and attempt decompilation again. This may help understand what patterns are tripping up the decompiler.
+
+pyasm can be found here: https://github.com/gabe-k/pyasm
+
+There are a couple of quality-of-life features on my own branch that are useful for rapid testing: https://github.com/landaire/pyasm
+
 
 ## greetz
 
