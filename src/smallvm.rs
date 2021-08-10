@@ -1398,6 +1398,25 @@ where
         TargetOpcode::POP_BLOCK | TargetOpcode::JUMP_ABSOLUTE => {
             // nops
         }
+        TargetOpcode::PRINT_ITEM => {
+            stack.pop();
+        }
+        TargetOpcode::PRINT_ITEM_TO => {
+            stack.pop();
+            stack.pop();
+        }
+        TargetOpcode::PRINT_NEWLINE => {
+            // nop
+        }
+        TargetOpcode::PRINT_NEWLINE_TO => {
+            stack.pop();
+        }
+        TargetOpcode::STORE_MAP => {
+            let (key, key_accesses) = stack.pop().unwrap();
+            let (value, value_accesses) = stack.pop().unwrap();
+            let (dict, dict_accesses) = stack.pop().unwrap();
+            panic!("{:?}{:?}{:?}", dict, key, value);
+        }
         other => {
             return Err(crate::error::ExecutionError::UnsupportedOpcode(other).into());
         }
@@ -1652,6 +1671,22 @@ fn remove_bad_instructions_behind_offset(
     }
 }
 
+    #[macro_export]
+    macro_rules! Instr {
+        ($opcode:expr) => {
+            Instruction {
+                opcode: $opcode,
+                arg: None,
+            }
+        };
+        ($opcode:expr, $arg:expr) => {
+            Instruction {
+                opcode: $opcode,
+                arg: Some($arg),
+            }
+        };
+    }
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -1666,22 +1701,6 @@ pub(crate) mod tests {
     macro_rules! Long {
         ($value:expr) => {
             py_marshal::Obj::Long(Arc::new(BigInt::from($value)))
-        };
-    }
-
-    #[macro_export]
-    macro_rules! Instr {
-        ($opcode:expr) => {
-            Instruction {
-                opcode: $opcode,
-                arg: None,
-            }
-        };
-        ($opcode:expr, $arg:expr) => {
-            Instruction {
-                opcode: $opcode,
-                arg: Some($arg),
-            }
         };
     }
 

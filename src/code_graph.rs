@@ -1,3 +1,4 @@
+use crate::Instr;
 use crate::error::Error;
 use crate::partial_execution::*;
 use crate::smallvm::ParsedInstr;
@@ -18,6 +19,8 @@ use py_marshal::{Code, Obj};
 use pydis::prelude::*;
 use std::fmt;
 
+use std::fs::File;
+use std::io::Write;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::{
@@ -153,6 +156,7 @@ pub struct CodeGraph {
     file_identifier: usize,
     /// Whether or not to generate dotviz graphs
     enable_dotviz_graphs: bool,
+    phase: usize,
     /// Hashmap of graph file names and their data
     pub(crate) dotviz_graphs: HashMap<String, String>,
 }
@@ -421,6 +425,7 @@ impl CodeGraph {
             code: Arc::clone(&code),
             file_identifier,
             enable_dotviz_graphs,
+            phase: 0,
             dotviz_graphs: HashMap::new(),
         })
     }
@@ -436,16 +441,24 @@ impl CodeGraph {
         use petgraph::dot::{Config, Dot};
 
         let filename = format!(
-            "{}_{}_{}_{}.dot",
+            "{}_phase{}_{}_{}_{}.dot",
             self.file_identifier,
+            self.phase,
             stage,
             self.code.filename.to_string().replace("/", ""),
             self.code.name.to_string().replace("/", ""),
         );
 
+        self.phase += 1;
+
+        let dot_data= format!("{}", Dot::with_config(&self.graph, &[Config::EdgeNoLabel]));
+        if std::env::var("UNFUCK_WRITE_GRAPHS").is_ok() {
+            let mut output_file = File::create(&filename).expect("failed to create dot file");
+            output_file.write_all(dot_data.as_bytes()).expect("failed to write dot data");
+        }
         self.dotviz_graphs.insert(
             filename,
-            format!("{}", Dot::with_config(&self.graph, &[Config::EdgeNoLabel])),
+            dot_data
         );
     }
 
@@ -1444,8 +1457,10 @@ impl CodeGraph {
                 let removed_instruction = parent_node.instrs.pop().unwrap();
 
                 trace!("{:?}", removed_instruction);
-                assert!(!removed_instruction.unwrap().opcode.is_conditional_jump());
+                //assert!(!removed_instruction.unwrap().opcode.is_conditional_jump(), "Removed instruction is a conditional jump: {:#x?}", removed_instruction);
+                parent_node.instrs.push(ParsedInstr::Good(Arc::new(Instr!(TargetOpcode::POP_TOP))));
                 current_end_offset -= removed_instruction.unwrap().len() as u64;
+                current_end_offset += parent_node.instrs.last().unwrap().unwrap().len() as u64;
             }
         }
 

@@ -1,6 +1,7 @@
 #![feature(get_mut_unchecked)]
 #![feature(map_first_last)]
 
+use anyhow::Context;
 use anyhow::Result;
 use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -50,7 +51,7 @@ struct Opt {
     graphs: bool,
 
     /// An optional directory for graphs to be written to
-    #[structopt(default_value = "PathBuf::from(\".\")")]
+    #[structopt(default_value = ".")]
     graphs_dir: PathBuf,
 
     /// Dry run only -- do not write any files
@@ -194,6 +195,8 @@ fn handle_pyc(
     let magic = u32::from_le_bytes(pyc_file[0..4].try_into().unwrap());
     let moddate = u32::from_le_bytes(pyc_file[4..8].try_into().unwrap());
 
+    let pyc_file = &pyc_file[8..];
+
     let deobfuscator = unfuck::Deobfuscator::new(pyc_file);
     let deobfuscator = if opt.graphs {
         deobfuscator.enable_graphs()
@@ -212,7 +215,8 @@ fn handle_pyc(
 
         // Write the graphs
         for (filename, graph_data) in &deobfuscated_code.graphs {
-            let mut graph_file = File::create(opt.graphs_dir.join(filename))?;
+            let out_file = opt.graphs_dir.join(filename);
+            let mut graph_file = File::create(&out_file).with_context(|| format!("attempting to create graph file {:?}", out_file))?;
             graph_file.write_all(graph_data.as_bytes())?;
         }
 
