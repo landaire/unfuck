@@ -11,7 +11,7 @@ use rayon::prelude::*;
 use log::{debug, error};
 use memmap::MmapOptions;
 use once_cell::sync::OnceCell;
-use py_marshal::{Code, Obj};
+use py27_marshal::{Code, Obj};
 use rayon::Scope;
 use std::collections::HashMap;
 use std::fs::File;

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use py_marshal::Code;
+use py27_marshal::Code;
 use serde::Serialize;
 
 #[derive(Serialize, Debug)]

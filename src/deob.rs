@@ -1,7 +1,7 @@
 use cpython::{PyBytes, PyDict, PyList, PyModule, PyObject, PyResult, Python, PythonObject};
 use log::{debug, trace};
 
-use py_marshal::Code;
+use py27_marshal::Code;
 use pydis::prelude::*;
 use std::collections::HashMap;
 
@@ -200,7 +200,7 @@ mod tests {
     use crate::smallvm::PYTHON27_COMPARE_OPS;
     use crate::{Instr, Long};
     use num_bigint::BigInt;
-    use py_marshal::Obj;
+    use py27_marshal::Obj;
     use pydis::opcode::Instruction;
 
     type TargetOpcode = pydis::opcode::Python27;

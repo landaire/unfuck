@@ -8,7 +8,7 @@ use petgraph::graph::NodeIndex;
 use petgraph::visit::{Bfs, EdgeRef};
 use petgraph::Direction;
 
-use py_marshal::{Code, Obj};
+use py27_marshal::{Code, Obj};
 use pydis::prelude::*;
 use std::collections::{BTreeSet, HashMap};
 

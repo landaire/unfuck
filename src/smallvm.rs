@@ -1,8 +1,8 @@
 use log::{debug, trace};
 use num_bigint::ToBigInt;
 use num_traits::{Pow, ToPrimitive};
-use py_marshal::bstr::BString;
-use py_marshal::*;
+use py27_marshal::bstr::BString;
+use py27_marshal::*;
 use pydis::prelude::*;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::convert::TryFrom;
@@ -105,7 +105,7 @@ unsafe impl<T: Sync + Send> Send for InstructionTracker<T> {}
 /// SAFETY: The data in an `InstructionTracker` is wrapped in an Arc<Mutex<T>>
 unsafe impl<T: Sync + Send> Sync for InstructionTracker<T> {}
 
-use py_marshal::ObjHashable;
+use py27_marshal::ObjHashable;
 
 use crate::error::Error;
 
@@ -1125,7 +1125,7 @@ where
 
                 tos_modifiers.push(access_tracking);
 
-                set.insert(py_marshal::ObjHashable::try_from(&tos.unwrap()).unwrap());
+                set.insert(py27_marshal::ObjHashable::try_from(&tos.unwrap()).unwrap());
             }
 
             set_accessors.push(access_tracking);
@@ -1691,7 +1691,7 @@ fn remove_bad_instructions_behind_offset(
 pub(crate) mod tests {
     use super::*;
     use num_bigint::BigInt;
-    use py_marshal::bstr::BString;
+    use py27_marshal::bstr::BString;
 
     use std::sync::Arc;
 
@@ -1700,7 +1700,7 @@ pub(crate) mod tests {
     #[macro_export]
     macro_rules! Long {
         ($value:expr) => {
-            py_marshal::Obj::Long(Arc::new(BigInt::from($value)))
+            py27_marshal::Obj::Long(Arc::new(BigInt::from($value)))
         };
     }
 
@@ -2233,7 +2233,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn default_code_obj() -> Arc<Code> {
-        Arc::new(py_marshal::Code {
+        Arc::new(py27_marshal::Code {
             argcount: 0,
             nlocals: 0,
             stacksize: 0,

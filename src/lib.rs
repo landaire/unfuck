@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use log::{debug, error};
 use memmap::MmapOptions;
 use once_cell::sync::OnceCell;
-use py_marshal::{Code, Obj};
+use py27_marshal::{Code, Obj};
 use rayon::Scope;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -95,7 +95,7 @@ pub(crate) fn deobfuscate_codeobj(
     files_processed: &AtomicUsize,
     enable_dotviz_graphs: bool,
 ) -> Result<DeobfuscatedCodeObject, Error> {
-    if let py_marshal::Obj::Code(code) = py_marshal::read::marshal_loads(data)? {
+    if let py27_marshal::Obj::Code(code) = py27_marshal::read::marshal_loads(data)? {
         // This vector will contain the input code object and all nested objects
         let mut results = vec![];
         let mut mapped_names = HashMap::new();
@@ -186,7 +186,7 @@ pub(crate) fn deobfuscate_nested_code_objects(
 /// Dumps all strings from a Code object. This will go over all of the `names`, variable names (`varnames`),
 /// `consts`, and all strings from any nested code objects.
 pub fn dump_strings<'a>(pyc_filename: &'a Path, data: &[u8]) -> Result<Vec<CodeObjString<'a>>, Error> {
-    if let py_marshal::Obj::Code(code) = py_marshal::read::marshal_loads(data)? {
+    if let py27_marshal::Obj::Code(code) = py27_marshal::read::marshal_loads(data)? {
         Ok(dump_codeobject_strings(pyc_filename, code))
     } else {
         Err(Error::InvalidCodeObject)
@@ -216,7 +216,7 @@ fn dump_codeobject_strings(pyc_filename: &Path, code: Arc<Code>) -> Vec<CodeObjS
     });
 
     code.consts.as_ref().par_iter().for_each(|c| {
-        if let py_marshal::Obj::String(s) = c {
+        if let py27_marshal::Obj::String(s) = c {
             new_strings.lock().unwrap().push(CodeObjString::new(
                 code.as_ref(),
                 pyc_filename,

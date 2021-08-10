@@ -14,8 +14,8 @@ use petgraph::graph::{EdgeIndex, Graph, NodeIndex};
 use petgraph::visit::{Bfs, EdgeRef};
 use petgraph::Direction;
 use petgraph::IntoWeightedEdge;
-use py_marshal::bstr::ByteSlice;
-use py_marshal::{Code, Obj};
+use py27_marshal::bstr::ByteSlice;
+use py27_marshal::{Code, Obj};
 use pydis::prelude::*;
 use std::fmt;
 
@@ -1542,17 +1542,17 @@ pub(crate) mod tests {
         main_deob(data, &files_processed, false).map(|res| {
             let mut output = vec![];
             let mut code_objects =
-                vec![py_marshal::read::marshal_loads(data).unwrap()];
+                vec![py27_marshal::read::marshal_loads(data).unwrap()];
 
             let mut files_processed = 0;
-            while let Some(py_marshal::Obj::Code(obj)) = code_objects.pop() {
+            while let Some(py27_marshal::Obj::Code(obj)) = code_objects.pop() {
                 output.push(obj.code.as_ref().clone());
 
                 for c in obj
                     .consts
                     .iter()
                     .rev()
-                    .filter(|c| matches!(c, py_marshal::Obj::Code(_)))
+                    .filter(|c| matches!(c, py27_marshal::Obj::Code(_)))
                 {
                     code_objects.push(c.clone());
                 }
@@ -1827,10 +1827,10 @@ pub(crate) mod tests {
 
         let mut source_of_truth_bytecode = Vec::with_capacity(deobfuscated.len());
         let mut code_objects =
-            vec![py_marshal::read::marshal_loads(&source_of_truth[8..]).unwrap()];
+            vec![py27_marshal::read::marshal_loads(&source_of_truth[8..]).unwrap()];
 
         let mut files_processed = 0;
-        while let Some(py_marshal::Obj::Code(obj)) = code_objects.pop() {
+        while let Some(py27_marshal::Obj::Code(obj)) = code_objects.pop() {
             let mut code_graph =
                 CodeGraph::from_code(Arc::clone(&obj), files_processed, false).unwrap();
                 // for debugging
@@ -1842,7 +1842,7 @@ pub(crate) mod tests {
                 .consts
                 .iter()
                 .rev()
-                .filter(|c| matches!(c, py_marshal::Obj::Code(_)))
+                .filter(|c| matches!(c, py27_marshal::Obj::Code(_)))
             {
                 code_objects.push(c.clone());
             }
