@@ -103,6 +103,10 @@ The 3 `POP_TOP` instructions will never be queued for disassembly since there is
 - Constant propagation across code objects.
 - No out-of-box support for remapped opcodes, although this could be done trivially.
 
+## Debugging
+
+It may be useful to try to figure out why 
+
 ## greetz
 
 gabe_k, _yrp
