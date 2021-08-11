@@ -7,9 +7,8 @@ use std::collections::HashMap;
 
 use std::sync::Arc;
 
-use crate::{DeobfuscatedBytecode, code_graph::*};
 use crate::error::Error;
-
+use crate::{code_graph::*, DeobfuscatedBytecode};
 
 /// Deobfuscate the given code object. This will remove opaque predicates where possible,
 /// simplify control flow to only go forward where possible, and rename local variables. This returns
@@ -29,7 +28,8 @@ pub(crate) fn deobfuscate_code(
     let mut new_bytecode: Vec<u8> = vec![];
     let mut mapped_function_names = HashMap::new();
 
-    let mut code_graph = CodeGraph::from_code(Arc::clone(&code), file_identifier, enable_dotviz_graphs)?;
+    let mut code_graph =
+        CodeGraph::from_code(Arc::clone(&code), file_identifier, enable_dotviz_graphs)?;
 
     code_graph.generate_dot_graph("before");
 
@@ -73,7 +73,7 @@ pub(crate) fn deobfuscate_code(
         }
     }
 
-    Ok(DeobfuscatedBytecode{
+    Ok(DeobfuscatedBytecode {
         file_number: file_identifier,
         new_bytecode,
         mapped_function_names,

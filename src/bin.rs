@@ -130,7 +130,8 @@ fn main() -> Result<()> {
                             error!("File `{:?}` is not a valid path", file_name);
                             continue;
                         }
-                    }.to_owned();
+                    }
+                    .to_owned();
                     let target_path = opt.output_dir.join(&file_path);
 
                     if !opt.dry && file.is_dir() {
@@ -147,8 +148,13 @@ fn main() -> Result<()> {
                     let results = Arc::clone(&results);
                     let opt = Arc::clone(&opt);
                     s.spawn(move |_| {
-                        let res =
-                            handle_pyc(&file_path, decompressed_file.as_slice(), &target_path, csv_output, &opt);
+                        let res = handle_pyc(
+                            &file_path,
+                            decompressed_file.as_slice(),
+                            &target_path,
+                            csv_output,
+                            &opt,
+                        );
                         if res.is_ok() {
                             file_count.fetch_add(1, Ordering::Relaxed);
                         }
@@ -174,8 +180,18 @@ fn main() -> Result<()> {
         _ => {
             let file_name = opt.input.file_name().unwrap();
             let target_path = opt.output_dir.join(file_name);
-            let file_name_as_str = Path::new(file_name.to_str().expect("failed to convert input path to a string"));
-            if handle_pyc(Path::new(file_name_as_str), &mmap, &target_path, csv_output, &opt)? {
+            let file_name_as_str = Path::new(
+                file_name
+                    .to_str()
+                    .expect("failed to convert input path to a string"),
+            );
+            if handle_pyc(
+                Path::new(file_name_as_str),
+                &mmap,
+                &target_path,
+                csv_output,
+                &opt,
+            )? {
                 file_count.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -212,7 +228,7 @@ fn handle_pyc(
 
     // Write the deobfuscated data to our output directory
     if !opt.dry {
-        let mut deobfuscated_file= File::create(target_path)?;
+        let mut deobfuscated_file = File::create(target_path)?;
         deobfuscated_file.write_all(&magic.to_le_bytes()[..])?;
         deobfuscated_file.write_all(&moddate.to_le_bytes()[..])?;
         deobfuscated_file.write_all(deobfuscated_code.data.as_slice())?;
@@ -220,7 +236,8 @@ fn handle_pyc(
         // Write the graphs
         for (filename, graph_data) in &deobfuscated_code.graphs {
             let out_file = opt.graphs_dir.join(filename);
-            let mut graph_file = File::create(&out_file).with_context(|| format!("attempting to create graph file {:?}", out_file))?;
+            let mut graph_file = File::create(&out_file)
+                .with_context(|| format!("attempting to create graph file {:?}", out_file))?;
             graph_file.write_all(graph_data.as_bytes())?;
         }
 
@@ -236,7 +253,6 @@ fn handle_pyc(
             });
         }
     }
-
 
     Ok(true)
 }

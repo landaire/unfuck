@@ -78,7 +78,6 @@ impl<'a> Deobfuscator<'a> {
     }
 }
 
-
 pub struct DeobfuscatedCodeObject {
     /// Serialized code object with no header
     pub data: Vec<u8>,
@@ -185,7 +184,10 @@ pub(crate) fn deobfuscate_nested_code_objects(
 
 /// Dumps all strings from a Code object. This will go over all of the `names`, variable names (`varnames`),
 /// `consts`, and all strings from any nested code objects.
-pub fn dump_strings<'a>(pyc_filename: &'a Path, data: &[u8]) -> Result<Vec<CodeObjString<'a>>, Error> {
+pub fn dump_strings<'a>(
+    pyc_filename: &'a Path,
+    data: &[u8],
+) -> Result<Vec<CodeObjString<'a>>, Error> {
     if let py27_marshal::Obj::Code(code) = py27_marshal::read::marshal_loads(data)? {
         Ok(dump_codeobject_strings(pyc_filename, code))
     } else {

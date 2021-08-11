@@ -901,11 +901,9 @@ where
             let (collection, collection_accessing_instrs) = stack.pop().unwrap();
             let (value, value_accessing_instrs) = stack.pop().unwrap();
 
-            collection_accessing_instrs
-                .extend(&key_accessing_instrs);
+            collection_accessing_instrs.extend(&key_accessing_instrs);
 
-            collection_accessing_instrs
-                .extend(&value_accessing_instrs);
+            collection_accessing_instrs.extend(&value_accessing_instrs);
 
             collection_accessing_instrs.push(access_tracking);
 
@@ -913,28 +911,28 @@ where
             // TODO: allow more granular failure of taint tracking at a per-index level
 
             match (collection, key, value) {
-                (Some(collection), Some(key), Some(value)) => {
-                    match collection {
-                        Obj::Dict(list_lock) => {
-                            let mut dict = list_lock.write().unwrap();
-                            let key = ObjHashable::try_from(&key).expect("key is not hashable");
-                            dict.insert(key, value);
-                        }
-                        Obj::List(list_lock) => {
-                            let mut list = list_lock.write().unwrap();
-                            let index = key.extract_long().expect("key is not a long");
-                            let index = index.to_usize().expect("index cannot be converted to usize");
-                            if index > list.len() {
-                                panic!("index {} is greater than list length {}", index, list.len());
-                            }
-
-                            list[index] = value;
-                        }
-                        other => {
-                            panic!("need to implement STORE_SUBSCR for {:?}", other.typ());
-                        }
+                (Some(collection), Some(key), Some(value)) => match collection {
+                    Obj::Dict(list_lock) => {
+                        let mut dict = list_lock.write().unwrap();
+                        let key = ObjHashable::try_from(&key).expect("key is not hashable");
+                        dict.insert(key, value);
                     }
-                }
+                    Obj::List(list_lock) => {
+                        let mut list = list_lock.write().unwrap();
+                        let index = key.extract_long().expect("key is not a long");
+                        let index = index
+                            .to_usize()
+                            .expect("index cannot be converted to usize");
+                        if index > list.len() {
+                            panic!("index {} is greater than list length {}", index, list.len());
+                        }
+
+                        list[index] = value;
+                    }
+                    other => {
+                        panic!("need to implement STORE_SUBSCR for {:?}", other.typ());
+                    }
+                },
                 _ => {
                     // we do nothing
                 }
@@ -1427,10 +1425,13 @@ where
                 return Ok(());
             }
 
-
             let dict_lock = dict.unwrap().extract_dict().unwrap();
             let mut dict = dict_lock.write().unwrap();
-            let hashable_key: ObjHashable = key.as_ref().unwrap().try_into().expect("key is not hashable");
+            let hashable_key: ObjHashable = key
+                .as_ref()
+                .unwrap()
+                .try_into()
+                .expect("key is not hashable");
             dict.insert(hashable_key, value.unwrap());
 
             drop(dict);
@@ -1438,7 +1439,9 @@ where
             stack.push((Some(Obj::Dict(dict_lock)), new_accesses));
         }
         TargetOpcode::MAP_ADD => {
-            return Err(crate::error::ExecutionError::UnsupportedOpcode(TargetOpcode::MAP_ADD).into());
+            return Err(
+                crate::error::ExecutionError::UnsupportedOpcode(TargetOpcode::MAP_ADD).into(),
+            );
 
             // let (value, value_accesses) = stack.pop().unwrap();
             // let (dict, dict_accesses) = stack.pop().unwrap();
@@ -1456,7 +1459,6 @@ where
 
             //     return Ok(());
             // }
-
 
             // let arc_dict = dict.unwrap().extract_dict().unwrap();
             // let mut dict = arc_dict.write().unwrap();
@@ -1725,21 +1727,21 @@ fn remove_bad_instructions_behind_offset(
     }
 }
 
-    #[macro_export]
-    macro_rules! Instr {
-        ($opcode:expr) => {
-            Instruction {
-                opcode: $opcode,
-                arg: None,
-            }
-        };
-        ($opcode:expr, $arg:expr) => {
-            Instruction {
-                opcode: $opcode,
-                arg: Some($arg),
-            }
-        };
-    }
+#[macro_export]
+macro_rules! Instr {
+    ($opcode:expr) => {
+        Instruction {
+            opcode: $opcode,
+            arg: None,
+        }
+    };
+    ($opcode:expr, $arg:expr) => {
+        Instruction {
+            opcode: $opcode,
+            arg: Some($arg),
+        }
+    };
+}
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -2287,7 +2289,7 @@ pub(crate) mod tests {
 
         let mut expected_list = vec![0x41];
 
-        let actual_list =Obj::List(Arc::new(RwLock::new(vec![Long!(0)])));
+        let actual_list = Obj::List(Arc::new(RwLock::new(vec![Long!(0)])));
         let consts = vec![actual_list.clone(), key, value];
 
         Arc::get_mut(&mut code).unwrap().consts = Arc::new(consts);

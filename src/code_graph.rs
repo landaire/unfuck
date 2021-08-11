@@ -1,7 +1,7 @@
-use crate::Instr;
 use crate::error::Error;
 use crate::partial_execution::*;
 use crate::smallvm::ParsedInstr;
+use crate::Instr;
 use bitflags::bitflags;
 
 use crossbeam::channel::unbounded;
@@ -452,15 +452,14 @@ impl CodeGraph {
 
         self.phase += 1;
 
-        let dot_data= format!("{}", Dot::with_config(&self.graph, &[Config::EdgeNoLabel]));
-        if force_graphs{
+        let dot_data = format!("{}", Dot::with_config(&self.graph, &[Config::EdgeNoLabel]));
+        if force_graphs {
             let mut output_file = File::create(&filename).expect("failed to create dot file");
-            output_file.write_all(dot_data.as_bytes()).expect("failed to write dot data");
+            output_file
+                .write_all(dot_data.as_bytes())
+                .expect("failed to write dot data");
         }
-        self.dotviz_graphs.insert(
-            filename,
-            dot_data
-        );
+        self.dotviz_graphs.insert(filename, dot_data);
     }
 
     fn invoke_partial_execution(
@@ -1458,7 +1457,11 @@ impl CodeGraph {
                 let removed_instruction = parent_node.instrs.pop().unwrap();
 
                 trace!("{:?}", removed_instruction);
-                assert!(!removed_instruction.unwrap().opcode.is_conditional_jump(), "Removed instruction is a conditional jump: {:#x?}", removed_instruction);
+                assert!(
+                    !removed_instruction.unwrap().opcode.is_conditional_jump(),
+                    "Removed instruction is a conditional jump: {:#x?}",
+                    removed_instruction
+                );
                 // parent_node.instrs.push(ParsedInstr::Good(Arc::new(Instr!(TargetOpcode::POP_TOP))));
                 // current_end_offset -= removed_instruction.unwrap().len() as u64;
                 // current_end_offset += parent_node.instrs.last().unwrap().unwrap().len() as u64;
@@ -1542,8 +1545,7 @@ pub(crate) mod tests {
         let files_processed = AtomicUsize::new(0);
         main_deob(data, &files_processed, false).map(|res| {
             let mut output = vec![];
-            let mut code_objects =
-                vec![py27_marshal::read::marshal_loads(data).unwrap()];
+            let mut code_objects = vec![py27_marshal::read::marshal_loads(data).unwrap()];
 
             let mut files_processed = 0;
             while let Some(py27_marshal::Obj::Code(obj)) = code_objects.pop() {
@@ -1834,7 +1836,7 @@ pub(crate) mod tests {
         while let Some(py27_marshal::Obj::Code(obj)) = code_objects.pop() {
             let mut code_graph =
                 CodeGraph::from_code(Arc::clone(&obj), files_processed, false).unwrap();
-                // for debugging
+            // for debugging
             code_graph.generate_dot_graph("compileall");
             files_processed += 1;
             source_of_truth_bytecode.push(obj.code.as_ref().clone());
