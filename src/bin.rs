@@ -15,9 +15,11 @@ use py27_marshal::{Code, Obj};
 use rayon::Scope;
 use std::collections::HashMap;
 use std::fs::File;
+use std::io;
 use std::io::prelude::*;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use structopt::StructOpt;
@@ -35,12 +37,8 @@ struct Opt {
     output_dir: PathBuf,
 
     /// Enable verbose logging
-    #[structopt(short = "v")]
-    verbose: bool,
-
-    /// Enable verbose debug logging
-    #[structopt(short = "mv")]
-    more_verbose: bool,
+    #[structopt(short = "v", parse(from_occurrences))]
+    verbose: usize,
 
     /// Disable all logging
     #[structopt(short = "q")]
@@ -57,6 +55,10 @@ struct Opt {
     /// Dry run only -- do not write any files
     #[structopt(long = "dry")]
     dry: bool,
+
+    /// Only dump strings frmo the stage4 code. Do not do any further processing
+    #[structopt(long, default_value = "uncompyle6", env = "UNFUCK_DECOMPILER")]
+    decompiler: String,
 
     /// Only dump strings frmo the stage4 code. Do not do any further processing
     #[structopt(subcommand)]
@@ -76,13 +78,13 @@ fn main() -> Result<()> {
     // for how obfuscation works.
     if opt.quiet {
         // do not initialize the logger
-    } else if opt.more_verbose {
+    } else if opt.verbose == 2 {
         simple_logger::SimpleLogger::new()
             .with_level(log::LevelFilter::Trace)
             .with_module_level("unfuck::smallvm", log::LevelFilter::Debug)
             .init()
             .unwrap();
-    } else if opt.verbose {
+    } else if opt.verbose == 1 {
         simple_logger::SimpleLogger::new()
             .with_level(log::LevelFilter::Debug)
             .init()
@@ -233,6 +235,8 @@ fn handle_pyc(
         deobfuscated_file.write_all(&moddate.to_le_bytes()[..])?;
         deobfuscated_file.write_all(deobfuscated_code.data.as_slice())?;
 
+        decompile_pyc(target_path, opt.decompiler.as_ref());
+
         // Write the graphs
         for (filename, graph_data) in &deobfuscated_code.graphs {
             let out_file = opt.graphs_dir.join(filename);
@@ -255,4 +259,21 @@ fn handle_pyc(
     }
 
     Ok(true)
+}
+
+/// Runs the decompiler on the provided PYC file
+fn decompile_pyc(path: &Path, decompiler: &str) {
+    match std::process::Command::new(decompiler).arg(path).output() {
+        Ok(output) => {
+            io::stdout()
+                .write_all(output.stdout.as_slice())
+                .expect("failed to write to stdout");
+            io::stderr()
+                .write_all(output.stderr.as_slice())
+                .expect("failed to write to stderr");
+        }
+        Err(e) => {
+            error!("Could not run decompiler: {}", e);
+        }
+    }
 }
