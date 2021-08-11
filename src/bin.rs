@@ -27,14 +27,14 @@ use unfuck::strings::CodeObjString;
 
 #[derive(Debug, Clone, StructOpt)]
 struct Opt {
-    /// Input file. This may be either a `scripts.zip` file containing many
-    /// obfuscated .pyc files, or this argument may be a single .pyc file.
+    /// Input file to deobfuscate
     #[structopt(parse(from_os_str))]
-    input: PathBuf,
+    input_obfuscated_file: PathBuf,
 
-    /// Output directory
+    /// Output file name or directory name. If this path is a directory, a file
+    /// will be created with the same name as the input.
     #[structopt(parse(from_os_str))]
-    output_dir: PathBuf,
+    output_deobfuscated_file: PathBuf,
 
     /// Enable verbose logging
     #[structopt(short = "v", parse(from_occurrences))]
@@ -96,14 +96,32 @@ fn main() -> Result<()> {
             .unwrap();
     }
 
+    let file_name = opt.input_obfuscated_file.file_name().unwrap();
+    let file_name_as_str = Path::new(
+        file_name
+            .to_str()
+            .expect("failed to convert input path to a string"),
+    );
+
     // Ensure the output directories are created
-    std::fs::create_dir_all(&opt.output_dir)?;
+    let target_path = if opt.output_deobfuscated_file.is_dir() {
+        // The user provided an output directory. We write to dir/<input_file_name>
+        std::fs::create_dir_all(&opt.output_deobfuscated_file)?;
+        opt.output_deobfuscated_file.join(file_name)
+    } else {
+        // The user provided an output file name
+        if let Some(output_parent_dir) = opt.output_deobfuscated_file.parent() {
+            std::fs::create_dir_all(output_parent_dir)?;
+        }
+
+        opt.output_deobfuscated_file.clone()
+    };
+
     std::fs::create_dir_all(&opt.graphs_dir)?;
 
-    let file = File::open(&opt.input).with_context(|| format!("{:?}", opt.input))?;
+    let file = File::open(&opt.input_obfuscated_file)
+        .with_context(|| format!("{:?}", opt.input_obfuscated_file))?;
     let mmap = unsafe { MmapOptions::new().map(&file)? };
-
-    let reader = Cursor::new(&mmap);
 
     let file_count = Arc::new(AtomicUsize::new(0));
     let csv_output = if matches!(opt.cmd, Some(Command::StringsOnly)) {
@@ -114,89 +132,14 @@ fn main() -> Result<()> {
         None
     };
 
-    match opt.input.extension().map(|ext| ext.to_str().unwrap()) {
-        Some("zip") => {
-            let mut zip = zip::ZipArchive::new(reader)?;
-
-            let results = Arc::new(Mutex::new(vec![]));
-            let scope_result = rayon::scope(|s| -> Result<()> {
-                for i in 0..zip.len() {
-                    let mut file = zip.by_index(i)?;
-
-                    let file_name = file.name().to_string();
-                    debug!("Filename: {:?}", file_name);
-
-                    let file_path = match file.enclosed_name() {
-                        Some(path) => path,
-                        None => {
-                            error!("File `{:?}` is not a valid path", file_name);
-                            continue;
-                        }
-                    }
-                    .to_owned();
-                    let target_path = opt.output_dir.join(&file_path);
-
-                    if !opt.dry && file.is_dir() {
-                        std::fs::create_dir_all(&target_path)?;
-                        continue;
-                    }
-
-                    let mut decompressed_file = Vec::with_capacity(file.size() as usize);
-                    file.read_to_end(&mut decompressed_file)?;
-
-                    let file_count = Arc::clone(&file_count);
-                    let csv_output = csv_output.clone();
-
-                    let results = Arc::clone(&results);
-                    let opt = Arc::clone(&opt);
-                    s.spawn(move |_| {
-                        let res = handle_pyc(
-                            &file_path,
-                            decompressed_file.as_slice(),
-                            &target_path,
-                            csv_output,
-                            &opt,
-                        );
-                        if res.is_ok() {
-                            file_count.fetch_add(1, Ordering::Relaxed);
-                        }
-
-                        results.lock().unwrap().push((file_name, res))
-                    });
-
-                    //break;
-                }
-
-                Ok(())
-            });
-
-            scope_result?;
-
-            let results = results.lock().unwrap();
-            for (filename, result) in &*results {
-                if let Err(err) = result {
-                    eprintln!("Error dumping {:?}: {}", filename, err);
-                }
-            }
-        }
-        _ => {
-            let file_name = opt.input.file_name().unwrap();
-            let target_path = opt.output_dir.join(file_name);
-            let file_name_as_str = Path::new(
-                file_name
-                    .to_str()
-                    .expect("failed to convert input path to a string"),
-            );
-            if handle_pyc(
-                Path::new(file_name_as_str),
-                &mmap,
-                &target_path,
-                csv_output,
-                &opt,
-            )? {
-                file_count.fetch_add(1, Ordering::Relaxed);
-            }
-        }
+    if handle_pyc(
+        Path::new(file_name_as_str),
+        &mmap,
+        &target_path,
+        csv_output,
+        &opt,
+    )? {
+        file_count.fetch_add(1, Ordering::Relaxed);
     }
 
     println!("Deobfuscated {} files", file_count.load(Ordering::Relaxed));
