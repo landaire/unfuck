@@ -453,7 +453,7 @@ impl CodeGraph {
         self.phase += 1;
 
         let dot_data= format!("{}", Dot::with_config(&self.graph, &[Config::EdgeNoLabel]));
-        if !force_graphs{
+        if force_graphs{
             let mut output_file = File::create(&filename).expect("failed to create dot file");
             output_file.write_all(dot_data.as_bytes()).expect("failed to write dot data");
         }
