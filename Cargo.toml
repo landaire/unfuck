@@ -6,6 +6,7 @@ description = "Unfuck obfuscated Python 2.7 bytecode"
 license = "MIT"
 repository = "https://github.com/landaire/unfuck"
 readme = "README.md"
+exclude = ['img/']
 
 [[bin]]
 name = "unfuck"
