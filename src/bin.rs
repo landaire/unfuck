@@ -27,14 +27,15 @@ use unfuck::strings::CodeObjString;
 
 #[derive(Debug, Clone, StructOpt)]
 struct Opt {
-    /// Input file to deobfuscate
+    /// Input obfuscated file
     #[structopt(parse(from_os_str))]
     input_obfuscated_file: PathBuf,
 
     /// Output file name or directory name. If this path is a directory, a file
-    /// will be created with the same name as the input.
+    /// will be created with the same name as the input. When the `strings-only`
+    /// subcommand is applied, this will be where the output strings file is placed.
     #[structopt(parse(from_os_str))]
-    output_deobfuscated_file: PathBuf,
+    output_path: PathBuf,
 
     /// Enable verbose logging
     #[structopt(short = "v", parse(from_occurrences))]
@@ -60,7 +61,7 @@ struct Opt {
     #[structopt(long, default_value = "uncompyle6", env = "UNFUCK_DECOMPILER")]
     decompiler: String,
 
-    /// Only dump strings frmo the stage4 code. Do not do any further processing
+    /// Only dump strings from the deobfuscated code. Do not do any further processing
     #[structopt(subcommand)]
     cmd: Option<Command>,
 }
@@ -104,17 +105,17 @@ fn main() -> Result<()> {
     );
 
     // Ensure the output directories are created
-    let target_path = if opt.output_deobfuscated_file.is_dir() {
+    let target_path = if opt.output_path.is_dir() {
         // The user provided an output directory. We write to dir/<input_file_name>
-        std::fs::create_dir_all(&opt.output_deobfuscated_file)?;
-        opt.output_deobfuscated_file.join(file_name)
+        std::fs::create_dir_all(&opt.output_path)?;
+        opt.output_path.join(file_name)
     } else {
         // The user provided an output file name
-        if let Some(output_parent_dir) = opt.output_deobfuscated_file.parent() {
+        if let Some(output_parent_dir) = opt.output_path.parent() {
             std::fs::create_dir_all(output_parent_dir)?;
         }
 
-        opt.output_deobfuscated_file.clone()
+        opt.output_path.clone()
     };
 
     std::fs::create_dir_all(&opt.graphs_dir)?;
@@ -124,9 +125,29 @@ fn main() -> Result<()> {
     let mmap = unsafe { MmapOptions::new().map(&file)? };
 
     let file_count = Arc::new(AtomicUsize::new(0));
-    let csv_output = if matches!(opt.cmd, Some(Command::StringsOnly)) {
+    let strings_output_file_name = if let Some(Command::StringsOnly) = opt.cmd {
+        if opt.output_path.is_file() {
+            // The user provided a fixed file path to save the strings to
+            Some(opt.output_path.clone())
+        } else {
+            // The user provided a directory to save the strings to
+            let mut path = opt
+                .output_path
+                .join(opt.input_obfuscated_file.file_stem().unwrap());
+
+            assert!(
+                path.set_extension("csv"),
+                "failed to set output strings file extension"
+            );
+            Some(path)
+        }
+    } else {
+        None
+    };
+
+    let csv_output = if let Some(strings_file) = strings_output_file_name.as_ref() {
         Some(Arc::new(Mutex::new(
-            csv::WriterBuilder::new().from_path("strings.csv")?,
+            csv::WriterBuilder::new().from_path(strings_file)?,
         )))
     } else {
         None
@@ -139,10 +160,28 @@ fn main() -> Result<()> {
         csv_output,
         &opt,
     )? {
+        // todo: if we ever support directories, print this number?
         file_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    println!("Deobfuscated {} files", file_count.load(Ordering::Relaxed));
+    match (&opt.dry, &opt.cmd) {
+        (true, _) => {
+            println!("--dry flag specified, no files written");
+        }
+        (false, Some(Command::StringsOnly)) => {
+            println!(
+                "Wrote strings for {:?} to {:?}",
+                opt.input_obfuscated_file,
+                strings_output_file_name.unwrap()
+            );
+        }
+        (false, None) => {
+            println!(
+                "Wrote deobfuscated file for {:?} to {:?}",
+                opt.input_obfuscated_file, target_path
+            );
+        }
+    }
 
     Ok(())
 }
@@ -173,19 +212,22 @@ fn handle_pyc(
 
     // Write the deobfuscated data to our output directory
     if !opt.dry {
-        let mut deobfuscated_file = File::create(target_path)?;
-        deobfuscated_file.write_all(&magic.to_le_bytes()[..])?;
-        deobfuscated_file.write_all(&moddate.to_le_bytes()[..])?;
-        deobfuscated_file.write_all(deobfuscated_code.data.as_slice())?;
+        // We do not dump strings if the strings output was provided
+        if strings_output.is_none() {
+            let mut deobfuscated_file = File::create(target_path)?;
+            deobfuscated_file.write_all(&magic.to_le_bytes()[..])?;
+            deobfuscated_file.write_all(&moddate.to_le_bytes()[..])?;
+            deobfuscated_file.write_all(deobfuscated_code.data.as_slice())?;
 
-        decompile_pyc(target_path, opt.decompiler.as_ref());
+            decompile_pyc(target_path, opt.decompiler.as_ref());
 
-        // Write the graphs
-        for (filename, graph_data) in &deobfuscated_code.graphs {
-            let out_file = opt.graphs_dir.join(filename);
-            let mut graph_file = File::create(&out_file)
-                .with_context(|| format!("attempting to create graph file {:?}", out_file))?;
-            graph_file.write_all(graph_data.as_bytes())?;
+            // Write the graphs
+            for (filename, graph_data) in &deobfuscated_code.graphs {
+                let out_file = opt.graphs_dir.join(filename);
+                let mut graph_file = File::create(&out_file)
+                    .with_context(|| format!("attempting to create graph file {:?}", out_file))?;
+                graph_file.write_all(graph_data.as_bytes())?;
+            }
         }
 
         if let Some(strings_output) = strings_output {
