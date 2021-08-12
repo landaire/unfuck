@@ -1,28 +1,18 @@
 #![feature(get_mut_unchecked)]
 #![feature(map_first_last)]
 
-use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::error::Error;
-use flate2::read::ZlibDecoder;
 use rayon::prelude::*;
 
-use log::{debug, error};
-use memmap::MmapOptions;
-use once_cell::sync::OnceCell;
 use py27_marshal::{Code, Obj};
 use rayon::Scope;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::fs::File;
-use std::hash::Hash;
-use std::io::prelude::*;
-use std::io::Cursor;
-use std::path::{Path, PathBuf};
+use std::path::{Path};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use strings::CodeObjString;
-use structopt::StructOpt;
 
 /// Representing code as a graph of basic blocks
 pub mod code_graph;

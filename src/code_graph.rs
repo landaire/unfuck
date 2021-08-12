@@ -1,7 +1,6 @@
 use crate::error::Error;
 use crate::partial_execution::*;
 use crate::smallvm::ParsedInstr;
-use crate::Instr;
 use bitflags::bitflags;
 
 use crossbeam::channel::unbounded;
@@ -12,7 +11,6 @@ use petgraph::algo::{astar, dijkstra};
 use petgraph::graph::{EdgeIndex, Graph, NodeIndex};
 use petgraph::visit::{Bfs, EdgeRef};
 use petgraph::{Direction, IntoWeightedEdge};
-use py27_marshal::bstr::ByteSlice;
 use py27_marshal::{Code, Obj};
 use pydis::prelude::*;
 use std::fmt;

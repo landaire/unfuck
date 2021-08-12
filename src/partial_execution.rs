@@ -61,7 +61,7 @@ pub(crate) fn perform_partial_execution<'a>(
         () => {
             code_graph.read().unwrap().graph[root]
         };
-    };
+    }
 
     let targets = {
         let graph = code_graph.read().unwrap();
