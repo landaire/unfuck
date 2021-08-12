@@ -98,7 +98,7 @@ fn main() -> Result<()> {
     );
 
     // Ensure the output directories are created
-    let target_path = if opt.output_path.is_dir() {
+    let target_path = if opt.output_path.is_dir() || !opt.output_path.extension().is_some() {
         // The user provided an output directory. We write to dir/<input_file_name>
         std::fs::create_dir_all(&opt.output_path)?;
         opt.output_path.join(file_name)
