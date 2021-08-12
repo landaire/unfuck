@@ -4,7 +4,7 @@ Have fucked Python 2.7 bytecode? Let's `unfuck` it.
 
 ## Overview
 
-`unfuck` is a utility and library for `unfuck`ing obfuscated Python 2.7 bytecode. It is essentially a reimplementation of the Python VM with taint tracking. Some of the things `unfuck` can do:
+unfuck is a utility and library for unfucking obfuscated Python 2.7 bytecode. It is essentially a reimplementation of the Python VM with taint tracking. Some of the things unfuck can do:
 
 1. Remove opaque predicates
 2. Dead code elimination
@@ -21,7 +21,7 @@ Have fucked Python 2.7 bytecode? Let's `unfuck` it.
 
 ## Usage
 
-`unfuck` can either be used as a library or a command-line utility.
+unfuck can either be used as a library or a command-line utility.
 
 ```
 unfuck 0.2.0
@@ -53,7 +53,7 @@ SUBCOMMANDS:
     strings-only
 ```
 
-To `unfuck` a single file:
+To unfuck a single file:
 
 ```
 # deobfuscated.pyc can also be a directory
@@ -71,7 +71,7 @@ unfuck deobufscated.pyc ./strings.csv strings-only
 
 ### Building
 
-`unfuck` requires Python 2.7 in your system's `PATH`. After ensuring it's present, you should be able to just `cargo build`. If for some reason the correct interpreter cannot be found, try setting the `PYTHON_SYS_EXECUTABLE` env var to your Python 2.7 interpreter path.
+unfuck requires Python 2.7 in your system's `PATH`. After ensuring it's present, you should be able to just `cargo build`. If for some reason the correct interpreter cannot be found, try setting the `PYTHON_SYS_EXECUTABLE` env var to your Python 2.7 interpreter path.
 
 ### Installing
 
@@ -79,7 +79,7 @@ unfuck deobufscated.pyc ./strings.csv strings-only
 
 ### Library Usage
 
-**NOTE:** `unfuck` was not originally designed with library usage in mind, and therefore brings its own multithreading platform (in this case, Rayon).
+**NOTE:** unfuck was not originally designed with library usage in mind, and therefore brings its own multithreading platform (in this case, Rayon).
 
 Usage is fairly straightforward:
 
