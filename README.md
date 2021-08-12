@@ -13,6 +13,11 @@ Have fucked Python 2.7 bytecode? Let's `unfuck` it.
 
 #1 and #2 are the two biggest items that Python decompilers trip over when attempting to reconstruct original Python source code.
 
+### Useful Wiki Resources
+
+- [Obfuscation Tricks](https://github.com/landaire/unfuck/wiki/Obfuscation-Tricks)
+- [Deobfuscation Passes](https://github.com/landaire/unfuck/wiki/Deobfuscation-Passes)
+- [Debugging Failed Decompilation](https://github.com/landaire/unfuck/wiki/Debugging-Failed-Decompilation)
 
 ## Usage
 
@@ -64,11 +69,46 @@ unfuck -g obfuscated.pyc deobfuscated.pyc
 unfuck deobufscated.pyc ./strings.csv strings-only
 ```
 
-### Useful Wiki Resources
+### Building
 
-- [Obfuscation Tricks](https://github.com/landaire/unfuck/wiki/Obfuscation-Tricks)
-- [Deobfuscation Passes](https://github.com/landaire/unfuck/wiki/Deobfuscation-Passes)
-- [Debugging Failed Decompilation](https://github.com/landaire/unfuck/wiki/Debugging-Failed-Decompilation)
+`unfuck` requires Python 2.7 in your system's `PATH`. After ensuring it's present, you should be able to just `cargo build`. If for some reason the correct interpreter cannot be found, try setting the `PYTHON_SYS_EXECUTABLE` env var to your Python 2.7 interpreter path.
+
+### Library Usage
+
+**NOTE:** `unfuck` was not originally designed with library usage in mind, and therefore brings its own multithreading platform (in this case, Rayon).
+
+Usage is fairly straightforward:
+
+```rust
+use std::convert::TryInto;
+use std::fs::File;
+
+let mut pyc_contents = vec![];
+let pyc_file = File::open("obfuscated.pyc")?;
+pyc_file.read_to_end(&mut pyc_contents)?;
+
+// magic/moddate are specific to the PYC header and are required to be
+// a valid PYC file
+let magic = u32::from_le_bytes(pyc_contents[0..4].try_into().unwrap());
+let moddate = u32::from_le_bytes(pyc_contents[4..8].try_into().unwrap());
+
+let pyc_contents = &pyc_contents[8..];
+
+// Use a standard Python 2.7 opcode table
+let deobfuscator = unfuck::Deobfuscator::<pydis::opcode::py27::Standard>::new(pyc_contents);
+let deobfuscator = if enable_graphs {
+    deobfuscator.enable_graphs()
+} else {
+    deobfuscator
+};
+
+let deobfuscated_code = deobfuscator.deobfuscate()?;
+
+let mut deobfuscated_file = File::create("deobfuscated.pyc")?;
+deobfuscated_file.write_all(&magic.to_le_bytes()[..])?;
+deobfuscated_file.write_all(&moddate.to_le_bytes()[..])?;
+deobfuscated_file.write_all(deobfuscated_code.data.as_slice())?;
+```
 
 ## greetz
 
