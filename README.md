@@ -66,7 +66,7 @@ You can also provide additional flags to dump strings to a file, or dump `dot` g
 # -g is for printing graphs
 unfuck -g obfuscated.pyc deobfuscated.pyc
 # use the strings-only subcommand for dumping just dumping strings -- no deobfuscation is performed
-unfuck deobufscated.pyc ./strings.csv strings-only
+unfuck deobfuscated.pyc ./strings.csv strings-only
 ```
 
 ### Building

@@ -53,7 +53,7 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic>> Deobfuscator<'a, O> {
         }
     }
 
-    /// Consumes the current Deobufscator object and returns a new one with graph
+    /// Consumes the current Deobfuscator object and returns a new one with graph
     /// output enabled.
     pub fn enable_graphs(mut self) -> Deobfuscator<'a, O> {
         self.enable_dotviz_graphs = true;
