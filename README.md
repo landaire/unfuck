@@ -73,6 +73,10 @@ unfuck deobufscated.pyc ./strings.csv strings-only
 
 `unfuck` requires Python 2.7 in your system's `PATH`. After ensuring it's present, you should be able to just `cargo build`. If for some reason the correct interpreter cannot be found, try setting the `PYTHON_SYS_EXECUTABLE` env var to your Python 2.7 interpreter path.
 
+### Installing
+
+`cargo install --force unfuck`
+
 ### Library Usage
 
 **NOTE:** `unfuck` was not originally designed with library usage in mind, and therefore brings its own multithreading platform (in this case, Rayon).
