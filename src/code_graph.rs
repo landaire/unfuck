@@ -13,15 +13,15 @@ use petgraph::visit::{Bfs, EdgeRef};
 use petgraph::{Direction, IntoWeightedEdge};
 use py27_marshal::{Code, Obj};
 use pydis::prelude::*;
+use pydis::opcode::py27::{self, Mnemonic};
 use std::fmt;
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
 use std::io::Write;
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-
-type TargetOpcode = pydis::opcode::Python27;
 
 bitflags! {
     #[derive(Default)]
@@ -61,14 +61,14 @@ impl fmt::Display for EdgeWeight {
 }
 
 /// Represents a single block of code up until its next branching point
-#[derive(Debug, Default)]
-pub struct BasicBlock {
+#[derive(Debug)]
+pub struct BasicBlock<O: Opcode<Mnemonic = py27::Mnemonic>> {
     /// Offset of the first instruction in this BB
     pub start_offset: u64,
     /// Offset of the last instruction in this BB (note: this is the START of the last instruction)
     pub end_offset: u64,
     /// Instructions contained within this BB
-    pub instrs: Vec<ParsedInstr>,
+    pub instrs: Vec<ParsedInstr<O>>,
     /// Whether this BB contains invalid instructions
     pub has_bad_instrs: bool,
     /// Flags used for internal purposes
@@ -77,7 +77,20 @@ pub struct BasicBlock {
     last_instruction_end: u64,
 }
 
-impl fmt::Display for BasicBlock {
+impl<O: Opcode<Mnemonic = py27::Mnemonic>> Default for BasicBlock<O> {
+    fn default() -> Self {
+        BasicBlock {
+            start_offset: 0,
+            end_offset: 0,
+            instrs: vec![],
+            has_bad_instrs: false,
+            flags: BasicBlockFlags::default(),
+            last_instruction_end: 0,
+        }
+    }
+}
+
+impl<O: Opcode<Mnemonic = py27::Mnemonic>> fmt::Display for BasicBlock<O> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Flags: {:?}", self.flags)?;
         let mut offset = self.start_offset;
@@ -97,10 +110,10 @@ impl fmt::Display for BasicBlock {
     }
 }
 
-impl BasicBlock {
+impl<O: Opcode<Mnemonic = py27::Mnemonic>> BasicBlock<O> {
     /// Splits a basic block at the target absolute offset. The instruction index is calculated
     /// on-demand, walking the instructions and adding their length until the desired offset is found.
-    pub fn split(&mut self, offset: u64) -> Option<(u64, BasicBlock)> {
+    pub fn split(&mut self, offset: u64) -> Option<(u64, BasicBlock<O>)> {
         // It does indeed land in the middle of this block. Let's figure out which
         // instruction it lands on
         let mut ins_offset = self.start_offset;
@@ -142,25 +155,26 @@ impl BasicBlock {
 }
 
 /// A code object represented as a graph
-pub struct CodeGraph {
+pub struct CodeGraph<TargetOpcode: Opcode<Mnemonic = py27::Mnemonic>> {
     pub(crate) root: NodeIndex,
     code: Arc<Code>,
-    pub(crate) graph: Graph<BasicBlock, EdgeWeight>,
+    pub(crate) graph: Graph<BasicBlock<TargetOpcode>, EdgeWeight>,
     file_identifier: usize,
     /// Whether or not to generate dotviz graphs
     enable_dotviz_graphs: bool,
     phase: usize,
     /// Hashmap of graph file names and their data
     pub(crate) dotviz_graphs: HashMap<String, String>,
+    _target_opcode_phantom: PhantomData<TargetOpcode>,
 }
 
-impl CodeGraph {
+impl<TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>> CodeGraph<TargetOpcode> {
     /// Converts bytecode to a graph. Returns the root node index and the graph.
     pub fn from_code(
         code: Arc<Code>,
         file_identifier: usize,
         enable_dotviz_graphs: bool,
-    ) -> Result<CodeGraph, Error> {
+    ) -> Result<CodeGraph<TargetOpcode>, Error<TargetOpcode>> {
         let debug = false;
 
         let analyzed_instructions = crate::smallvm::const_jmp_instruction_walker(
@@ -178,7 +192,7 @@ impl CodeGraph {
         }
 
         let mut curr_basic_block = BasicBlock::default();
-        let mut code_graph = petgraph::Graph::<BasicBlock, EdgeWeight>::new();
+        let mut code_graph = petgraph::Graph::<BasicBlock<TargetOpcode>, EdgeWeight>::new();
         let mut edges = vec![];
         let mut root_node_id = None;
         let mut has_invalid_jump_sites = false;
@@ -222,8 +236,8 @@ impl CodeGraph {
             };
 
             if matches!(
-                instr.opcode,
-                TargetOpcode::RETURN_VALUE | TargetOpcode::RAISE_VARARGS
+                instr.opcode.mnemonic(),
+                Mnemonic::RETURN_VALUE | Mnemonic::RAISE_VARARGS
             ) {
                 curr_basic_block.end_offset = offset;
                 // We need to see if a previous BB landed in the middle of this block.
@@ -297,8 +311,8 @@ impl CodeGraph {
                         matches!(&copy.get(&target), Some(ParsedInstr::Bad) | None);
 
                     let edge_weight = if matches!(
-                        instr.opcode,
-                        TargetOpcode::JUMP_FORWARD | TargetOpcode::JUMP_ABSOLUTE,
+                        instr.opcode.mnemonic(),
+                        Mnemonic::JUMP_FORWARD | Mnemonic::JUMP_ABSOLUTE,
                     ) {
                         EdgeWeight::NonJump
                     } else {
@@ -420,6 +434,7 @@ impl CodeGraph {
             enable_dotviz_graphs,
             phase: 0,
             dotviz_graphs: HashMap::new(),
+            _target_opcode_phantom: Default::default(),
         })
     }
 
@@ -847,7 +862,7 @@ impl CodeGraph {
         while let Some(nx) = bfs.next(&self.graph) {
             let bb = &self.graph[nx];
             if let Some(instr) = bb.instrs.first() {
-                if instr.unwrap().opcode == TargetOpcode::FOR_ITER {
+                if instr.unwrap().opcode.mnemonic() == Mnemonic::FOR_ITER {
                     // let's get this target node -- if it's just a RETURN_VALUE with other
                     // people returning as well, we should just use our own
                     //
@@ -875,7 +890,7 @@ impl CodeGraph {
 
                     let target_bb = &self.graph[target];
                     if target_bb.instrs.len() == 1
-                        && target_bb.instrs[0].unwrap().opcode == TargetOpcode::RETURN_VALUE
+                        && target_bb.instrs[0].unwrap().opcode.mnemonic() == Mnemonic::RETURN_VALUE
                         && self
                             .graph
                             .edges_directed(target, Direction::Incoming)
@@ -885,7 +900,7 @@ impl CodeGraph {
                         self.graph.remove_edge(edge);
                         let return_bb = BasicBlock {
                             instrs: vec![crate::smallvm::ParsedInstr::Good(Arc::new(
-                                pydis::Instr!(TargetOpcode::RETURN_VALUE),
+                                pydis::Instr!(Mnemonic::RETURN_VALUE.into()),
                             ))],
                             ..Default::default()
                         };
@@ -942,18 +957,18 @@ impl CodeGraph {
                 let source_node = &mut self.graph[incoming_edge];
                 let end_of_jump_ins = source_node.end_offset + last_ins_len as u64;
 
-                if last_ins.opcode == TargetOpcode::JUMP_ABSOLUTE
+                if last_ins.opcode.mnemonic() == Mnemonic::JUMP_ABSOLUTE
                     && target_node_start > source_node.start_offset
                 {
                     unsafe { Arc::get_mut_unchecked(&mut last_ins) }.opcode =
-                        TargetOpcode::JUMP_FORWARD;
+                        Mnemonic::JUMP_FORWARD.into();
                 }
 
-                if last_ins.opcode == TargetOpcode::JUMP_FORWARD
+                if last_ins.opcode.mnemonic() == Mnemonic::JUMP_FORWARD
                     && target_node_start < end_of_jump_ins
                 {
                     unsafe { Arc::get_mut_unchecked(&mut last_ins) }.opcode =
-                        TargetOpcode::JUMP_ABSOLUTE;
+                        Mnemonic::JUMP_ABSOLUTE.into();
                 }
 
                 let last_ins_is_abs_jump = last_ins.opcode.is_absolute_jump();
@@ -1002,7 +1017,7 @@ impl CodeGraph {
             current_node.flags |= BasicBlockFlags::BYTECODE_WRITTEN;
 
             for instr in current_node.instrs.iter().map(|i| i.unwrap()) {
-                new_bytecode.push(instr.opcode as u8);
+                new_bytecode.push(instr.opcode.to_u8().unwrap());
                 if let Some(arg) = instr.arg {
                     new_bytecode.extend_from_slice(&arg.to_le_bytes()[..]);
                 }
@@ -1121,8 +1136,8 @@ impl CodeGraph {
                 for instr in &self.graph[node].instrs {
                     // these ones pop only if we're not taking the branch
                     if matches!(
-                        instr.unwrap().opcode,
-                        TargetOpcode::JUMP_IF_TRUE_OR_POP | TargetOpcode::JUMP_IF_FALSE_OR_POP
+                        instr.unwrap().opcode.mnemonic(),
+                        Mnemonic::JUMP_IF_TRUE_OR_POP | Mnemonic::JUMP_IF_FALSE_OR_POP
                     ) {
                         // Grab the edge from this node to the next
                         let edge = self.graph.find_edge(node, path[idx + 1]).unwrap();
@@ -1133,8 +1148,8 @@ impl CodeGraph {
                         }
                     } else {
                         if matches!(
-                            instr.unwrap().opcode,
-                            TargetOpcode::SETUP_EXCEPT | TargetOpcode::SETUP_FINALLY
+                            instr.unwrap().opcode.mnemonic(),
+                            Mnemonic::SETUP_EXCEPT | Mnemonic::SETUP_FINALLY
                         ) {
                             stack_size += 0;
                         } else {
@@ -1150,7 +1165,7 @@ impl CodeGraph {
                 current_node
                     .instrs
                     .push(ParsedInstr::Good(Arc::new(Instruction {
-                        opcode: TargetOpcode::POP_TOP,
+                        opcode: Mnemonic::POP_TOP.into(),
                         arg: None,
                     })));
             }
@@ -1171,13 +1186,13 @@ impl CodeGraph {
             current_node
                 .instrs
                 .push(ParsedInstr::Good(Arc::new(Instruction {
-                    opcode: TargetOpcode::LOAD_CONST,
+                    opcode: Mnemonic::LOAD_CONST.into(),
                     arg: Some(const_idx as u16),
                 })));
             current_node
                 .instrs
                 .push(ParsedInstr::Good(Arc::new(Instruction {
-                    opcode: TargetOpcode::RETURN_VALUE,
+                    opcode: Mnemonic::RETURN_VALUE.into(),
                     arg: None,
                 })));
 
@@ -1245,7 +1260,7 @@ impl CodeGraph {
                     self.graph[nx]
                         .instrs
                         .push(ParsedInstr::Good(Arc::new(pydis::Instr!(
-                            TargetOpcode::JUMP_FORWARD,
+                            Mnemonic::JUMP_FORWARD.into(),
                             0
                         ))));
                 }
@@ -1270,7 +1285,7 @@ impl CodeGraph {
                                 if *outstanding == target {
                                     outstanding_conditions.pop();
                                     self.graph[nx].instrs.push(ParsedInstr::Good(Arc::new(
-                                        pydis::Instr!(TargetOpcode::JUMP_FORWARD, 0),
+                                        pydis::Instr!(Mnemonic::JUMP_FORWARD.into(), 0),
                                     )));
                                 }
                             }
@@ -1531,11 +1546,11 @@ pub(crate) mod tests {
     use crate::{deobfuscate_codeobj as main_deob, Instr};
     use pydis::opcode::Instruction;
 
-    type TargetOpcode = pydis::opcode::Python27;
+    type TargetOpcode = pydis::opcode::py27::Standard;
 
-    fn deobfuscate_codeobj(data: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
+    fn deobfuscate_codeobj(data: &[u8]) -> Result<Vec<Vec<u8>>, Error<TargetOpcode>> {
         let files_processed = AtomicUsize::new(0);
-        main_deob(data, &files_processed, false).map(|res| {
+        main_deob::<TargetOpcode>(data, &files_processed, false).map(|res| {
             let mut output = vec![];
             let mut code_objects = vec![py27_marshal::read::marshal_loads(data).unwrap()];
 
@@ -1669,7 +1684,7 @@ pub(crate) mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let mut code_graph = CodeGraph::from_code(code, 0, false).unwrap();
+        let mut code_graph = CodeGraph::<TargetOpcode>::from_code(code, 0, false).unwrap();
 
         code_graph.join_blocks();
         code_graph.update_bb_offsets();
@@ -1827,7 +1842,7 @@ pub(crate) mod tests {
         let mut files_processed = 0;
         while let Some(py27_marshal::Obj::Code(obj)) = code_objects.pop() {
             let mut code_graph =
-                CodeGraph::from_code(Arc::clone(&obj), files_processed, false).unwrap();
+                CodeGraph::<TargetOpcode>::from_code(Arc::clone(&obj), files_processed, false).unwrap();
             // for debugging
             code_graph.generate_dot_graph("compileall");
             files_processed += 1;

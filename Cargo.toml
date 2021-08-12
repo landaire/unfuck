@@ -1,6 +1,6 @@
 [package]
 name = "unfuck"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2018"
 description = "Unfuck obfuscated Python 2.7 bytecode"
 license = "MIT"
@@ -23,7 +23,7 @@ base64 = "0.13"
 anyhow = "1.0"
 thiserror = "1.0"
 flate2 = "1.0"
-pydis = "0.3"
+pydis = "0.4"
 num-bigint = "0.2"
 cpython = { version = "0.5", default-features = false, features = ["python27-sys"]}
 log = "0.4"

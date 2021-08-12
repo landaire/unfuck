@@ -2,6 +2,7 @@ use cpython::{PyBytes, PyDict, PyList, PyModule, PyObject, PyResult, Python, Pyt
 use log::{debug, trace};
 
 use py27_marshal::Code;
+use pydis::opcode::py27;
 use pydis::prelude::*;
 use std::collections::HashMap;
 
@@ -17,11 +18,11 @@ use crate::DeobfuscatedBytecode;
 ///
 /// The returned HashMap is keyed by the code object's `$filename_$name` with a value of
 /// what the suspected function name is.
-pub(crate) fn deobfuscate_code(
+pub(crate) fn deobfuscate_code<TargetOpcode: Opcode<Mnemonic = py27::Mnemonic>>(
     code: Arc<Code>,
     file_identifier: usize,
     enable_dotviz_graphs: bool,
-) -> Result<DeobfuscatedBytecode, Error> {
+) -> Result<DeobfuscatedBytecode, Error<TargetOpcode>> {
     let debug = !true;
 
     let _bytecode = code.code.as_slice();
@@ -30,7 +31,7 @@ pub(crate) fn deobfuscate_code(
     let mut mapped_function_names = HashMap::new();
 
     let mut code_graph =
-        CodeGraph::from_code(Arc::clone(&code), file_identifier, enable_dotviz_graphs)?;
+        CodeGraph::<TargetOpcode>::from_code(Arc::clone(&code), file_identifier, enable_dotviz_graphs)?;
 
     code_graph.generate_dot_graph("before");
 
@@ -67,7 +68,7 @@ pub(crate) fn deobfuscate_code(
     if debug {
         let mut cursor = std::io::Cursor::new(&new_bytecode);
         trace!("{}", cursor.position());
-        while let Ok(instr) = decode_py27(&mut cursor) {
+        while let Ok(instr) = decode_py27::<TargetOpcode, _>(&mut cursor) {
             trace!("{:?}", instr);
             trace!("");
             trace!("{}", cursor.position());
@@ -204,7 +205,7 @@ mod tests {
     use py27_marshal::Obj;
     use pydis::opcode::Instruction;
 
-    type TargetOpcode = pydis::opcode::Python27;
+    type TargetOpcode = pydis::opcode::py27::Standard;
 
     #[test]
     fn simple_deobfuscation() {
@@ -255,7 +256,7 @@ mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let res = deobfuscate_code(Arc::clone(&code), 0, false).unwrap();
+        let res = deobfuscate_code::<TargetOpcode>(Arc::clone(&code), 0, false).unwrap();
 
         // We now need to change this back into a graph for ease of testing
         let mut expected_bytecode = vec![];

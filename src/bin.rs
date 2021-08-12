@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result};
 
+use pydis::opcode::py27::Standard;
 use rayon::prelude::*;
 
 use log::error;
@@ -191,7 +192,7 @@ fn handle_pyc(
 
     let pyc_file = &pyc_file[8..];
 
-    let deobfuscator = unfuck::Deobfuscator::new(pyc_file);
+    let deobfuscator = unfuck::Deobfuscator::<Standard>::new(pyc_file);
     let deobfuscator = if opt.graphs {
         deobfuscator.enable_graphs()
     } else {

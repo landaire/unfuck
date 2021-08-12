@@ -2,12 +2,15 @@
 #![feature(map_first_last)]
 
 use crate::error::Error;
+use pydis::opcode::py27::{self, Mnemonic, Standard};
+use pydis::prelude::Opcode;
 use rayon::prelude::*;
 
 use py27_marshal::{Code, Obj};
 use rayon::Scope;
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -27,7 +30,7 @@ pub mod smallvm;
 pub mod strings;
 
 #[derive(Debug)]
-pub struct Deobfuscator<'a> {
+pub struct Deobfuscator<'a, O: Opcode<Mnemonic = py27::Mnemonic>> {
     /// Input stream.
     input: &'a [u8],
 
@@ -35,29 +38,31 @@ pub struct Deobfuscator<'a> {
     enable_dotviz_graphs: bool,
     files_processed: AtomicUsize,
     graphviz_graphs: HashMap<String, String>,
+    _opcode_phantom: PhantomData<O>,
 }
 
-impl<'a> Deobfuscator<'a> {
+impl<'a, O: Opcode<Mnemonic = py27::Mnemonic>> Deobfuscator<'a, O> {
     /// Creates a new instance of a deobfuscator
-    pub fn new(input: &'a [u8]) -> Deobfuscator<'a> {
+    pub fn new(input: &'a [u8]) -> Deobfuscator<'a, O> {
         Deobfuscator {
             input,
             enable_dotviz_graphs: false,
             files_processed: AtomicUsize::new(0),
             graphviz_graphs: HashMap::new(),
+            _opcode_phantom: Default::default(),
         }
     }
 
     /// Consumes the current Deobufscator object and returns a new one with graph
     /// output enabled.
-    pub fn enable_graphs(mut self) -> Deobfuscator<'a> {
+    pub fn enable_graphs(mut self) -> Deobfuscator<'a, O> {
         self.enable_dotviz_graphs = true;
         self
     }
 
     /// Deobfuscates this code object
-    pub fn deobfuscate(&self) -> Result<DeobfuscatedCodeObject, Error> {
-        deobfuscate_codeobj(self.input, &self.files_processed, self.enable_dotviz_graphs)
+    pub fn deobfuscate(&self) -> Result<DeobfuscatedCodeObject, Error<O>> {
+        deobfuscate_codeobj::<O>(self.input, &self.files_processed, self.enable_dotviz_graphs)
     }
 
     /// Returns the generated graphviz graphs after a [`deobfuscate`] has been called.
@@ -78,11 +83,11 @@ pub struct DeobfuscatedCodeObject {
 
 /// Deobfuscates a marshalled code object and returns either the deobfuscated code object
 /// or the [`crate::errors::Error`] encountered during execution
-pub(crate) fn deobfuscate_codeobj(
+pub(crate) fn deobfuscate_codeobj<O: Opcode<Mnemonic = py27::Mnemonic>>(
     data: &[u8],
     files_processed: &AtomicUsize,
     enable_dotviz_graphs: bool,
-) -> Result<DeobfuscatedCodeObject, Error> {
+) -> Result<DeobfuscatedCodeObject, Error<O>> {
     if let py27_marshal::Obj::Code(code) = py27_marshal::read::marshal_loads(data)? {
         // This vector will contain the input code object and all nested objects
         let mut results = vec![];
@@ -90,7 +95,7 @@ pub(crate) fn deobfuscate_codeobj(
         let mut graphs = HashMap::new();
         let out_results = Arc::new(Mutex::new(vec![]));
         rayon::scope(|scope| {
-            deobfuscate_nested_code_objects(
+            deobfuscate_nested_code_objects::<O>(
                 Arc::clone(&code),
                 scope,
                 Arc::clone(&out_results),
@@ -137,10 +142,10 @@ pub(crate) struct DeobfuscatedBytecode {
     pub(crate) graphviz_graphs: HashMap<String, String>,
 }
 
-pub(crate) fn deobfuscate_nested_code_objects(
+pub(crate) fn deobfuscate_nested_code_objects<O: Opcode<Mnemonic = py27::Mnemonic>>(
     code: Arc<Code>,
     scope: &Scope,
-    out_results: Arc<Mutex<Vec<Result<DeobfuscatedBytecode, Error>>>>,
+    out_results: Arc<Mutex<Vec<Result<DeobfuscatedBytecode, Error<O>>>>>,
     files_processed: &AtomicUsize,
     enable_dotviz_graphs: bool,
 ) {
@@ -149,7 +154,7 @@ pub(crate) fn deobfuscate_nested_code_objects(
     let task_code = Arc::clone(&code);
     let thread_results = Arc::clone(&out_results);
     scope.spawn(move |_scope| {
-        let res = crate::deob::deobfuscate_code(task_code, file_number, enable_dotviz_graphs);
+        let res = crate::deob::deobfuscate_code::<O>(task_code, file_number, enable_dotviz_graphs);
         thread_results.lock().unwrap().push(res);
     });
 
@@ -160,7 +165,7 @@ pub(crate) fn deobfuscate_nested_code_objects(
             let thread_code = Arc::clone(const_code);
             // Call deobfuscate_bytecode first since the bytecode comes before consts and other data
 
-            deobfuscate_nested_code_objects(
+            deobfuscate_nested_code_objects::<O>(
                 thread_code,
                 scope,
                 thread_results,
@@ -176,7 +181,7 @@ pub(crate) fn deobfuscate_nested_code_objects(
 pub fn dump_strings<'a>(
     pyc_filename: &'a Path,
     data: &[u8],
-) -> Result<Vec<CodeObjString<'a>>, Error> {
+) -> Result<Vec<CodeObjString<'a>>, Error<Standard>> {
     if let py27_marshal::Obj::Code(code) = py27_marshal::read::marshal_loads(data)? {
         Ok(dump_codeobject_strings(pyc_filename, code))
     } else {

@@ -3,12 +3,12 @@ use num_bigint::{BigInt, ToBigInt};
 use num_traits::{Pow, ToPrimitive};
 use py27_marshal::bstr::BString;
 use py27_marshal::*;
+use pydis::opcode::py27::{self, Mnemonic};
 use pydis::prelude::*;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::io::{Cursor, Read};
 use std::sync::{Arc, Mutex};
-type TargetOpcode = pydis::opcode::Python27;
 
 pub enum WalkerState {
     /// Continue parsing normally
@@ -127,8 +127,8 @@ pub(crate) const PYTHON27_COMPARE_OPS: [&str; 12] = [
 /// Executes an instruction, altering the input state and returning an error
 /// when the instruction cannot be correctly emulated. For example, some complex
 /// instructions are not currently supported at this time.
-pub fn execute_instruction<F, T>(
-    instr: &Instruction<TargetOpcode>,
+pub fn execute_instruction<O: Opcode<Mnemonic = py27::Mnemonic>, F, T>(
+    instr: &Instruction<O>,
     code: Arc<Code>,
     stack: &mut VmStack<T>,
     vars: &mut VmVars<T>,
@@ -137,7 +137,7 @@ pub fn execute_instruction<F, T>(
     names_loaded: LoadedNames,
     mut function_callback: F,
     access_tracking: T,
-) -> Result<(), Error>
+) -> Result<(), Error<O>>
 where
     F: FnMut(VmVar, Vec<VmVar>, std::collections::HashMap<Option<ObjHashable>, VmVar>) -> VmVar,
     T: Clone + Copy,
@@ -479,8 +479,8 @@ where
         };
     }
 
-    match instr.opcode {
-        TargetOpcode::ROT_TWO => {
+    match instr.opcode.mnemonic() {
+        Mnemonic::ROT_TWO => {
             let (tos, tos_accesses) = stack.pop().unwrap();
             let (tos1, tos1_accesses) = stack.pop().unwrap();
             tos_accesses.push(access_tracking);
@@ -489,7 +489,7 @@ where
             stack.push((tos1, tos1_accesses));
             stack.push((tos, tos_accesses));
         }
-        TargetOpcode::ROT_THREE => {
+        Mnemonic::ROT_THREE => {
             let (tos, tos_accesses) = stack.pop().unwrap();
             let (tos1, tos1_accesses) = stack.pop().unwrap();
             let (tos2, tos2_accesses) = stack.pop().unwrap();
@@ -501,13 +501,13 @@ where
             stack.push((tos1, tos1_accesses));
             stack.push((tos, tos_accesses));
         }
-        TargetOpcode::DUP_TOP => {
+        Mnemonic::DUP_TOP => {
             let (var, accesses) = stack.last().unwrap();
             accesses.push(access_tracking);
             let new_var = (var.clone(), accesses.deep_clone());
             stack.push(new_var);
         }
-        TargetOpcode::COMPARE_OP => {
+        Mnemonic::COMPARE_OP => {
             let (right, right_modifying_instrs) = stack.pop().unwrap();
             let (left, left_modifying_instrs) = stack.pop().unwrap();
 
@@ -775,7 +775,7 @@ where
                 other => panic!("unsupported comparison operator: {:?}", other),
             }
         }
-        TargetOpcode::IMPORT_NAME => {
+        Mnemonic::IMPORT_NAME => {
             let (_fromlist, fromlist_modifying_instrs) = stack.pop().unwrap();
             let (_level, level_modifying_instrs) = stack.pop().unwrap();
 
@@ -787,14 +787,14 @@ where
 
             stack.push((None, level_modifying_instrs));
         }
-        TargetOpcode::IMPORT_FROM => {
+        Mnemonic::IMPORT_FROM => {
             let (_module, accessing_instrs) = stack.last().unwrap();
             accessing_instrs.push(access_tracking);
             let accessing_instrs = accessing_instrs.clone();
 
             stack.push((None, accessing_instrs));
         }
-        TargetOpcode::LOAD_ATTR => {
+        Mnemonic::LOAD_ATTR => {
             // we don't support attributes
             let (_obj, obj_modifying_instrs) = stack.pop().unwrap();
             let _name = &code.names[instr.arg.unwrap() as usize];
@@ -803,12 +803,12 @@ where
 
             stack.push((None, obj_modifying_instrs));
         }
-        TargetOpcode::STORE_ATTR => {
+        Mnemonic::STORE_ATTR => {
             // we don't support attributes
             let (_obj, _obj_modifying_instrs) = stack.pop().unwrap();
             let (_obj, _obj_modifying_instrs) = stack.pop().unwrap();
         }
-        TargetOpcode::FOR_ITER => {
+        Mnemonic::FOR_ITER => {
             // Top of stack needs to be something we can iterate over
             // get the next item from our iterator
             let top_of_stack_index = stack.len() - 1;
@@ -831,20 +831,20 @@ where
 
             stack.push((new_tos, InstructionTracker::new()))
         }
-        TargetOpcode::STORE_FAST => {
+        Mnemonic::STORE_FAST => {
             let (tos, accessing_instrs) = stack.pop().unwrap();
             accessing_instrs.push(access_tracking);
             // Store TOS in a var slot
             vars.insert(instr.arg.unwrap(), (tos, accessing_instrs));
         }
-        TargetOpcode::STORE_NAME => {
+        Mnemonic::STORE_NAME => {
             let (tos, accessing_instrs) = stack.pop().unwrap();
             let name = &code.names[instr.arg.unwrap() as usize];
             accessing_instrs.push(access_tracking);
             // Store TOS in a var slot
             names.insert(Arc::clone(name), (tos, accessing_instrs));
         }
-        TargetOpcode::LOAD_NAME => {
+        Mnemonic::LOAD_NAME => {
             let name = &code.names[instr.arg.unwrap() as usize];
             names_loaded.lock().unwrap().push(Arc::clone(name));
             if let Some((val, accesses)) = names.get(name) {
@@ -856,7 +856,7 @@ where
                 stack.push((None, tracking));
             }
         }
-        TargetOpcode::LOAD_FAST => {
+        Mnemonic::LOAD_FAST => {
             if let Some((var, accesses)) = vars.get(&instr.arg.unwrap()) {
                 accesses.push(access_tracking);
                 stack.push((var.clone(), accesses.clone()));
@@ -866,7 +866,7 @@ where
                 stack.push((None, tracking));
             }
         }
-        TargetOpcode::LOAD_CONST => {
+        Mnemonic::LOAD_CONST => {
             let tracking = InstructionTracker::new();
             tracking.push(access_tracking);
 
@@ -875,28 +875,28 @@ where
                 tracking,
             ));
         }
-        TargetOpcode::BINARY_FLOOR_DIVIDE => {
+        Mnemonic::BINARY_FLOOR_DIVIDE => {
             apply_operator!("//");
         }
-        TargetOpcode::BINARY_TRUE_DIVIDE => {
+        Mnemonic::BINARY_TRUE_DIVIDE => {
             apply_operator!("///");
         }
-        TargetOpcode::BINARY_POWER => {
+        Mnemonic::BINARY_POWER => {
             apply_operator!("**");
         }
-        TargetOpcode::BINARY_MODULO => {
+        Mnemonic::BINARY_MODULO => {
             apply_operator!("%");
         }
-        TargetOpcode::INPLACE_ADD | TargetOpcode::BINARY_ADD => {
+        Mnemonic::INPLACE_ADD | Mnemonic::BINARY_ADD => {
             apply_operator!("+");
         }
-        TargetOpcode::INPLACE_MULTIPLY | TargetOpcode::BINARY_MULTIPLY => {
+        Mnemonic::INPLACE_MULTIPLY | Mnemonic::BINARY_MULTIPLY => {
             apply_operator!("*");
         }
-        TargetOpcode::INPLACE_SUBTRACT | TargetOpcode::BINARY_SUBTRACT => {
+        Mnemonic::INPLACE_SUBTRACT | Mnemonic::BINARY_SUBTRACT => {
             apply_operator!("-");
         }
-        TargetOpcode::STORE_SUBSCR => {
+        Mnemonic::STORE_SUBSCR => {
             let (key, key_accessing_instrs) = stack.pop().unwrap();
             let (collection, collection_accessing_instrs) = stack.pop().unwrap();
             let (value, value_accessing_instrs) = stack.pop().unwrap();
@@ -938,7 +938,7 @@ where
                 }
             }
         }
-        TargetOpcode::BINARY_SUBSC => {
+        Mnemonic::BINARY_SUBSC => {
             let (tos, accessing_instrs) = stack.pop().unwrap();
             let (tos1, tos1_accessing_instrs) = stack.pop().unwrap();
             accessing_instrs.extend(&tos1_accessing_instrs);
@@ -977,25 +977,25 @@ where
                 }
             }
         }
-        TargetOpcode::BINARY_DIVIDE => {
+        Mnemonic::BINARY_DIVIDE => {
             apply_operator!("/");
         }
-        TargetOpcode::BINARY_XOR => {
+        Mnemonic::BINARY_XOR => {
             apply_operator!("^");
         }
-        TargetOpcode::BINARY_AND => {
+        Mnemonic::BINARY_AND => {
             apply_operator!("&");
         }
-        TargetOpcode::BINARY_OR | TargetOpcode::INPLACE_OR => {
+        Mnemonic::BINARY_OR | Mnemonic::INPLACE_OR => {
             apply_operator!("|");
         }
-        TargetOpcode::UNARY_NOT => {
+        Mnemonic::UNARY_NOT => {
             apply_unary_operator!(!);
         }
-        TargetOpcode::UNARY_NEGATIVE => {
+        Mnemonic::UNARY_NEGATIVE => {
             apply_unary_operator!(-);
         }
-        TargetOpcode::BINARY_RSHIFT => {
+        Mnemonic::BINARY_RSHIFT => {
             let (tos, tos_accesses) = stack.pop().unwrap();
             let tos_value = tos.map(|tos| match tos {
                 Obj::Long(l) => Arc::clone(&l),
@@ -1021,7 +1021,7 @@ where
                 stack.push((None, tos_accesses));
             }
         }
-        TargetOpcode::BINARY_LSHIFT => {
+        Mnemonic::BINARY_LSHIFT => {
             let (tos, tos_accesses) = stack.pop().unwrap();
             let tos_value = tos.map(|tos| match tos {
                 Obj::Long(l) => Arc::clone(&l),
@@ -1049,7 +1049,7 @@ where
                 stack.push((None, tos_accesses));
             }
         }
-        TargetOpcode::LIST_APPEND => {
+        Mnemonic::LIST_APPEND => {
             let (tos, tos_modifiers) = stack.pop().unwrap();
             let tos_value = tos.map(|tos| {
                 match tos {
@@ -1082,7 +1082,7 @@ where
                 }
             }
         }
-        TargetOpcode::UNPACK_SEQUENCE => {
+        Mnemonic::UNPACK_SEQUENCE => {
             let (tos, tos_modifiers) = stack.pop().unwrap();
 
             tos_modifiers.push(access_tracking);
@@ -1103,7 +1103,7 @@ where
                 }
             }
         }
-        TargetOpcode::BUILD_SET => {
+        Mnemonic::BUILD_SET => {
             let mut set = std::collections::HashSet::new();
             let mut push_none = false;
 
@@ -1133,7 +1133,7 @@ where
                 ));
             }
         }
-        TargetOpcode::BUILD_TUPLE => {
+        Mnemonic::BUILD_TUPLE => {
             let mut tuple = Vec::new();
             let mut push_none = false;
 
@@ -1158,7 +1158,7 @@ where
                 stack.push((Some(Obj::Tuple(Arc::new(tuple))), tuple_accessors));
             }
         }
-        TargetOpcode::BUILD_MAP => {
+        Mnemonic::BUILD_MAP => {
             let tracking = InstructionTracker::new();
             tracking.push(access_tracking);
 
@@ -1168,7 +1168,7 @@ where
 
             stack.push((map, tracking));
         }
-        TargetOpcode::LOAD_GLOBAL => {
+        Mnemonic::LOAD_GLOBAL => {
             let tracking = InstructionTracker::new();
             tracking.push(access_tracking);
 
@@ -1177,20 +1177,20 @@ where
 
             stack.push((None, tracking));
         }
-        TargetOpcode::STORE_GLOBAL => {
+        Mnemonic::STORE_GLOBAL => {
             let (tos, accessing_instrs) = stack.pop().unwrap();
             let name = &code.names[instr.arg.unwrap() as usize];
             accessing_instrs.push(access_tracking);
             // Store TOS in a var slot
             globals.insert(Arc::clone(name), (tos, accessing_instrs));
         }
-        TargetOpcode::LOAD_DEREF => {
+        Mnemonic::LOAD_DEREF => {
             let tracking = InstructionTracker::new();
             tracking.push(access_tracking);
 
             stack.push((None, tracking));
         }
-        TargetOpcode::BUILD_LIST => {
+        Mnemonic::BUILD_LIST => {
             let mut list = Vec::new();
             // TODO: this is always true right now to avoid
             // testing empty sets that are added to as truthy values
@@ -1220,7 +1220,7 @@ where
                 ));
             }
         }
-        TargetOpcode::BUILD_CLASS => {
+        Mnemonic::BUILD_CLASS => {
             let (_tos, tos_accesses) = stack.pop().unwrap();
             let (_tos1, tos1_accesses) = stack.pop().unwrap();
             let (_tos2, tos2_accesses) = stack.pop().unwrap();
@@ -1230,21 +1230,21 @@ where
 
             stack.push((None, tos_accesses));
         }
-        TargetOpcode::MAKE_FUNCTION => {
+        Mnemonic::MAKE_FUNCTION => {
             let (_tos, tos_modifiers) = stack.pop().unwrap();
             let tos_modifiers = tos_modifiers.deep_clone();
             tos_modifiers.push(access_tracking);
 
             stack.push((None, tos_modifiers));
         }
-        TargetOpcode::POP_TOP => {
+        Mnemonic::POP_TOP => {
             let (_tos, tos_modifiers) = stack.pop().unwrap();
             tos_modifiers.push(access_tracking);
         }
-        TargetOpcode::GET_ITER => {
+        Mnemonic::GET_ITER => {
             // nop
         }
-        TargetOpcode::CALL_FUNCTION => {
+        Mnemonic::CALL_FUNCTION => {
             let accessed_instrs = InstructionTracker::new();
 
             let kwarg_count = (instr.arg.unwrap() >> 8) & 0xFF;
@@ -1285,7 +1285,7 @@ where
             //     stack[stack.len() - (1 + instr.arg.unwrap()) as usize]
             // );
         }
-        TargetOpcode::CALL_FUNCTION_VAR => {
+        Mnemonic::CALL_FUNCTION_VAR => {
             let (_additional_positional_args, arg_accesses) = stack.pop().unwrap();
             let accessed_instrs = arg_accesses.deep_clone();
 
@@ -1319,7 +1319,7 @@ where
 
             stack.push((result, accessed_instrs));
         }
-        TargetOpcode::CALL_FUNCTION_KW => {
+        Mnemonic::CALL_FUNCTION_KW => {
             let (_additional_kw_args, arg_accesses) = stack.pop().unwrap();
             let accessed_instrs = arg_accesses.deep_clone();
 
@@ -1353,7 +1353,7 @@ where
 
             stack.push((result, accessed_instrs));
         }
-        TargetOpcode::CALL_FUNCTION_VAR_KW => {
+        Mnemonic::CALL_FUNCTION_VAR_KW => {
             let (_additional_kw_args, arg_accesses) = stack.pop().unwrap();
             let accessed_instrs = arg_accesses.deep_clone();
             let (_additional_positional_args, arg_accesses) = stack.pop().unwrap();
@@ -1389,23 +1389,23 @@ where
 
             stack.push((result, accessed_instrs));
         }
-        TargetOpcode::POP_BLOCK | TargetOpcode::JUMP_ABSOLUTE => {
+        Mnemonic::POP_BLOCK | Mnemonic::JUMP_ABSOLUTE => {
             // nops
         }
-        TargetOpcode::PRINT_ITEM => {
+        Mnemonic::PRINT_ITEM => {
             stack.pop();
         }
-        TargetOpcode::PRINT_ITEM_TO => {
+        Mnemonic::PRINT_ITEM_TO => {
             stack.pop();
             stack.pop();
         }
-        TargetOpcode::PRINT_NEWLINE => {
+        Mnemonic::PRINT_NEWLINE => {
             // nop
         }
-        TargetOpcode::PRINT_NEWLINE_TO => {
+        Mnemonic::PRINT_NEWLINE_TO => {
             stack.pop();
         }
-        TargetOpcode::STORE_MAP => {
+        Mnemonic::STORE_MAP => {
             let (key, key_accesses) = stack.pop().unwrap();
             let (value, value_accesses) = stack.pop().unwrap();
             let (dict, dict_accesses) = stack.pop().unwrap();
@@ -1438,9 +1438,9 @@ where
 
             stack.push((Some(Obj::Dict(dict_lock)), new_accesses));
         }
-        TargetOpcode::MAP_ADD => {
+        Mnemonic::MAP_ADD => {
             return Err(
-                crate::error::ExecutionError::UnsupportedOpcode(TargetOpcode::MAP_ADD).into(),
+                crate::error::ExecutionError::UnsupportedOpcode(Mnemonic::MAP_ADD.into()).into(),
             );
 
             // let (value, value_accesses) = stack.pop().unwrap();
@@ -1469,12 +1469,12 @@ where
 
             // stack.push((Some(Obj::Dict(arc_dict)), new_accesses));
         }
-        TargetOpcode::YIELD_VALUE => {
+        Mnemonic::YIELD_VALUE => {
             // todo: add to generator
             let (_tos, _accesses) = stack.pop().unwrap();
         }
         other => {
-            return Err(crate::error::ExecutionError::UnsupportedOpcode(other).into());
+            return Err(crate::error::ExecutionError::UnsupportedOpcode(other.into()).into());
         }
     }
 
@@ -1483,14 +1483,14 @@ where
 
 /// Represents an instruction that was parsed from its raw bytecode.
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum ParsedInstr {
-    Good(Arc<Instruction<TargetOpcode>>),
+pub enum ParsedInstr<O: Opcode<Mnemonic = py27::Mnemonic>> {
+    Good(Arc<Instruction<O>>),
     Bad,
 }
 
-impl ParsedInstr {
+impl<O: Opcode<Mnemonic = py27::Mnemonic>>  ParsedInstr<O> {
     #[track_caller]
-    pub fn unwrap(&self) -> Arc<Instruction<TargetOpcode>> {
+    pub fn unwrap(&self) -> Arc<Instruction<O>> {
         if let ParsedInstr::Good(ins) = self {
             Arc::clone(ins)
         } else {
@@ -1503,18 +1503,18 @@ impl ParsedInstr {
 /// codepaths. This will only decode instructions that are either proven statically
 /// to be taken (with `JUMP_ABSOLUTE`, `JUMP_IF_TRUE` with a const value that evaluates
 /// to true, etc.)
-pub fn const_jmp_instruction_walker<F>(
+pub fn const_jmp_instruction_walker<F, O: Opcode<Mnemonic = py27::Mnemonic>>(
     bytecode: &[u8],
     consts: Arc<Vec<Obj>>,
     mut callback: F,
-) -> Result<BTreeMap<u64, ParsedInstr>, Error>
+) -> Result<BTreeMap<u64, ParsedInstr<O>>, Error<O>>
 where
-    F: FnMut(&Instruction<TargetOpcode>, u64) -> WalkerState,
+    F: FnMut(&Instruction<O>, u64) -> WalkerState,
 {
     let debug = !true;
     let mut rdr = Cursor::new(bytecode);
     let mut instruction_sequence = Vec::new();
-    let mut analyzed_instructions = BTreeMap::<u64, ParsedInstr>::new();
+    let mut analyzed_instructions = BTreeMap::<u64, ParsedInstr<O>>::new();
     // Offset of instructions that need to be read
     let mut instruction_queue = VecDeque::<u64>::new();
 
@@ -1623,8 +1623,8 @@ where
 
         if instr.opcode.is_jump() {
             if matches!(
-                instr.opcode,
-                TargetOpcode::JUMP_ABSOLUTE | TargetOpcode::JUMP_FORWARD
+                instr.opcode.mnemonic(),
+                Mnemonic::JUMP_ABSOLUTE | Mnemonic::JUMP_FORWARD
             ) {
                 // We've reached an unconditional jump. We need to decode the target
                 let target = if instr.opcode.is_relative_jump() {
@@ -1641,7 +1641,7 @@ where
                 }
 
                 rdr.set_position(target);
-                match decode_py27(&mut rdr) {
+                match decode_py27::<O, _>(&mut rdr) {
                     Ok(_instr) => {
                         // Queue the target
                         queue!(target, state.force_queue_next());
@@ -1683,7 +1683,7 @@ where
             }
         }
 
-        if instr.opcode != TargetOpcode::RETURN_VALUE && instr.opcode != TargetOpcode::RAISE_VARARGS
+        if instr.opcode.mnemonic() != Mnemonic::RETURN_VALUE && instr.opcode.mnemonic() != Mnemonic::RAISE_VARARGS
         {
             queue!(next_instr_offset, state.force_queue_next());
         }
@@ -1696,9 +1696,9 @@ where
     Ok(analyzed_instructions)
 }
 
-fn remove_bad_instructions_behind_offset(
+fn remove_bad_instructions_behind_offset<O: Opcode<Mnemonic = py27::Mnemonic>>(
     offset: u64,
-    analyzed_instructions: &mut BTreeMap<u64, Arc<Instruction<TargetOpcode>>>,
+    analyzed_instructions: &mut BTreeMap<u64, Arc<Instruction<O>>>,
 ) {
     // We need to remove all instructions parsed between the last
     // conditional jump and this instruction
@@ -1751,7 +1751,7 @@ pub(crate) mod tests {
 
     use std::sync::{Arc, RwLock};
 
-    type TargetOpcode = pydis::opcode::Python27;
+    type TargetOpcode = pydis::opcode::py27::Standard;
 
     #[macro_export]
     macro_rules! Long {

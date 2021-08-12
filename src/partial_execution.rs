@@ -9,12 +9,12 @@ use petgraph::visit::{Bfs, EdgeRef};
 use petgraph::Direction;
 
 use py27_marshal::{Code, Obj};
+use pydis::opcode::py27::{self, Mnemonic};
 use pydis::prelude::*;
 use std::collections::{BTreeSet, HashMap};
 
 use std::sync::{Arc, Mutex, RwLock};
 
-type TargetOpcode = pydis::opcode::Python27;
 
 /// Represents an execution path taken by the VM
 #[derive(Debug, Default, Clone)]
@@ -44,9 +44,9 @@ pub type AccessTrackingInfo = (petgraph::graph::NodeIndex, usize);
 /// paths down conditional branches. If a branch path cannot be determined, this path "ends" and
 /// is forked down both directions.
 // This function will return all execution paths until they end.
-pub(crate) fn perform_partial_execution<'a>(
+pub(crate) fn perform_partial_execution<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>>(
     root: NodeIndex,
-    code_graph: &'a RwLock<&'a mut CodeGraph>,
+    code_graph: &'a RwLock<&'a mut CodeGraph<TargetOpcode>>,
     mut execution_path_lock: Mutex<ExecutionPath>,
     mapped_function_names: &'a Mutex<HashMap<String, String>>,
     code: Arc<Code>,
@@ -89,7 +89,7 @@ pub(crate) fn perform_partial_execution<'a>(
 
     for (ins_idx, instr) in instrs {
         // We handle jumps
-        if instr.opcode == TargetOpcode::RETURN_VALUE {
+        if instr.opcode.mnemonic() == Mnemonic::RETURN_VALUE {
             completed_paths_sender
                 .send(execution_path_lock)
                 .expect("failed to send the completed execution path");
@@ -128,7 +128,7 @@ pub(crate) fn perform_partial_execution<'a>(
                     .iter()
                     .filter_map(|(nx, ix)| {
                         let instr = code_graph.read().unwrap().graph[*nx].instrs[*ix].unwrap();
-                        if instr.opcode == TargetOpcode::LOAD_FAST {
+                        if instr.opcode.mnemonic() == Mnemonic::LOAD_FAST {
                             Some(instr.arg.unwrap())
                         } else {
                             None
@@ -148,7 +148,7 @@ pub(crate) fn perform_partial_execution<'a>(
                         // use. This happens if it's a STORE_FAST with a matching
                         // index AND the node has not been executed by this execution
                         // path.
-                        if instr.opcode == TargetOpcode::STORE_FAST
+                        if instr.opcode.mnemonic() == Mnemonic::STORE_FAST
                             && fast_operands.contains(&instr.arg.unwrap())
                             && !execution_path.executed_nodes.contains(&nx)
                         {
@@ -210,8 +210,8 @@ pub(crate) fn perform_partial_execution<'a>(
                         }
                     };
                 }
-                let target_weight = match instr.opcode {
-                    TargetOpcode::POP_JUMP_IF_FALSE => {
+                let target_weight = match instr.opcode.mnemonic() {
+                    Mnemonic::POP_JUMP_IF_FALSE => {
                         let tos = execution_path.stack.pop().unwrap().0;
                         if !extract_truthy_value!(tos) {
                             EdgeWeight::Jump
@@ -219,7 +219,7 @@ pub(crate) fn perform_partial_execution<'a>(
                             EdgeWeight::NonJump
                         }
                     }
-                    TargetOpcode::POP_JUMP_IF_TRUE => {
+                    Mnemonic::POP_JUMP_IF_TRUE => {
                         let tos = execution_path.stack.pop().unwrap().0;
                         if extract_truthy_value!(tos) {
                             EdgeWeight::Jump
@@ -227,7 +227,7 @@ pub(crate) fn perform_partial_execution<'a>(
                             EdgeWeight::NonJump
                         }
                     }
-                    TargetOpcode::JUMP_IF_TRUE_OR_POP => {
+                    Mnemonic::JUMP_IF_TRUE_OR_POP => {
                         if extract_truthy_value!(Some(tos.clone())) {
                             EdgeWeight::Jump
                         } else {
@@ -235,7 +235,7 @@ pub(crate) fn perform_partial_execution<'a>(
                             EdgeWeight::NonJump
                         }
                     }
-                    TargetOpcode::JUMP_IF_FALSE_OR_POP => {
+                    Mnemonic::JUMP_IF_FALSE_OR_POP => {
                         if !extract_truthy_value!(Some(tos.clone())) {
                             EdgeWeight::Jump
                         } else {
@@ -302,7 +302,7 @@ pub(crate) fn perform_partial_execution<'a>(
         if !instr.opcode.is_jump() {
             // if this is a "STORE_NAME" instruction let's see if this data originates
             // at a MAKE_FUNCTION
-            if instr.opcode == TargetOpcode::STORE_NAME {
+            if instr.opcode.mnemonic() == Mnemonic::STORE_NAME {
                 // TOS _may_ be a function object.
                 if let Some((_tos, accessing_instructions)) = execution_path.stack.last() {
                     trace!("Found a STORE_NAME");
@@ -313,7 +313,7 @@ pub(crate) fn perform_partial_execution<'a>(
                                 let source_instruction =
                                     &code_graph.read().unwrap().graph[*source_node].instrs[*idx]
                                         .unwrap();
-                                source_instruction.opcode == TargetOpcode::MAKE_FUNCTION
+                                source_instruction.opcode.mnemonic() == Mnemonic::MAKE_FUNCTION
                             },
                         );
 
@@ -335,7 +335,7 @@ pub(crate) fn perform_partial_execution<'a>(
                             trace!("{:#?}", const_instr);
                         }
 
-                        assert!(const_instr.opcode == TargetOpcode::LOAD_CONST);
+                        assert!(const_instr.opcode.mnemonic() == Mnemonic::LOAD_CONST);
                         let const_idx = const_instr.arg.unwrap() as usize;
 
                         if let Obj::Code(code) = &code.consts[const_idx] {
@@ -361,7 +361,7 @@ pub(crate) fn perform_partial_execution<'a>(
             }
 
             // RAISE_VARARGS is tricky because I'm not yet sure where it should land us -- we don't evaluate these
-            if instr.opcode == TargetOpcode::RAISE_VARARGS {
+            if instr.opcode.mnemonic() == Mnemonic::RAISE_VARARGS {
                 if debug {
                     trace!("skipping -- it's RAISE_VARARGS");
                 }
@@ -439,7 +439,7 @@ pub(crate) fn perform_partial_execution<'a>(
             .map(|instr| instr.unwrap())
         {
             // we never follow exception paths
-            if last_instr.opcode == TargetOpcode::SETUP_EXCEPT && weight == EdgeWeight::Jump {
+            if last_instr.opcode.mnemonic() == Mnemonic::SETUP_EXCEPT && weight == EdgeWeight::Jump {
                 if debug {
                     trace!("skipping -- it's SETUP_EXCEPT");
                 }
@@ -448,8 +448,8 @@ pub(crate) fn perform_partial_execution<'a>(
 
             // Loops we have to handle special
             if matches!(
-                last_instr.opcode,
-                TargetOpcode::FOR_ITER | TargetOpcode::SETUP_LOOP
+                last_instr.opcode.mnemonic(),
+                Mnemonic::FOR_ITER | Mnemonic::SETUP_LOOP
             ) && weight == EdgeWeight::NonJump
             {
                 last_instr_was_for_iter = true;
