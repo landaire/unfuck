@@ -1,7 +1,6 @@
 #![feature(get_mut_unchecked)]
 #![feature(map_first_last)]
 
-
 use crate::error::Error;
 use rayon::prelude::*;
 
@@ -9,7 +8,7 @@ use py27_marshal::{Code, Obj};
 use rayon::Scope;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::path::{Path};
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use strings::CodeObjString;

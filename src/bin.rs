@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 
 use rayon::prelude::*;
 
-use log::{error};
+use log::error;
 use memmap::MmapOptions;
 use std::fs::File;
 use std::io;
