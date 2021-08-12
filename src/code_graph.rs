@@ -1,29 +1,27 @@
-use crate::{error::Error, partial_execution::*, smallvm::ParsedInstr, Instr};
+use crate::error::Error;
+use crate::partial_execution::*;
+use crate::smallvm::ParsedInstr;
+use crate::Instr;
 use bitflags::bitflags;
 
 use crossbeam::channel::unbounded;
 
 use log::trace;
 
-use petgraph::{
-    algo::{astar, dijkstra},
-    graph::{EdgeIndex, Graph, NodeIndex},
-    visit::{Bfs, EdgeRef},
-    Direction, IntoWeightedEdge,
-};
-use py27_marshal::{bstr::ByteSlice, Code, Obj};
+use petgraph::algo::{astar, dijkstra};
+use petgraph::graph::{EdgeIndex, Graph, NodeIndex};
+use petgraph::visit::{Bfs, EdgeRef};
+use petgraph::{Direction, IntoWeightedEdge};
+use py27_marshal::bstr::ByteSlice;
+use py27_marshal::{Code, Obj};
 use pydis::prelude::*;
 use std::fmt;
 
-use std::{
-    collections::{BTreeSet, HashMap},
-    fs::File,
-    io::Write,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
-    },
-};
+use std::collections::{BTreeSet, HashMap};
+use std::fs::File;
+use std::io::Write;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 type TargetOpcode = pydis::opcode::Python27;
 
@@ -1531,7 +1529,8 @@ pub(crate) mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::{deobfuscate_codeobj as main_deob, smallvm::tests::*, Instr};
+    use crate::smallvm::tests::*;
+    use crate::{deobfuscate_codeobj as main_deob, Instr};
     use pydis::opcode::Instruction;
 
     type TargetOpcode = pydis::opcode::Python27;

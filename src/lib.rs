@@ -12,18 +12,15 @@ use memmap::MmapOptions;
 use once_cell::sync::OnceCell;
 use py27_marshal::{Code, Obj};
 use rayon::Scope;
-use std::{
-    collections::HashMap,
-    fmt::Debug,
-    fs::File,
-    hash::Hash,
-    io::{prelude::*, Cursor},
-    path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
-    },
-};
+use std::collections::HashMap;
+use std::fmt::Debug;
+use std::fs::File;
+use std::hash::Hash;
+use std::io::prelude::*;
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use strings::CodeObjString;
 use structopt::StructOpt;
 
