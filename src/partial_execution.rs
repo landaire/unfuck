@@ -4,9 +4,11 @@ use crossbeam::channel::Sender;
 use log::{debug, error, trace};
 use num_bigint::ToBigInt;
 
-use petgraph::graph::NodeIndex;
-use petgraph::visit::{Bfs, EdgeRef};
-use petgraph::Direction;
+use petgraph::{
+    graph::NodeIndex,
+    visit::{Bfs, EdgeRef},
+    Direction,
+};
 
 use py27_marshal::{Code, Obj};
 use pydis::prelude::*;

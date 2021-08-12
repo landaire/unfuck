@@ -1,13 +1,14 @@
 use log::{debug, trace};
 use num_bigint::{BigInt, ToBigInt};
 use num_traits::{Pow, ToPrimitive};
-use py27_marshal::bstr::BString;
-use py27_marshal::*;
+use py27_marshal::{bstr::BString, *};
 use pydis::prelude::*;
-use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::convert::{TryFrom, TryInto};
-use std::io::{Cursor, Read};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::{BTreeMap, HashMap, VecDeque},
+    convert::{TryFrom, TryInto},
+    io::{Cursor, Read},
+    sync::{Arc, Mutex},
+};
 type TargetOpcode = pydis::opcode::Python27;
 
 pub enum WalkerState {

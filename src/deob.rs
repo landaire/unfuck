@@ -7,8 +7,7 @@ use std::collections::HashMap;
 
 use std::sync::Arc;
 
-use crate::error::Error;
-use crate::{code_graph::*, DeobfuscatedBytecode};
+use crate::{code_graph::*, error::Error, DeobfuscatedBytecode};
 
 /// Deobfuscate the given code object. This will remove opaque predicates where possible,
 /// simplify control flow to only go forward where possible, and rename local variables. This returns
@@ -195,10 +194,11 @@ output = marshal.dumps(cleanup_code_obj(code))
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::code_graph::tests::*;
-    use crate::smallvm::tests::*;
-    use crate::smallvm::PYTHON27_COMPARE_OPS;
-    use crate::{Instr, Long};
+    use crate::{
+        code_graph::tests::*,
+        smallvm::{tests::*, PYTHON27_COMPARE_OPS},
+        Instr, Long,
+    };
     use num_bigint::BigInt;
     use py27_marshal::Obj;
     use pydis::opcode::Instruction;
