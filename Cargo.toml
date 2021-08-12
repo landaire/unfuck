@@ -2,7 +2,7 @@
 name = "unfuck"
 version = "0.2.2"
 edition = "2018"
-description = "Unfuck obfuscated Python 2.7 bytecode"
+description = "Python 2.7 bytecode deobfuscator"
 license = "MIT"
 repository = "https://github.com/landaire/unfuck"
 readme = "README.md"
