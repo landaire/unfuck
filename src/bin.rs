@@ -48,7 +48,9 @@ struct Opt {
     #[structopt(long = "dry")]
     dry: bool,
 
-    /// Only dump strings frmo the stage4 code. Do not do any further processing
+    /// Your favorite Python 2.7 bytecode decompiler. This program assumes the decompiler's
+    /// first positional argument is the file to decompile, and it prints the decompiled output
+    /// to stdout
     #[structopt(long, default_value = "uncompyle6", env = "UNFUCK_DECOMPILER")]
     decompiler: String,
 

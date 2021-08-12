@@ -49,8 +49,9 @@ FLAGS:
     -v               Enable verbose logging
 
 OPTIONS:
-        --decompiler <decompiler>    Only dump strings frmo the stage4 code. Do not do any further processing [env:
-                                     UNFUCK_DECOMPILER=]  [default: uncompyle6]
+        --decompiler <decompiler>    Your favorite Python 2.7 bytecode decompiler. This program assumes the decompiler's
+                                     first positional argument is the file to decompile, and it prints the decompiled
+                                     output to stdout [env: UNFUCK_DECOMPILER=]  [default: uncompyle6]
 
 ARGS:
     <input-obfuscated-file>    Input obfuscated file
