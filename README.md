@@ -13,6 +13,13 @@ unfuck is a utility and library for unfucking obfuscated Python 2.7 bytecode. It
 
 #1 and #2 are the two biggest items that Python decompilers trip over when attempting to reconstruct original Python source code.
 
+Your bytecode basically goes from this to this:
+
+![Obfuscated code](./img/graph_view_obfuscated_thumb.png)
+![Deobfuscated code](./img/graph_view_deobfuscated_thumb.png)
+
+Yes, that is a real-world example.
+
 ### Useful Wiki Resources
 
 - [Obfuscation Tricks](https://github.com/landaire/unfuck/wiki/Obfuscation-Tricks)
