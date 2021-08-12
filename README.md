@@ -4,7 +4,7 @@ Have fucked Python 2.7 bytecode? Let's `unfuck` it.
 
 ## Overview
 
-unfuck is a utility and library for unfucking obfuscated Python 2.7 bytecode. It is essentially a reimplementation of the Python VM with taint tracking. Some of the things unfuck can do:
+unfuck is a utility and library for deobfuscating obfuscated Python 2.7 bytecode. It is essentially a reimplementation of the Python VM with taint tracking. Some of the things unfuck can do:
 
 1. Remove opaque predicates
 2. Dead code elimination
