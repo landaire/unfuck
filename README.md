@@ -18,7 +18,11 @@ Your bytecode basically goes from this to this:
 ![Obfuscated code](./img/graph_view_obfuscated_thumb.png)
 ![Deobfuscated code](./img/graph_view_deobfuscated_thumb.png)
 
-Yes, that is a real-world example.
+Or from this to this:
+
+[![Obfuscated vs deobfuscated code hex dump](./img/obfuscated_bytecode_thumb.png)](./img/obfuscated_bytecode.png)
+
+Yes, these are real-world examples.
 
 ### Useful Wiki Resources
 
