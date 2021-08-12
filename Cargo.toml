@@ -1,6 +1,6 @@
 [package]
 name = "unfuck"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2018"
 description = "Unfuck obfuscated Python 2.7 bytecode"
 license = "MIT"
