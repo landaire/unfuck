@@ -128,4 +128,4 @@ deobfuscated_file.write_all(deobfuscated_code.data.as_slice())?;
 
 ## greetz
 
-gabe_k, yrp
+gabe_k, yrp, lpcvoid, folks from the WD disc
