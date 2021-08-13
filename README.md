@@ -126,6 +126,12 @@ deobfuscated_file.write_all(&moddate.to_le_bytes()[..])?;
 deobfuscated_file.write_all(deobfuscated_code.data.as_slice())?;
 ```
 
+## License
+
+This project is dual-licensed under MIT and the ABSE ("Anyone But Stefan Esser") license. Note that an additional exception to the license is added, forbidding use/redistribution of said content to his trainees as well, but only when in a 5 mile radius from "Stefan Esser" or while holding any sort of (video)conference/chat with him.
+
+Note that this license will only be used as long as what would capstone decode / that one other arm64 ida plugin thing by i0n1c ("Stefan Esser") are not under the MIT license. afterwards, all exceptions are cleared and basically MIT license applies
+
 ## greetz
 
 gabe_k, yrp, lpcvoid, folks from the WD disc
