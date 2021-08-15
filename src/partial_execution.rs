@@ -15,7 +15,6 @@ use std::collections::{BTreeSet, HashMap};
 
 use std::sync::{Arc, Mutex, RwLock};
 
-
 /// Represents an execution path taken by the VM
 #[derive(Debug, Default, Clone)]
 pub struct ExecutionPath {
@@ -44,7 +43,10 @@ pub type AccessTrackingInfo = (petgraph::graph::NodeIndex, usize);
 /// paths down conditional branches. If a branch path cannot be determined, this path "ends" and
 /// is forked down both directions.
 // This function will return all execution paths until they end.
-pub(crate) fn perform_partial_execution<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>>(
+pub(crate) fn perform_partial_execution<
+    'a,
+    TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>,
+>(
     root: NodeIndex,
     code_graph: &'a RwLock<&'a mut CodeGraph<TargetOpcode>>,
     mut execution_path_lock: Mutex<ExecutionPath>,
@@ -335,20 +337,26 @@ pub(crate) fn perform_partial_execution<'a, TargetOpcode: 'static + Opcode<Mnemo
                             trace!("{:#?}", const_instr);
                         }
 
-                        assert!(const_instr.opcode.mnemonic() == Mnemonic::LOAD_CONST);
-                        let const_idx = const_instr.arg.unwrap() as usize;
+                        if const_instr.opcode.mnemonic() == Mnemonic::LOAD_CONST {
+                            let const_idx = const_instr.arg.unwrap() as usize;
 
-                        if let Obj::Code(code) = &code.consts[const_idx] {
-                            let key =
-                                format!("{}_{}", code.filename.to_string(), code.name.to_string());
-                            // TODO: figure out why this Arc::clone is needed and we cannot
-                            // just take a reference...
-                            if (instr.arg.unwrap() as usize) < code.names.len() {
-                                let name = Arc::clone(&code.names[instr.arg.unwrap() as usize]);
-                                mapped_function_names
-                                    .lock()
-                                    .unwrap()
-                                    .insert(key, name.to_string());
+                            if let Obj::Code(code) = &code.consts[const_idx] {
+                                let key = format!(
+                                    "{}_{}",
+                                    code.filename.to_string(),
+                                    code.name.to_string()
+                                );
+                                // TODO: figure out why this Arc::clone is needed and we cannot
+                                // just take a reference...
+                                if (instr.arg.unwrap() as usize) < code.names.len() {
+                                    let name = Arc::clone(&code.names[instr.arg.unwrap() as usize]);
+                                    mapped_function_names
+                                        .lock()
+                                        .unwrap()
+                                        .insert(key, name.to_string());
+                                }
+                            } else {
+                                error!("could not trace MAKE_FUNCTION back to a LOAD_CONST -- first instruction in access tracking is {:?}. this is likely a bug", const_instr.opcode.mnemonic());
                             }
                         } else {
                             error!(
@@ -439,7 +447,8 @@ pub(crate) fn perform_partial_execution<'a, TargetOpcode: 'static + Opcode<Mnemo
             .map(|instr| instr.unwrap())
         {
             // we never follow exception paths
-            if last_instr.opcode.mnemonic() == Mnemonic::SETUP_EXCEPT && weight == EdgeWeight::Jump {
+            if last_instr.opcode.mnemonic() == Mnemonic::SETUP_EXCEPT && weight == EdgeWeight::Jump
+            {
                 if debug {
                     trace!("skipping -- it's SETUP_EXCEPT");
                 }
