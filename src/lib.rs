@@ -2,7 +2,7 @@
 #![feature(map_first_last)]
 
 use crate::error::Error;
-use pydis::opcode::py27::{self, Mnemonic, Standard};
+use pydis::opcode::py27::{self, Standard};
 use pydis::prelude::Opcode;
 use rayon::prelude::*;
 

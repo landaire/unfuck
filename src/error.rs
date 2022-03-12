@@ -1,5 +1,5 @@
 use py27_marshal::read::errors::ErrorKind;
-use pydis::opcode::py27::{self, Mnemonic};
+use pydis::opcode::py27::{self};
 use pydis::prelude::Opcode;
 use thiserror::Error;
 

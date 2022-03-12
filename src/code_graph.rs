@@ -1456,7 +1456,7 @@ impl<TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>> CodeGraph<Target
         let current_node = &self.graph[dest];
 
         let mut current_instrs = current_node.instrs.clone();
-        let mut current_end_offset = current_node.end_offset;
+        let current_end_offset = current_node.end_offset;
         let parent_node = &mut self.graph[source_node_index];
 
         if let Some(last_instr) = parent_node.instrs.last().map(|i| i.unwrap()) {
@@ -1550,11 +1550,11 @@ pub(crate) mod tests {
 
     fn deobfuscate_codeobj(data: &[u8]) -> Result<Vec<Vec<u8>>, Error<TargetOpcode>> {
         let files_processed = AtomicUsize::new(0);
-        main_deob::<TargetOpcode>(data, &files_processed, false).map(|res| {
+        main_deob::<TargetOpcode>(data, &files_processed, false).map(|_res| {
             let mut output = vec![];
             let mut code_objects = vec![py27_marshal::read::marshal_loads(data).unwrap()];
 
-            let mut files_processed = 0;
+            let _files_processed = 0;
             while let Some(py27_marshal::Obj::Code(obj)) = code_objects.pop() {
                 output.push(obj.code.as_ref().clone());
 

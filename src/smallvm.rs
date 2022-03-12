@@ -1,5 +1,5 @@
 use log::{debug, trace};
-use num_bigint::{BigInt, ToBigInt};
+use num_bigint::{ToBigInt};
 use num_traits::{Pow, ToPrimitive};
 use py27_marshal::bstr::BString;
 use py27_marshal::*;
@@ -1410,7 +1410,7 @@ where
             let (value, value_accesses) = stack.pop().unwrap();
             let (dict, dict_accesses) = stack.pop().unwrap();
 
-            let mut new_accesses = dict_accesses;
+            let new_accesses = dict_accesses;
             new_accesses.extend(&value_accesses);
             new_accesses.extend(&key_accesses);
             new_accesses.push(access_tracking);
@@ -2288,7 +2288,7 @@ pub(crate) mod tests {
         let key = Long!(0);
         let value = Long!(0x41);
 
-        let mut expected_list = vec![0x41];
+        let _expected_list = vec![0x41];
 
         let actual_list = Obj::List(Arc::new(RwLock::new(vec![Long!(0)])));
         let consts = vec![actual_list.clone(), key, value];
