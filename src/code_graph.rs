@@ -12,8 +12,8 @@ use petgraph::graph::{EdgeIndex, Graph, NodeIndex};
 use petgraph::visit::{Bfs, EdgeRef};
 use petgraph::{Direction, IntoWeightedEdge};
 use py27_marshal::{Code, Obj};
-use pydis::prelude::*;
 use pydis::opcode::py27::{self, Mnemonic};
+use pydis::prelude::*;
 use std::fmt;
 
 use std::collections::{BTreeSet, HashMap};
@@ -1842,7 +1842,8 @@ pub(crate) mod tests {
         let mut files_processed = 0;
         while let Some(py27_marshal::Obj::Code(obj)) = code_objects.pop() {
             let mut code_graph =
-                CodeGraph::<TargetOpcode>::from_code(Arc::clone(&obj), files_processed, false).unwrap();
+                CodeGraph::<TargetOpcode>::from_code(Arc::clone(&obj), files_processed, false)
+                    .unwrap();
             // for debugging
             code_graph.generate_dot_graph("compileall");
             files_processed += 1;

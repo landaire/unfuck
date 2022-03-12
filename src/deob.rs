@@ -30,8 +30,11 @@ pub(crate) fn deobfuscate_code<TargetOpcode: Opcode<Mnemonic = py27::Mnemonic>>(
     let mut new_bytecode: Vec<u8> = vec![];
     let mut mapped_function_names = HashMap::new();
 
-    let mut code_graph =
-        CodeGraph::<TargetOpcode>::from_code(Arc::clone(&code), file_identifier, enable_dotviz_graphs)?;
+    let mut code_graph = CodeGraph::<TargetOpcode>::from_code(
+        Arc::clone(&code),
+        file_identifier,
+        enable_dotviz_graphs,
+    )?;
 
     code_graph.generate_dot_graph("before");
 

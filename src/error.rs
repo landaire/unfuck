@@ -1,5 +1,6 @@
 use py27_marshal::read::errors::ErrorKind;
-use pydis::{opcode::py27::{self, Mnemonic}, prelude::Opcode};
+use pydis::opcode::py27::{self, Mnemonic};
+use pydis::prelude::Opcode;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -19,10 +20,7 @@ pub enum Error<O: 'static + Opcode<Mnemonic = py27::Mnemonic>> {
 #[derive(Error, Debug)]
 pub enum ExecutionError<O: Opcode<Mnemonic = py27::Mnemonic>> {
     #[error("complex opcode/object type encountered. Opcode: {0:?}, Object Type: {1:?}")]
-    ComplexExpression(
-        pydis::opcode::Instruction<O>,
-        Option<py27_marshal::Type>,
-    ),
+    ComplexExpression(pydis::opcode::Instruction<O>, Option<py27_marshal::Type>),
 
     #[error("unsupported instruction encountered: {0:?}")]
     UnsupportedOpcode(O),

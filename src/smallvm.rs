@@ -1488,7 +1488,7 @@ pub enum ParsedInstr<O: Opcode<Mnemonic = py27::Mnemonic>> {
     Bad,
 }
 
-impl<O: Opcode<Mnemonic = py27::Mnemonic>>  ParsedInstr<O> {
+impl<O: Opcode<Mnemonic = py27::Mnemonic>> ParsedInstr<O> {
     #[track_caller]
     pub fn unwrap(&self) -> Arc<Instruction<O>> {
         if let ParsedInstr::Good(ins) = self {
@@ -1683,7 +1683,8 @@ where
             }
         }
 
-        if instr.opcode.mnemonic() != Mnemonic::RETURN_VALUE && instr.opcode.mnemonic() != Mnemonic::RAISE_VARARGS
+        if instr.opcode.mnemonic() != Mnemonic::RETURN_VALUE
+            && instr.opcode.mnemonic() != Mnemonic::RAISE_VARARGS
         {
             queue!(next_instr_offset, state.force_queue_next());
         }
