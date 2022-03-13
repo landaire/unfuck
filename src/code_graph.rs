@@ -155,7 +155,7 @@ impl<O: Opcode<Mnemonic = py27::Mnemonic>> BasicBlock<O> {
 }
 
 /// A code object represented as a graph
-pub struct CodeGraph<TargetOpcode: Opcode<Mnemonic = py27::Mnemonic>> {
+pub struct CodeGraph<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic>> {
     pub(crate) root: NodeIndex,
     code: Arc<Code>,
     pub(crate) graph: Graph<BasicBlock<TargetOpcode>, EdgeWeight>,
@@ -165,18 +165,18 @@ pub struct CodeGraph<TargetOpcode: Opcode<Mnemonic = py27::Mnemonic>> {
     phase: usize,
     /// Hashmap of graph file names and their data
     pub(crate) dotviz_graphs: HashMap<String, String>,
-    pub(crate) on_graph_generated: Option<fn(&str, &str)>,
+    pub(crate) on_graph_generated: Option<&'a Box<dyn Fn(&str, &str) + Send + Sync>>,
     _target_opcode_phantom: PhantomData<TargetOpcode>,
 }
 
-impl<TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>> CodeGraph<TargetOpcode> {
+impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>> CodeGraph<'a, TargetOpcode> {
     /// Converts bytecode to a graph. Returns the root node index and the graph.
     pub fn from_code(
         code: Arc<Code>,
         file_identifier: usize,
         enable_dotviz_graphs: bool,
-        on_graph_generated: Option<fn(&str, &str)>,
-    ) -> Result<CodeGraph<TargetOpcode>, Error<TargetOpcode>> {
+        on_graph_generated: Option<&'a Box<dyn Fn(&str, &str) + Send + Sync>>,
+    ) -> Result<CodeGraph<'a, TargetOpcode>, Error<TargetOpcode>> {
         let debug = false;
 
         let analyzed_instructions = crate::smallvm::const_jmp_instruction_walker(

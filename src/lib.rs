@@ -37,7 +37,7 @@ pub struct Deobfuscator<'a, O: Opcode<Mnemonic = py27::Mnemonic>> {
     enable_dotviz_graphs: bool,
     files_processed: AtomicUsize,
     graphviz_graphs: HashMap<String, String>,
-    on_graph_generated: Option<fn(&str, &str)>,
+    on_graph_generated: Option<Box<dyn Fn(&str, &str) + Send + Sync>>,
     _opcode_phantom: PhantomData<O>,
 }
 
@@ -84,20 +84,92 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic>> Deobfuscator<'a, O> {
     /// Callback for when a new graph is generated. This may be useful if deobfuscation
     /// fails/panics and graphs can't be written, you can use this functionality
     /// to write graphs on-the-fly
-    pub fn on_graph_generated(mut self, callback: fn(&str, &str)) -> Deobfuscator<'a, O> {
-        self.on_graph_generated = Some(callback);
+    pub fn on_graph_generated(mut self, callback: impl Fn(&str, &str) + 'static + Send + Sync) -> Deobfuscator<'a, O> {
+        self.on_graph_generated = Some(Box::new(callback));
         self
-    }
-
-    /// Deobfuscates this code object
-    pub fn deobfuscate(&self) -> Result<DeobfuscatedCodeObject, Error<O>> {
-        deobfuscate_codeobj::<O>(self.input, &self.files_processed, self.enable_dotviz_graphs, self.on_graph_generated)
     }
 
     /// Returns the generated graphviz graphs after a [`deobfuscate`] has been called.
     /// Keys are their filenames, values are the dot data.
     pub fn graphs(&self) -> &HashMap<String, String> {
         &self.graphviz_graphs
+    }
+
+    /// Deobfuscates the marshalled code object and returns either the deobfuscated code object
+    /// or the [`crate::errors::Error`] encountered during execution
+    pub fn deobfuscate(&self) -> Result<DeobfuscatedCodeObject, Error<O>> {
+        if let py27_marshal::Obj::Code(code) = py27_marshal::read::marshal_loads(&self.input)? {
+            // This vector will contain the input code object and all nested objects
+            let mut results = vec![];
+            let mut mapped_names = HashMap::new();
+            let mut graphs = HashMap::new();
+            let out_results = Arc::new(Mutex::new(vec![]));
+            rayon::scope(|scope| {
+                self.deobfuscate_nested_code_objects(
+                    Arc::clone(&code),
+                    scope,
+                    Arc::clone(&out_results),
+                );
+            });
+
+            let out_results = Arc::try_unwrap(out_results)
+                .unwrap_or_else(|_| panic!("failed to unwrap mapped names"))
+                .into_inner()
+                .unwrap();
+            for result in out_results {
+                let result = result?;
+                results.push((result.file_number, result.new_bytecode));
+                mapped_names.extend(result.mapped_function_names);
+                graphs.extend(result.graphviz_graphs);
+            }
+
+            // sort these items by their file number. ordering matters since our python code pulls the objects as a
+            // stack
+            results.sort_by(|a, b| a.0.cmp(&b.0));
+
+            let output_data = self.rename_vars(
+                &mut results.iter().map(|result| result.1.as_slice()),
+                &mapped_names,
+            )
+            .unwrap();
+
+            Ok(DeobfuscatedCodeObject {
+                data: output_data,
+                graphs,
+            })
+        } else {
+            Err(Error::InvalidCodeObject)
+        }
+    }
+
+    pub(crate) fn deobfuscate_nested_code_objects(
+        &'a self,
+        code: Arc<Code>,
+        scope: &Scope<'a>,
+        out_results: Arc<Mutex<Vec<Result<DeobfuscatedBytecode, Error<O>>>>>,
+    ) {
+        let file_number = self.files_processed.fetch_add(1, Ordering::Relaxed);
+
+        let task_code = Arc::clone(&code);
+        let thread_results = Arc::clone(&out_results);
+        scope.spawn(move |_scope| {
+            let res = self.deobfuscate_code(
+                task_code,
+                file_number,
+            );
+            thread_results.lock().unwrap().push(res);
+        });
+
+        // We need to find and replace the code sections which may also be in the const data
+        for c in code.consts.iter() {
+            if let Obj::Code(const_code) = c {
+                let thread_results = Arc::clone(&out_results);
+                let thread_code = Arc::clone(const_code);
+                // Call deobfuscate_bytecode first since the bytecode comes before consts and other data
+
+                self.deobfuscate_nested_code_objects(thread_code, scope, thread_results);
+            }
+        }
     }
 }
 
@@ -110,103 +182,11 @@ pub struct DeobfuscatedCodeObject {
     pub graphs: HashMap<String, String>,
 }
 
-/// Deobfuscates a marshalled code object and returns either the deobfuscated code object
-/// or the [`crate::errors::Error`] encountered during execution
-pub(crate) fn deobfuscate_codeobj<O: Opcode<Mnemonic = py27::Mnemonic>>(
-    data: &[u8],
-    files_processed: &AtomicUsize,
-    enable_dotviz_graphs: bool,
-    on_graph_generated: Option<fn(&str, &str)>,
-) -> Result<DeobfuscatedCodeObject, Error<O>> {
-    if let py27_marshal::Obj::Code(code) = py27_marshal::read::marshal_loads(data)? {
-        // This vector will contain the input code object and all nested objects
-        let mut results = vec![];
-        let mut mapped_names = HashMap::new();
-        let mut graphs = HashMap::new();
-        let out_results = Arc::new(Mutex::new(vec![]));
-        rayon::scope(|scope| {
-            deobfuscate_nested_code_objects::<O>(
-                Arc::clone(&code),
-                scope,
-                Arc::clone(&out_results),
-                files_processed,
-                enable_dotviz_graphs,
-                on_graph_generated,
-            );
-        });
-
-        let out_results = Arc::try_unwrap(out_results)
-            .unwrap_or_else(|_| panic!("failed to unwrap mapped names"))
-            .into_inner()
-            .unwrap();
-        for result in out_results {
-            let result = result?;
-            results.push((result.file_number, result.new_bytecode));
-            mapped_names.extend(result.mapped_function_names);
-            graphs.extend(result.graphviz_graphs);
-        }
-
-        // sort these items by their file number. ordering matters since our python code pulls the objects as a
-        // stack
-        results.sort_by(|a, b| a.0.cmp(&b.0));
-
-        let output_data = crate::deob::rename_vars(
-            data,
-            &mut results.iter().map(|result| result.1.as_slice()),
-            &mapped_names,
-        )
-        .unwrap();
-
-        Ok(DeobfuscatedCodeObject {
-            data: output_data,
-            graphs,
-        })
-    } else {
-        Err(Error::InvalidCodeObject)
-    }
-}
-
 pub(crate) struct DeobfuscatedBytecode {
     pub(crate) file_number: usize,
     pub(crate) new_bytecode: Vec<u8>,
     pub(crate) mapped_function_names: HashMap<String, String>,
     pub(crate) graphviz_graphs: HashMap<String, String>,
-}
-
-pub(crate) fn deobfuscate_nested_code_objects<O: Opcode<Mnemonic = py27::Mnemonic>>(
-    code: Arc<Code>,
-    scope: &Scope,
-    out_results: Arc<Mutex<Vec<Result<DeobfuscatedBytecode, Error<O>>>>>,
-    files_processed: &AtomicUsize,
-    enable_dotviz_graphs: bool,
-    on_graph_generated: Option<fn(&str, &str)>,
-) {
-    let file_number = files_processed.fetch_add(1, Ordering::Relaxed);
-
-    let task_code = Arc::clone(&code);
-    let thread_results = Arc::clone(&out_results);
-    scope.spawn(move |_scope| {
-        let res = crate::deob::deobfuscate_code::<O>(task_code, file_number, enable_dotviz_graphs, on_graph_generated);
-        thread_results.lock().unwrap().push(res);
-    });
-
-    // We need to find and replace the code sections which may also be in the const data
-    for c in code.consts.iter() {
-        if let Obj::Code(const_code) = c {
-            let thread_results = Arc::clone(&out_results);
-            let thread_code = Arc::clone(const_code);
-            // Call deobfuscate_bytecode first since the bytecode comes before consts and other data
-
-            deobfuscate_nested_code_objects::<O>(
-                thread_code,
-                scope,
-                thread_results,
-                files_processed,
-                enable_dotviz_graphs,
-                on_graph_generated,
-            );
-        }
-    }
 }
 
 /// Dumps all strings from a Code object. This will go over all of the `names`, variable names (`varnames`),
