@@ -442,7 +442,7 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>> CodeGraph<'a
     }
 
     fn generate_file_name(&self, stage: Option<&str>) -> String {
-format!(
+        format!(
             "{}_phase{}_{}_{}.dot",
             self.file_identifier,
             self.phase,
@@ -1478,7 +1478,8 @@ format!(
                 assert!(
                     !removed_instruction.unwrap().opcode.is_conditional_jump(),
                     "Removed instruction is a conditional jump: {:#x?}. File: {}",
-                    removed_instruction, self.generate_file_name(None)
+                    removed_instruction,
+                    self.generate_file_name(None)
                 );
                 // parent_node.instrs.push(ParsedInstr::Good(Arc::new(Instr!(TargetOpcode::POP_TOP))));
                 // current_end_offset -= removed_instruction.unwrap().len() as u64;
@@ -1558,7 +1559,10 @@ pub(crate) mod tests {
 
     type TargetOpcode = pydis::opcode::py27::Standard;
 
-    fn deobfuscate_codeobj(data: &[u8], on_graph_generated: Option<fn(&str, &str)>) -> Result<Vec<Vec<u8>>, Error<TargetOpcode>> {
+    fn deobfuscate_codeobj(
+        data: &[u8],
+        on_graph_generated: Option<fn(&str, &str)>,
+    ) -> Result<Vec<Vec<u8>>, Error<TargetOpcode>> {
         let files_processed = AtomicUsize::new(0);
         main_deob::<TargetOpcode>(data, &files_processed, false, on_graph_generated).map(|_res| {
             let mut output = vec![];
@@ -1843,7 +1847,8 @@ pub(crate) mod tests {
         let obfuscated = include_bytes!("../test_data/obfuscated/compileall_stage4.pyc");
         let source_of_truth = include_bytes!("../test_data/expected/compileall.pyc");
 
-        let deobfuscated = deobfuscate_codeobj(&obfuscated[8..], None).expect("failed to deobfuscate");
+        let deobfuscated =
+            deobfuscate_codeobj(&obfuscated[8..], None).expect("failed to deobfuscate");
 
         let mut source_of_truth_bytecode = Vec::with_capacity(deobfuscated.len());
         let mut code_objects =
@@ -1851,9 +1856,13 @@ pub(crate) mod tests {
 
         let mut files_processed = 0;
         while let Some(py27_marshal::Obj::Code(obj)) = code_objects.pop() {
-            let mut code_graph =
-                CodeGraph::<TargetOpcode>::from_code(Arc::clone(&obj), files_processed, false, None)
-                    .unwrap();
+            let mut code_graph = CodeGraph::<TargetOpcode>::from_code(
+                Arc::clone(&obj),
+                files_processed,
+                false,
+                None,
+            )
+            .unwrap();
             // for debugging
             code_graph.generate_dot_graph("compileall");
             files_processed += 1;

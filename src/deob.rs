@@ -10,8 +10,7 @@ use std::sync::Arc;
 
 use crate::code_graph::*;
 use crate::error::Error;
-use crate::DeobfuscatedBytecode;
-use crate::Deobfuscator;
+use crate::{DeobfuscatedBytecode, Deobfuscator};
 
 impl<'a, O: Opcode<Mnemonic = py27::Mnemonic>> Deobfuscator<'a, O> {
     /// Deobfuscate the given code object. This will remove opaque predicates where possible,

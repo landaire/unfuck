@@ -1,5 +1,5 @@
 use log::{debug, trace};
-use num_bigint::{ToBigInt};
+use num_bigint::ToBigInt;
 use num_traits::{Pow, ToPrimitive};
 use py27_marshal::bstr::BString;
 use py27_marshal::*;

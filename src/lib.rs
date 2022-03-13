@@ -84,7 +84,10 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic>> Deobfuscator<'a, O> {
     /// Callback for when a new graph is generated. This may be useful if deobfuscation
     /// fails/panics and graphs can't be written, you can use this functionality
     /// to write graphs on-the-fly
-    pub fn on_graph_generated(mut self, callback: impl Fn(&str, &str) + 'static + Send + Sync) -> Deobfuscator<'a, O> {
+    pub fn on_graph_generated(
+        mut self,
+        callback: impl Fn(&str, &str) + 'static + Send + Sync,
+    ) -> Deobfuscator<'a, O> {
         self.on_graph_generated = Some(Box::new(callback));
         self
     }
@@ -127,11 +130,12 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic>> Deobfuscator<'a, O> {
             // stack
             results.sort_by(|a, b| a.0.cmp(&b.0));
 
-            let output_data = self.rename_vars(
-                &mut results.iter().map(|result| result.1.as_slice()),
-                &mapped_names,
-            )
-            .unwrap();
+            let output_data = self
+                .rename_vars(
+                    &mut results.iter().map(|result| result.1.as_slice()),
+                    &mapped_names,
+                )
+                .unwrap();
 
             Ok(DeobfuscatedCodeObject {
                 data: output_data,
@@ -153,10 +157,7 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic>> Deobfuscator<'a, O> {
         let task_code = Arc::clone(&code);
         let thread_results = Arc::clone(&out_results);
         scope.spawn(move |_scope| {
-            let res = self.deobfuscate_code(
-                task_code,
-                file_number,
-            );
+            let res = self.deobfuscate_code(task_code, file_number);
             thread_results.lock().unwrap().push(res);
         });
 
