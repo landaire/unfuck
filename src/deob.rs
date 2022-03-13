@@ -22,6 +22,7 @@ pub(crate) fn deobfuscate_code<TargetOpcode: Opcode<Mnemonic = py27::Mnemonic>>(
     code: Arc<Code>,
     file_identifier: usize,
     enable_dotviz_graphs: bool,
+    on_graph_generated: Option<fn(&str, &str)>,
 ) -> Result<DeobfuscatedBytecode, Error<TargetOpcode>> {
     let debug = !true;
 
@@ -34,17 +35,18 @@ pub(crate) fn deobfuscate_code<TargetOpcode: Opcode<Mnemonic = py27::Mnemonic>>(
         Arc::clone(&code),
         file_identifier,
         enable_dotviz_graphs,
+        on_graph_generated,
     )?;
 
     code_graph.generate_dot_graph("before");
 
     code_graph.fix_bbs_with_bad_instr(code_graph.root, &code);
 
-    code_graph.join_blocks();
-
     code_graph.generate_dot_graph("joined");
 
     code_graph.remove_const_conditions(&mut mapped_function_names);
+
+    code_graph.join_blocks();
 
     code_graph.generate_dot_graph("target");
 

@@ -29,7 +29,6 @@ pub mod smallvm;
 /// Management of Python strings for string dumping
 pub mod strings;
 
-#[derive(Debug)]
 pub struct Deobfuscator<'a, O: Opcode<Mnemonic = py27::Mnemonic>> {
     /// Input stream.
     input: &'a [u8],
@@ -38,7 +37,28 @@ pub struct Deobfuscator<'a, O: Opcode<Mnemonic = py27::Mnemonic>> {
     enable_dotviz_graphs: bool,
     files_processed: AtomicUsize,
     graphviz_graphs: HashMap<String, String>,
+    on_graph_generated: Option<fn(&str, &str)>,
     _opcode_phantom: PhantomData<O>,
+}
+
+impl<'a, O: Opcode<Mnemonic = py27::Mnemonic>> Debug for Deobfuscator<'a, O> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Deobfuscator")
+            .field("input", &self.input)
+            .field("enable_dotviz_graphs", &self.enable_dotviz_graphs)
+            .field("files_processed", &self.files_processed)
+            .field("graphviz_graphs", &self.graphviz_graphs)
+            .field(
+                "on_graph_generated",
+                if let Some(callback) = &self.on_graph_generated {
+                    &"Some(callback)"
+                } else {
+                    &"None"
+                },
+            )
+            .field("_opcode_phantom", &self._opcode_phantom)
+            .finish()
+    }
 }
 
 impl<'a, O: Opcode<Mnemonic = py27::Mnemonic>> Deobfuscator<'a, O> {
@@ -49,6 +69,7 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic>> Deobfuscator<'a, O> {
             enable_dotviz_graphs: false,
             files_processed: AtomicUsize::new(0),
             graphviz_graphs: HashMap::new(),
+            on_graph_generated: None,
             _opcode_phantom: Default::default(),
         }
     }
@@ -60,9 +81,17 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic>> Deobfuscator<'a, O> {
         self
     }
 
+    /// Callback for when a new graph is generated. This may be useful if deobfuscation
+    /// fails/panics and graphs can't be written, you can use this functionality
+    /// to write graphs on-the-fly
+    pub fn on_graph_generated(mut self, callback: fn(&str, &str)) -> Deobfuscator<'a, O> {
+        self.on_graph_generated = Some(callback);
+        self
+    }
+
     /// Deobfuscates this code object
     pub fn deobfuscate(&self) -> Result<DeobfuscatedCodeObject, Error<O>> {
-        deobfuscate_codeobj::<O>(self.input, &self.files_processed, self.enable_dotviz_graphs)
+        deobfuscate_codeobj::<O>(self.input, &self.files_processed, self.enable_dotviz_graphs, self.on_graph_generated)
     }
 
     /// Returns the generated graphviz graphs after a [`deobfuscate`] has been called.
@@ -87,6 +116,7 @@ pub(crate) fn deobfuscate_codeobj<O: Opcode<Mnemonic = py27::Mnemonic>>(
     data: &[u8],
     files_processed: &AtomicUsize,
     enable_dotviz_graphs: bool,
+    on_graph_generated: Option<fn(&str, &str)>,
 ) -> Result<DeobfuscatedCodeObject, Error<O>> {
     if let py27_marshal::Obj::Code(code) = py27_marshal::read::marshal_loads(data)? {
         // This vector will contain the input code object and all nested objects
@@ -101,6 +131,7 @@ pub(crate) fn deobfuscate_codeobj<O: Opcode<Mnemonic = py27::Mnemonic>>(
                 Arc::clone(&out_results),
                 files_processed,
                 enable_dotviz_graphs,
+                on_graph_generated,
             );
         });
 
@@ -148,13 +179,14 @@ pub(crate) fn deobfuscate_nested_code_objects<O: Opcode<Mnemonic = py27::Mnemoni
     out_results: Arc<Mutex<Vec<Result<DeobfuscatedBytecode, Error<O>>>>>,
     files_processed: &AtomicUsize,
     enable_dotviz_graphs: bool,
+    on_graph_generated: Option<fn(&str, &str)>,
 ) {
     let file_number = files_processed.fetch_add(1, Ordering::Relaxed);
 
     let task_code = Arc::clone(&code);
     let thread_results = Arc::clone(&out_results);
     scope.spawn(move |_scope| {
-        let res = crate::deob::deobfuscate_code::<O>(task_code, file_number, enable_dotviz_graphs);
+        let res = crate::deob::deobfuscate_code::<O>(task_code, file_number, enable_dotviz_graphs, on_graph_generated);
         thread_results.lock().unwrap().push(res);
     });
 
@@ -171,6 +203,7 @@ pub(crate) fn deobfuscate_nested_code_objects<O: Opcode<Mnemonic = py27::Mnemoni
                 thread_results,
                 files_processed,
                 enable_dotviz_graphs,
+                on_graph_generated,
             );
         }
     }

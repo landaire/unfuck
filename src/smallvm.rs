@@ -318,7 +318,7 @@ where
                         }
                         Some(Obj::String(right)) => {
                             panic!("{:?}", right);
-                            return Err(crate::error::ExecutionError::ComplexExpression(instr.clone(), Some(tos1.unwrap().typ())).into());
+                            //return Err(crate::error::ExecutionError::ComplexExpression(instr.clone(), Some(tos1.unwrap().typ())).into());
                         }
                         Some(right)=> panic!("unsupported RHS. left: {:?}, right: {:?}. operator: {}", tos1.unwrap().typ(), right.typ(), operator_str),
                         None => stack.push((None, tos_accesses)),

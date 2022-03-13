@@ -165,6 +165,7 @@ pub struct CodeGraph<TargetOpcode: Opcode<Mnemonic = py27::Mnemonic>> {
     phase: usize,
     /// Hashmap of graph file names and their data
     pub(crate) dotviz_graphs: HashMap<String, String>,
+    pub(crate) on_graph_generated: Option<fn(&str, &str)>,
     _target_opcode_phantom: PhantomData<TargetOpcode>,
 }
 
@@ -174,6 +175,7 @@ impl<TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>> CodeGraph<Target
         code: Arc<Code>,
         file_identifier: usize,
         enable_dotviz_graphs: bool,
+        on_graph_generated: Option<fn(&str, &str)>,
     ) -> Result<CodeGraph<TargetOpcode>, Error<TargetOpcode>> {
         let debug = false;
 
@@ -434,8 +436,19 @@ impl<TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>> CodeGraph<Target
             enable_dotviz_graphs,
             phase: 0,
             dotviz_graphs: HashMap::new(),
+            on_graph_generated,
             _target_opcode_phantom: Default::default(),
         })
+    }
+
+    fn generate_file_name(&self, stage: Option<&str>) -> String {
+format!(
+            "{}_phase{}_{}_{}.dot",
+            self.file_identifier,
+            self.phase,
+            self.code.filename.to_string().replace("/", ""),
+            self.code.name.to_string().replace("/", ""),
+        )
     }
 
     /// Write out the current graph in dot format. The file will be output to current directory, named
@@ -449,14 +462,7 @@ impl<TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>> CodeGraph<Target
 
         use petgraph::dot::{Config, Dot};
 
-        let filename = format!(
-            "{}_phase{}_{}_{}_{}.dot",
-            self.file_identifier,
-            self.phase,
-            stage,
-            self.code.filename.to_string().replace("/", ""),
-            self.code.name.to_string().replace("/", ""),
-        );
+        let filename = self.generate_file_name(Some(stage));
 
         self.phase += 1;
 
@@ -467,6 +473,10 @@ impl<TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>> CodeGraph<Target
                 .write_all(dot_data.as_bytes())
                 .expect("failed to write dot data");
         }
+        if let Some(callback) = self.on_graph_generated.as_ref() {
+            callback(filename.as_ref(), dot_data.as_ref())
+        }
+
         self.dotviz_graphs.insert(filename, dot_data);
     }
 
@@ -1467,8 +1477,8 @@ impl<TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>> CodeGraph<Target
                 trace!("{:?}", removed_instruction);
                 assert!(
                     !removed_instruction.unwrap().opcode.is_conditional_jump(),
-                    "Removed instruction is a conditional jump: {:#x?}",
-                    removed_instruction
+                    "Removed instruction is a conditional jump: {:#x?}. File: {}",
+                    removed_instruction, self.generate_file_name(None)
                 );
                 // parent_node.instrs.push(ParsedInstr::Good(Arc::new(Instr!(TargetOpcode::POP_TOP))));
                 // current_end_offset -= removed_instruction.unwrap().len() as u64;
@@ -1548,9 +1558,9 @@ pub(crate) mod tests {
 
     type TargetOpcode = pydis::opcode::py27::Standard;
 
-    fn deobfuscate_codeobj(data: &[u8]) -> Result<Vec<Vec<u8>>, Error<TargetOpcode>> {
+    fn deobfuscate_codeobj(data: &[u8], on_graph_generated: Option<fn(&str, &str)>) -> Result<Vec<Vec<u8>>, Error<TargetOpcode>> {
         let files_processed = AtomicUsize::new(0);
-        main_deob::<TargetOpcode>(data, &files_processed, false).map(|_res| {
+        main_deob::<TargetOpcode>(data, &files_processed, false, on_graph_generated).map(|_res| {
             let mut output = vec![];
             let mut code_objects = vec![py27_marshal::read::marshal_loads(data).unwrap()];
 
@@ -1586,7 +1596,7 @@ pub(crate) mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let mut code_graph = CodeGraph::from_code(code, 0, false).unwrap();
+        let mut code_graph = CodeGraph::from_code(code, 0, false, None).unwrap();
 
         code_graph.join_blocks();
 
@@ -1612,7 +1622,7 @@ pub(crate) mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let mut code_graph = CodeGraph::from_code(code, 0, false).unwrap();
+        let mut code_graph = CodeGraph::from_code(code, 0, false, None).unwrap();
 
         code_graph.join_blocks();
 
@@ -1639,7 +1649,7 @@ pub(crate) mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let mut code_graph = CodeGraph::from_code(code, 0, false).unwrap();
+        let mut code_graph = CodeGraph::from_code(code, 0, false, None).unwrap();
 
         code_graph.join_blocks();
 
@@ -1684,7 +1694,7 @@ pub(crate) mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let mut code_graph = CodeGraph::<TargetOpcode>::from_code(code, 0, false).unwrap();
+        let mut code_graph = CodeGraph::<TargetOpcode>::from_code(code, 0, false, None).unwrap();
 
         code_graph.join_blocks();
         code_graph.update_bb_offsets();
@@ -1809,7 +1819,7 @@ pub(crate) mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let mut code_graph = CodeGraph::from_code(code, 0, false).unwrap();
+        let mut code_graph = CodeGraph::from_code(code, 0, false, None).unwrap();
         code_graph.massage_returns_for_decompiler();
         code_graph.join_blocks();
         code_graph.update_bb_offsets();
@@ -1833,7 +1843,7 @@ pub(crate) mod tests {
         let obfuscated = include_bytes!("../test_data/obfuscated/compileall_stage4.pyc");
         let source_of_truth = include_bytes!("../test_data/expected/compileall.pyc");
 
-        let deobfuscated = deobfuscate_codeobj(&obfuscated[8..]).expect("failed to deobfuscate");
+        let deobfuscated = deobfuscate_codeobj(&obfuscated[8..], None).expect("failed to deobfuscate");
 
         let mut source_of_truth_bytecode = Vec::with_capacity(deobfuscated.len());
         let mut code_objects =
@@ -1842,7 +1852,7 @@ pub(crate) mod tests {
         let mut files_processed = 0;
         while let Some(py27_marshal::Obj::Code(obj)) = code_objects.pop() {
             let mut code_graph =
-                CodeGraph::<TargetOpcode>::from_code(Arc::clone(&obj), files_processed, false)
+                CodeGraph::<TargetOpcode>::from_code(Arc::clone(&obj), files_processed, false, None)
                     .unwrap();
             // for debugging
             code_graph.generate_dot_graph("compileall");
