@@ -1554,19 +1554,18 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::smallvm::tests::*;
-    use crate::{deobfuscate_codeobj as main_deob, Instr};
+    use crate::{Deobfuscator, Instr, deob};
     use pydis::opcode::Instruction;
 
     type TargetOpcode = pydis::opcode::py27::Standard;
 
     fn deobfuscate_codeobj(
-        data: &[u8],
-        on_graph_generated: Option<fn(&str, &str)>,
+        data: &[u8]
     ) -> Result<Vec<Vec<u8>>, Error<TargetOpcode>> {
         let files_processed = AtomicUsize::new(0);
-        main_deob::<TargetOpcode>(data, &files_processed, false, on_graph_generated).map(|_res| {
+        Deobfuscator::new(data).deobfuscate().map(|res| {
             let mut output = vec![];
-            let mut code_objects = vec![py27_marshal::read::marshal_loads(data).unwrap()];
+            let mut code_objects = vec![py27_marshal::read::marshal_loads(&res.data).unwrap()];
 
             let _files_processed = 0;
             while let Some(py27_marshal::Obj::Code(obj)) = code_objects.pop() {
@@ -1847,9 +1846,10 @@ pub(crate) mod tests {
         let obfuscated = include_bytes!("../test_data/obfuscated/compileall_stage4.pyc");
         let source_of_truth = include_bytes!("../test_data/expected/compileall.pyc");
 
-        let deobfuscated =
-            deobfuscate_codeobj(&obfuscated[8..], None).expect("failed to deobfuscate");
+        let deobfuscated = deobfuscate_codeobj(&obfuscated[8..]).expect("failed to deobfuscate");
 
+        // The real bytecode should be at least the size of the deobfuscated bytecode -- use this
+        // to avoid reallocating
         let mut source_of_truth_bytecode = Vec::with_capacity(deobfuscated.len());
         let mut code_objects =
             vec![py27_marshal::read::marshal_loads(&source_of_truth[8..]).unwrap()];
@@ -1886,6 +1886,8 @@ pub(crate) mod tests {
         }
     }
 
+    /// Takes a Python Code object and replaces its instructions with the provided
+    /// slice
     pub fn change_code_instrs(code: &mut Arc<Code>, instrs: &[Instruction<TargetOpcode>]) {
         let mut bytecode = vec![];
 

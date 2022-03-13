@@ -12,14 +12,14 @@ use crate::code_graph::*;
 use crate::error::Error;
 use crate::{DeobfuscatedBytecode, Deobfuscator};
 
-impl<'a, O: Opcode<Mnemonic = py27::Mnemonic>> Deobfuscator<'a, O> {
+impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic>> Deobfuscator<'a, TargetOpcode> {
     /// Deobfuscate the given code object. This will remove opaque predicates where possible,
     /// simplify control flow to only go forward where possible, and rename local variables. This returns
     /// the new bytecode and any function names resolved while deobfuscating the code object.
     ///
     /// The returned HashMap is keyed by the code object's `$filename_$name` with a value of
     /// what the suspected function name is.
-    pub(crate) fn deobfuscate_code<TargetOpcode: Opcode<Mnemonic = py27::Mnemonic>>(
+    pub(crate) fn deobfuscate_code(
         &self,
         code: Arc<Code>,
         file_identifier: usize,
@@ -258,7 +258,9 @@ mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let res = deobfuscate_code::<TargetOpcode>(Arc::clone(&code), 0, false).unwrap();
+        let res = Deobfuscator::<TargetOpcode>::new(&code.code.as_slice())
+            .deobfuscate_code(Arc::clone(&code), 0)
+            .expect("failed to deobfuscate bytecode");
 
         // We now need to change this back into a graph for ease of testing
         let mut expected_bytecode = vec![];
