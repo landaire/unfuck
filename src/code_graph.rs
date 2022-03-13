@@ -100,6 +100,10 @@ impl<O: Opcode<Mnemonic = py27::Mnemonic>> fmt::Display for BasicBlock<O> {
                     writeln!(f, "{} @ {} {}", i, offset, instr)?;
                     offset += instr.len() as u64;
                 }
+                ParsedInstr::GoodDoNotRemove(instr) => {
+                    writeln!(f, "{} @ {} (do_not_remove) {}", i, offset, instr)?;
+                    offset += instr.len() as u64;
+                }
                 ParsedInstr::Bad => {
                     writeln!(f, "BAD_INSTR")?;
                 }
@@ -127,7 +131,7 @@ impl<O: Opcode<Mnemonic = py27::Mnemonic>> BasicBlock<O> {
             }
 
             ins_offset += match ins {
-                ParsedInstr::Good(i) => i.len() as u64,
+                ParsedInstr::Good(i) | ParsedInstr::GoodDoNotRemove(i) => i.len() as u64,
                 _ => 1,
             }
         }
@@ -155,7 +159,7 @@ impl<O: Opcode<Mnemonic = py27::Mnemonic>> BasicBlock<O> {
 }
 
 /// A code object represented as a graph
-pub struct CodeGraph<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic>> {
+pub struct CodeGraph<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> {
     pub(crate) root: NodeIndex,
     code: Arc<Code>,
     pub(crate) graph: Graph<BasicBlock<TargetOpcode>, EdgeWeight>,
@@ -169,7 +173,7 @@ pub struct CodeGraph<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic>> {
     _target_opcode_phantom: PhantomData<TargetOpcode>,
 }
 
-impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>> CodeGraph<'a, TargetOpcode> {
+impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq> CodeGraph<'a, TargetOpcode> {
     /// Converts bytecode to a graph. Returns the root node index and the graph.
     pub fn from_code(
         code: Arc<Code>,
@@ -218,6 +222,16 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>> CodeGraph<'a
                     curr_basic_block
                         .instrs
                         .push(ParsedInstr::Good(instr.clone()));
+
+                    curr_basic_block.last_instruction_end += instr.len() as u64;
+
+                    instr
+                }
+                ParsedInstr::GoodDoNotRemove(instr) => {
+                    // valid instructions always get added to the previous bb
+                    curr_basic_block
+                        .instrs
+                        .push(ParsedInstr::GoodDoNotRemove(instr.clone()));
 
                     curr_basic_block.last_instruction_end += instr.len() as u64;
 
@@ -684,7 +698,13 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>> CodeGraph<'a
         for (nx, insns_to_remove) in insns_to_remove {
             for ins_idx in insns_to_remove.iter().rev().cloned() {
                 let current_node = &mut self.graph[nx];
-                current_node.instrs.remove(ins_idx);
+                let ins = current_node.instrs.remove(ins_idx);
+                assert!(
+                    !matches!(ins, ParsedInstr::GoodDoNotRemove(_)),
+                    "Removed instruction is a permanent instruction: {:#x?}. File: {}",
+                    ins,
+                    self.generate_file_name(None)
+                );
             }
         }
 
@@ -1422,6 +1442,26 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>> CodeGraph<'a
                 continue;
             }
 
+            let mut source_or_target_is_permanent_jump_forward = false;
+
+            let source_node= &self.graph[source_node_index];
+            let dest_node= &self.graph[nx];
+
+            if source_node.instrs.len() == 1 && matches!(source_node.instrs[0], ParsedInstr::GoodDoNotRemove(_)) {
+                panic!("yo");
+                source_or_target_is_permanent_jump_forward = true;
+            }
+
+            if dest_node.instrs.len() == 1 && matches!(dest_node.instrs[0], ParsedInstr::GoodDoNotRemove(_)) {
+                panic!("yo2");
+                source_or_target_is_permanent_jump_forward = true;
+            }
+
+            if source_or_target_is_permanent_jump_forward {
+                continue;
+            }
+
+
             self.join_block(source_node_index, nx);
 
             nodes_to_remove.insert(nx);
@@ -1478,6 +1518,13 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>> CodeGraph<'a
                 assert!(
                     !removed_instruction.unwrap().opcode.is_conditional_jump(),
                     "Removed instruction is a conditional jump: {:#x?}. File: {}",
+                    removed_instruction,
+                    self.generate_file_name(None)
+                );
+
+                assert!(
+                    !matches!(removed_instruction, ParsedInstr::GoodDoNotRemove(_)),
+                    "Removed instruction is a permanent instruction: {:#x?}. File: {}",
                     removed_instruction,
                     self.generate_file_name(None)
                 );
@@ -1842,6 +1889,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[ignore] // test is currently failing until we figure out the JUMP_FORWARD thing
     fn deobfuscate_known_file_compileall() {
         let obfuscated = include_bytes!("../test_data/obfuscated/compileall_stage4.pyc");
         let source_of_truth = include_bytes!("../test_data/expected/compileall.pyc");

@@ -61,7 +61,7 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic>> Debug for Deobfuscator<'a, O> {
     }
 }
 
-impl<'a, O: Opcode<Mnemonic = py27::Mnemonic>> Deobfuscator<'a, O> {
+impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscator<'a, O> {
     /// Creates a new instance of a deobfuscator
     pub fn new(input: &'a [u8]) -> Deobfuscator<'a, O> {
         Deobfuscator {

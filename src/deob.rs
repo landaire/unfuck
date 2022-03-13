@@ -12,7 +12,7 @@ use crate::code_graph::*;
 use crate::error::Error;
 use crate::{DeobfuscatedBytecode, Deobfuscator};
 
-impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic>> Deobfuscator<'a, TargetOpcode> {
+impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscator<'a, TargetOpcode> {
     /// Deobfuscate the given code object. This will remove opaque predicates where possible,
     /// simplify control flow to only go forward where possible, and rename local variables. This returns
     /// the new bytecode and any function names resolved while deobfuscating the code object.
@@ -46,6 +46,8 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic>> Deobfuscator<'a, Targe
 
         code_graph.remove_const_conditions(&mut mapped_function_names);
 
+        code_graph.generate_dot_graph("const_conditions_solved");
+
         code_graph.join_blocks();
 
         code_graph.generate_dot_graph("joined");
@@ -59,8 +61,8 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic>> Deobfuscator<'a, Targe
         code_graph.massage_returns_for_decompiler();
         code_graph.update_bb_offsets();
         code_graph.update_branches();
-        code_graph.insert_jump_0();
-        code_graph.update_bb_offsets();
+        // code_graph.insert_jump_0();
+        // code_graph.update_bb_offsets();
 
         code_graph.generate_dot_graph("offsets");
 

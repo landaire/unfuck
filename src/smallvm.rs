@@ -1485,16 +1485,26 @@ where
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ParsedInstr<O: Opcode<Mnemonic = py27::Mnemonic>> {
     Good(Arc<Instruction<O>>),
+    GoodDoNotRemove(Arc<Instruction<O>>),
     Bad,
 }
 
 impl<O: Opcode<Mnemonic = py27::Mnemonic>> ParsedInstr<O> {
     #[track_caller]
     pub fn unwrap(&self) -> Arc<Instruction<O>> {
-        if let ParsedInstr::Good(ins) = self {
-            Arc::clone(ins)
-        } else {
-            panic!("unwrap called on bad instruction")
+        match self {
+            ParsedInstr::Good(ins) | ParsedInstr::GoodDoNotRemove(ins) => Arc::clone(ins),
+            ParsedInstr::Bad => {
+                panic!("unwrap called on bad instruction")
+            }
+        }
+    }
+
+    /// Returns a boolean indicating if this instruction is a "good"/valid instruction
+    pub fn is_good(&self) -> bool {
+        match self {
+            ParsedInstr::Good(_) | ParsedInstr::GoodDoNotRemove(_) => true,
+            ParsedInstr::Bad => false,
         }
     }
 }
@@ -1503,7 +1513,7 @@ impl<O: Opcode<Mnemonic = py27::Mnemonic>> ParsedInstr<O> {
 /// codepaths. This will only decode instructions that are either proven statically
 /// to be taken (with `JUMP_ABSOLUTE`, `JUMP_IF_TRUE` with a const value that evaluates
 /// to true, etc.)
-pub fn const_jmp_instruction_walker<F, O: Opcode<Mnemonic = py27::Mnemonic>>(
+pub fn const_jmp_instruction_walker<F, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>(
     bytecode: &[u8],
     consts: Arc<Vec<Obj>>,
     mut callback: F,
@@ -1519,6 +1529,21 @@ where
     let mut instruction_queue = VecDeque::<u64>::new();
 
     instruction_queue.push_front(0);
+
+    macro_rules! add_instruction {
+        ($offset:expr, $instr:expr) => {
+            instruction_sequence
+                .push($instr.clone());
+            let removed_instr = analyzed_instructions.insert($offset, $instr);
+            if let Some(ParsedInstr::Good(removed_instr)) = removed_instr {
+                if let ParsedInstr::GoodDoNotRemove(new_instr) = $instr {
+                    if removed_instr != new_instr {
+                        assert!(false, "instruction was replaced: {:?}", removed_instr);
+                    }
+                }
+            }
+        }
+    }
 
     macro_rules! queue {
         ($offset:expr) => {
@@ -1548,13 +1573,13 @@ where
                 instruction_queue.push_back($offset);
             }
         };
-    };
+    }
 
     if debug {
         trace!("{:#?}", consts);
     }
 
-    'decode_loop: while let Some(offset) = instruction_queue.pop_front() {
+    while let Some(offset) = instruction_queue.pop_front() {
         if debug {
             trace!("offset: {}", offset);
         }
@@ -1586,8 +1611,7 @@ where
                 // rdr.read_exact(data.as_mut_slice())?;
 
                 // let data_rc = Rc::new(data);
-                analyzed_instructions.insert(offset, ParsedInstr::Bad);
-                instruction_sequence.push(ParsedInstr::Bad);
+                add_instruction!(offset, ParsedInstr::Bad);
 
                 //queue!(rdr.position());
                 continue;
@@ -1616,10 +1640,7 @@ where
         }
 
         //println!("Instruction: {:X?}", instr);
-        instruction_sequence.push(ParsedInstr::Good(Arc::clone(&instr)));
-        analyzed_instructions.insert(offset, ParsedInstr::Good(Arc::clone(&instr)));
-
-        let mut ignore_jump_target = false;
+        add_instruction!(offset, ParsedInstr::Good(Arc::clone(&instr)));
 
         if instr.opcode.is_jump() {
             if matches!(
@@ -1634,9 +1655,8 @@ where
                 };
 
                 if target as usize >= bytecode.len() {
-                    // This is a bad instruction. Replace it with bad instr
-                    analyzed_instructions.insert(offset, ParsedInstr::Bad);
-                    instruction_sequence.push(ParsedInstr::Bad);
+                    // This is a bad instruction
+                    add_instruction!(offset, ParsedInstr::Bad);
                     continue;
                 }
 
@@ -1648,9 +1668,6 @@ where
                         continue;
                     }
                     Err(e @ pydis::error::DecodeError::UnknownOpcode(_)) => {
-                        // Definitely do not queue this target
-                        ignore_jump_target = true;
-
                         debug!(
                             "Error while parsing target opcode: {} at position {}",
                             e, offset
@@ -1689,6 +1706,37 @@ where
             queue!(next_instr_offset, state.force_queue_next());
         }
     }
+
+    // For each sequential instruction we should see if there's a gap. If so,
+    // we should check the instruction coming after the one at the lower offset
+    // to see if it's a JUMP_FORWARD.
+
+    let mut jump_forward_instrs = HashMap::new();
+    for (offset, instr) in &analyzed_instructions {
+        if !instr.is_good() || matches!(instr.unwrap().opcode.mnemonic(), Mnemonic::JUMP_FORWARD) {
+            continue;
+        }
+
+        let next_instr_offset = offset + u64::try_from(instr.unwrap().len()).unwrap();
+        if usize::try_from(next_instr_offset).unwrap() >= bytecode.len() || analyzed_instructions.contains_key(&next_instr_offset) {
+            continue;
+        }
+
+        // The next instruction was not parsed. We should fetch it and see if
+        // we care
+        rdr.set_position(next_instr_offset);
+
+        if let Some(next_instr) = decode_py27::<O, _>(&mut rdr).ok() {
+            if next_instr.opcode.is_jump()
+                && matches!(next_instr.opcode.mnemonic(), Mnemonic::JUMP_FORWARD)
+            {
+                let next_instr = Arc::new(next_instr);
+                jump_forward_instrs.insert(next_instr_offset, ParsedInstr::GoodDoNotRemove(next_instr));
+            }
+        }
+    }
+
+    analyzed_instructions.extend(jump_forward_instrs.drain());
 
     if true || debug {
         trace!("analyzed\n{:#?}", analyzed_instructions);

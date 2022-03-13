@@ -45,7 +45,7 @@ pub type AccessTrackingInfo = (petgraph::graph::NodeIndex, usize);
 // This function will return all execution paths until they end.
 pub(crate) fn perform_partial_execution<
     'a,
-    TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic>,
+    TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq,
 >(
     root: NodeIndex,
     code_graph: &'a RwLock<&'a mut CodeGraph<TargetOpcode>>,
