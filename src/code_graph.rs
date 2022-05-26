@@ -455,13 +455,14 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq> 
         })
     }
 
-    fn generate_file_name(&self, stage: Option<&str>) -> String {
+    pub(crate) fn generate_file_name(&self, stage: Option<&str>) -> String {
         format!(
-            "{}_phase{}_{}_{}.dot",
+            "{}_phase{}_{}_{}_{}.dot",
             self.file_identifier,
             self.phase,
             self.code.filename.to_string().replace("/", ""),
             self.code.name.to_string().replace("/", ""),
+            stage.unwrap_or("")
         )
     }
 

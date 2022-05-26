@@ -1,4 +1,4 @@
-use log::{debug, trace};
+use log::{debug, trace, error};
 use num_bigint::ToBigInt;
 use num_traits::{Pow, ToPrimitive};
 use py27_marshal::bstr::BString;
@@ -271,6 +271,51 @@ where
                 }
                 Some(Obj::Float(left)) => {
                     match &tos {
+                        Some(Obj::Long(right)) => {
+                            match operator_str {
+                                "*" => {
+                                    // For longs we can just use the operator outright
+                                    let value = left * right.as_ref().to_f64().unwrap();
+                                    stack.push((
+                                        Some(Obj::Float(
+                                            value
+                                        )),
+                                        tos_accesses,
+                                    ));
+                                }
+                                "/" => {
+                                    // For longs we can just use the operator outright
+                                    let value = left / right.as_ref().to_f64().unwrap();
+                                    stack.push((
+                                        Some(Obj::Float(
+                                            value
+                                        )),
+                                        tos_accesses,
+                                    ));
+                                }
+                                "+" => {
+                                    // For longs we can just use the operator outright
+                                    let value = left / right.as_ref().to_f64().unwrap();
+                                    stack.push((
+                                        Some(Obj::Float(
+                                            value
+                                        )),
+                                        tos_accesses,
+                                    ));
+                                }
+                                "-" => {
+                                    // For longs we can just use the operator outright
+                                    let value = left / right.as_ref().to_f64().unwrap();
+                                    stack.push((
+                                        Some(Obj::Float(
+                                            value
+                                        )),
+                                        tos_accesses,
+                                    ));
+                                }
+                                _other => panic!("unsupported RHS. left: {:?}, right: {:?}. operator: {}", tos1.unwrap().typ(), "Float", operator_str),
+                            };
+                        }
                         Some(Obj::Float(right)) => {
                             match operator_str {
                                 "*" => {
@@ -704,6 +749,18 @@ where
                         }
                         Obj::Float(r) => stack.push((
                             Some(Obj::Bool(l.to_f64().unwrap() >= r)),
+                            left_modifying_instrs,
+                        )),
+                        other => {
+                            panic!("unsupported right-hand operand for Long: {:?}", other.typ())
+                        }
+                    },
+                    Obj::Float(l) => match right {
+                        Obj::Long(r) => {
+                            stack.push((Some(Obj::Bool(l >= r.to_f64().unwrap())), left_modifying_instrs))
+                        }
+                        Obj::Float(r) => stack.push((
+                            Some(Obj::Bool(l >= r)),
                             left_modifying_instrs,
                         )),
                         other => {
@@ -1532,8 +1589,7 @@ where
 
     macro_rules! add_instruction {
         ($offset:expr, $instr:expr) => {
-            instruction_sequence
-                .push($instr.clone());
+            instruction_sequence.push($instr.clone());
             let removed_instr = analyzed_instructions.insert($offset, $instr);
             if let Some(ParsedInstr::Good(removed_instr)) = removed_instr {
                 if let ParsedInstr::GoodDoNotRemove(new_instr) = $instr {
@@ -1542,7 +1598,7 @@ where
                     }
                 }
             }
-        }
+        };
     }
 
     macro_rules! queue {
@@ -1588,13 +1644,14 @@ where
             continue;
         }
 
+
         rdr.set_position(offset);
         // Ignore invalid instructions
         let instr = match decode_py27(&mut rdr) {
             Ok(instr) => Arc::new(instr),
             Err(e @ pydis::error::DecodeError::UnknownOpcode(_)) => {
                 trace!("");
-                debug!(
+                error!(
                     "Error decoding queued instruction at position: {}: {}",
                     offset, e
                 );
@@ -1645,7 +1702,7 @@ where
         if instr.opcode.is_jump() {
             if matches!(
                 instr.opcode.mnemonic(),
-                Mnemonic::JUMP_ABSOLUTE | Mnemonic::JUMP_FORWARD
+                Mnemonic::JUMP_ABSOLUTE | Mnemonic::JUMP_FORWARD | Mnemonic::CONTINUE_LOOP
             ) {
                 // We've reached an unconditional jump. We need to decode the target
                 let target = if instr.opcode.is_relative_jump() {
@@ -1718,7 +1775,9 @@ where
         }
 
         let next_instr_offset = offset + u64::try_from(instr.unwrap().len()).unwrap();
-        if usize::try_from(next_instr_offset).unwrap() >= bytecode.len() || analyzed_instructions.contains_key(&next_instr_offset) {
+        if usize::try_from(next_instr_offset).unwrap() >= bytecode.len()
+            || analyzed_instructions.contains_key(&next_instr_offset)
+        {
             continue;
         }
 
@@ -1731,7 +1790,8 @@ where
                 && matches!(next_instr.opcode.mnemonic(), Mnemonic::JUMP_FORWARD)
             {
                 let next_instr = Arc::new(next_instr);
-                jump_forward_instrs.insert(next_instr_offset, ParsedInstr::GoodDoNotRemove(next_instr));
+                jump_forward_instrs
+                    .insert(next_instr_offset, ParsedInstr::GoodDoNotRemove(next_instr));
             }
         }
     }
