@@ -462,6 +462,25 @@ where
                         None => stack.push((None, tos_accesses)),
                     }
                 }
+                Some(Obj::Tuple(left)) => {
+                    match &tos{
+                        Some(Obj::Tuple(right)) => {
+                            match operator_str {
+                                "+" => {
+                                    let mut value = left.clone();
+                                    unsafe { Arc::get_mut_unchecked(&mut value) }.extend(right.iter().cloned());
+                                    stack.push((
+                                        Some(Obj::Tuple(value)),
+                                        tos_accesses,
+                                    ));
+                                }
+                                _other => panic!("unsupported operator {:?} for LHS {:?} RHS {:?}", operator_str, tos1.unwrap().typ(), tos.unwrap().typ())
+                            }
+                        }
+                        Some(right)=> panic!("unsupported RHS. left: {:?}, right: {:?}. operator: {}", tos1.unwrap().typ(), right.typ(), operator_str),
+                        None => stack.push((None, tos_accesses)),
+                    }
+                }
                 Some(left)=> match &tos {
                     Some(right) => {
                         panic!("unsupported LHS {:?} for operator {:?}. right was {:?}", left.typ(), operator_str, right.typ())
@@ -551,6 +570,19 @@ where
             accesses.push(access_tracking);
             let new_var = (var.clone(), accesses.deep_clone());
             stack.push(new_var);
+        }
+        Mnemonic::DUP_TOPX => {
+            let (var, accesses) = stack.last().unwrap();
+            accesses.push(access_tracking);
+
+            let mut new_items = vec![];
+
+            for i in 0..(instr.arg.unwrap() as usize) {
+                let new_var = (var.clone(), accesses.deep_clone());
+                new_items.push(new_var);
+            }
+
+            stack.append(&mut new_items);
         }
         Mnemonic::COMPARE_OP => {
             let (right, right_modifying_instrs) = stack.pop().unwrap();
@@ -1529,6 +1561,14 @@ where
         Mnemonic::YIELD_VALUE => {
             // todo: add to generator
             let (_tos, _accesses) = stack.pop().unwrap();
+        }
+        Mnemonic::IMPORT_STAR => {
+            let (_tos, _accesses) = stack.pop().unwrap();
+        }
+        Mnemonic::DELETE_NAME => {
+            let name = &code.names[instr.arg.unwrap() as usize];
+            // Store TOS in a var slot
+            names.remove(name);
         }
         other => {
             return Err(crate::error::ExecutionError::UnsupportedOpcode(other.into()).into());
