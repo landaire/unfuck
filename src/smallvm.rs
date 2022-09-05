@@ -1,4 +1,4 @@
-use log::{debug, trace, error};
+use log::{debug, trace, error, warn};
 use num_bigint::ToBigInt;
 use num_traits::{Pow, ToPrimitive};
 use py27_marshal::bstr::BString;
@@ -572,12 +572,23 @@ where
             stack.push(new_var);
         }
         Mnemonic::DUP_TOPX => {
-            let (var, accesses) = stack.last().unwrap();
-            accesses.push(access_tracking);
+            let count = instr.arg.unwrap() as usize;
+            if count != 2 && count != 3 {
+                panic!("DUP_TOPX should only be called with count == 2 or 3")
+            }
 
             let mut new_items = vec![];
 
-            for i in 0..(instr.arg.unwrap() as usize) {
+            // DUP_TOPX duplicates the top N items on the stack in exactly the order
+            // they appear. so e.g. if the stack is:
+            // [0, 1, 2]
+            // and we DUP_TOPX (3)...
+            // the stack becomes:
+            // [0, 1, 2, 0, 1, 2]
+            for i in (0..count).rev() {
+                let (var, accesses) = &stack[(stack.len() - 1) - i];
+                accesses.push(access_tracking);
+
                 let new_var = (var.clone(), accesses.deep_clone());
                 new_items.push(new_var);
             }
@@ -806,6 +817,14 @@ where
                     ),
                 },
                 "is not" => match left {
+                    Obj::Long(_left) => match right {
+                        Obj::None => stack.push((Some(Obj::Bool(true)), left_modifying_instrs)),
+                        other => panic!(
+                            "unsupported right-hand operand for Long {:?}: {:?}",
+                            op,
+                            other.typ()
+                        ),
+                    }
                     Obj::String(_left) => match right {
                         Obj::None => stack.push((Some(Obj::Bool(true)), left_modifying_instrs)),
                         other => panic!(
@@ -861,7 +880,41 @@ where
                         op
                     ),
                 },
-                other => panic!("unsupported comparison operator: {:?}", other),
+                "in" => match left {
+                    Obj::String(left) => match right {
+                        Obj::Dict(set) => {
+                            let dict = set.read().unwrap();
+                            let hashed_string = ObjHashable::String(left);
+                            stack.push((Some(Obj::Bool(dict.contains_key(&hashed_string))), left_modifying_instrs));
+                        }
+                        Obj::Set(set) => {
+                            let set = set.read().unwrap();
+                            let hashed_string = ObjHashable::String(left);
+                            stack.push((Some(Obj::Bool(set.contains(&hashed_string))), left_modifying_instrs));
+                        }
+                        Obj::List(set) => {
+                            let list = set.read().unwrap();
+                            let list_contains = list.iter().find(|obj| if let Obj::String(list_item) = obj {
+                                *list_item == left
+                            } else {
+                                false
+                            });
+                            stack.push((Some(Obj::Bool(list_contains.is_some())), left_modifying_instrs));
+                        }
+                        other => panic!(
+                            "unsupported right-hand operand for string operator {:?}: {:?}",
+                            op,
+                            other.typ()
+                        ),
+                    },
+                    other => panic!(
+                        "unsupported left-hand operand: {:?} for op {}",
+                        other.typ(),
+                        op
+                    ),
+                },
+
+                other => panic!("unsupported comparison operator: {:?} (left: {:?}, right: {:?})", other, left, right),
             }
         }
         Mnemonic::IMPORT_NAME => {
@@ -1324,6 +1377,8 @@ where
             let tos_modifiers = tos_modifiers.deep_clone();
             tos_modifiers.push(access_tracking);
 
+            // NOTE: We push TOS back to stack here so we can detect a STORE_FAST
+            // with a code object. We do this to rename code objects.
             stack.push((None, tos_modifiers));
         }
         Mnemonic::POP_TOP => {
@@ -1691,7 +1746,7 @@ where
             Ok(instr) => Arc::new(instr),
             Err(e @ pydis::error::DecodeError::UnknownOpcode(_)) => {
                 trace!("");
-                error!(
+                warn!(
                     "Error decoding queued instruction at position: {}: {}",
                     offset, e
                 );

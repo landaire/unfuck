@@ -1,11 +1,11 @@
 use crate::error::Error;
 use crate::partial_execution::*;
-use crate::smallvm::ParsedInstr;
+use crate::smallvm::{InstructionTracker, ParsedInstr};
 use bitflags::bitflags;
 
 use crossbeam::channel::unbounded;
 
-use log::trace;
+use log::{trace, error};
 
 use petgraph::algo::{astar, dijkstra};
 use petgraph::graph::{EdgeIndex, Graph, NodeIndex};
@@ -16,12 +16,12 @@ use pydis::opcode::py27::{self, Mnemonic};
 use pydis::prelude::*;
 use std::fmt;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 bitflags! {
     #[derive(Default)]
@@ -170,16 +170,42 @@ pub struct CodeGraph<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + Parti
     /// Hashmap of graph file names and their data
     pub(crate) dotviz_graphs: HashMap<String, String>,
     pub(crate) on_graph_generated: Option<&'a Box<dyn Fn(&str, &str) + Send + Sync>>,
+    pub(crate) on_store_to_named_var: Option<
+        &'a Box<
+            dyn Fn(
+                    &Code,
+                    &HashSet<String>,
+                    &RwLock<&mut CodeGraph<TargetOpcode>>,
+                    &Instruction<TargetOpcode>,
+                    &(Option<Obj>, InstructionTracker<(NodeIndex<u32>, usize)>),
+                ) + Send
+                + Sync,
+        >,
+    >,
     _target_opcode_phantom: PhantomData<TargetOpcode>,
 }
 
-impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq> CodeGraph<'a, TargetOpcode> {
+impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
+    CodeGraph<'a, TargetOpcode>
+{
     /// Converts bytecode to a graph. Returns the root node index and the graph.
     pub fn from_code(
         code: Arc<Code>,
         file_identifier: usize,
         enable_dotviz_graphs: bool,
         on_graph_generated: Option<&'a Box<dyn Fn(&str, &str) + Send + Sync>>,
+        on_store_to_named_var: Option<
+            &'a Box<
+                dyn Fn(
+                        &Code,
+                        &HashSet<String>,
+                        &RwLock<&mut CodeGraph<TargetOpcode>>,
+                        &Instruction<TargetOpcode>,
+                        &(Option<Obj>, InstructionTracker<(NodeIndex<u32>, usize)>),
+                    ) + Send
+                    + Sync,
+            >,
+        >,
     ) -> Result<CodeGraph<'a, TargetOpcode>, Error<TargetOpcode>> {
         let debug = false;
 
@@ -451,8 +477,18 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq> 
             phase: 0,
             dotviz_graphs: HashMap::new(),
             on_graph_generated,
+            on_store_to_named_var,
             _target_opcode_phantom: Default::default(),
         })
+    }
+
+    /// Returns the instruction at the given `node_idx` and `instr_idx`.
+    pub fn instr_at(
+        &self,
+        node_idx: NodeIndex<u32>,
+        instr_idx: usize,
+    ) -> &ParsedInstr<TargetOpcode> {
+        &self.graph[node_idx].instrs[instr_idx]
     }
 
     pub(crate) fn generate_file_name(&self, stage: Option<&str>) -> String {
@@ -498,11 +534,13 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq> 
     fn invoke_partial_execution(
         &mut self,
         mapped_function_names: &mut HashMap<String, String>,
+        plain_loaded_modules: &mut HashSet<String>,
     ) -> Vec<ExecutionPath> {
         // create our thread communication channels
         let (completed_paths_sender, completed_paths_receiver) = unbounded();
 
         let new_mapped_function_names: Mutex<HashMap<String, String>> = Default::default();
+        let plain_loaded_modules: Mutex<HashSet<String>> = Default::default();
 
         {
             // we could use atomic bools here, but that would introduce a problem if
@@ -512,6 +550,7 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq> 
             let graph = std::sync::RwLock::new(self);
             let graph = &graph;
             let new_mapped_function_names = &new_mapped_function_names;
+            let new_plain_loaded_modules = &plain_loaded_modules;
             let completed_paths_sender = &completed_paths_sender;
 
             let running_tasks = Arc::new(AtomicUsize::new(0));
@@ -526,6 +565,7 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq> 
                         graph,
                         Mutex::new(ExecutionPath::default()),
                         new_mapped_function_names,
+                        new_plain_loaded_modules,
                         Arc::clone(&code),
                         s,
                         completed_paths_sender,
@@ -552,8 +592,10 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq> 
     pub(crate) fn remove_const_conditions(
         &mut self,
         mapped_function_names: &mut HashMap<String, String>,
+        plain_loaded_modules: &mut HashSet<String>,
     ) {
-        let completed_paths = self.invoke_partial_execution(mapped_function_names);
+        let completed_paths =
+            self.invoke_partial_execution(mapped_function_names, plain_loaded_modules);
         self.generate_dot_graph("after_dead");
 
         let mut nodes_to_remove = std::collections::BTreeSet::<NodeIndex>::new();
@@ -636,11 +678,24 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq> 
                         } else {
                             None
                         }
-                    })
-                    .unwrap();
+                    });
 
-                potentially_unused_nodes.insert(unused_path.1);
-                self.graph.remove_edge(unused_path.0);
+                match unused_path {
+                    Some(unused_path) => {
+                        potentially_unused_nodes.insert(unused_path.1);
+                        self.graph.remove_edge(unused_path.0);
+                    }
+                    None => {
+                        if self
+                            .graph
+                            .edges_directed(*node, Direction::Outgoing)
+                            .count()
+                            == 0
+                        {
+                            error!("Could not find an outgoing path from node that was not taken. Outgoing node count is 0 -- this may be a bug")
+                        }
+                    }
+                }
             }
         }
 
@@ -1445,15 +1500,19 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq> 
 
             let mut source_or_target_is_permanent_jump_forward = false;
 
-            let source_node= &self.graph[source_node_index];
-            let dest_node= &self.graph[nx];
+            let source_node = &self.graph[source_node_index];
+            let dest_node = &self.graph[nx];
 
-            if source_node.instrs.len() == 1 && matches!(source_node.instrs[0], ParsedInstr::GoodDoNotRemove(_)) {
+            if source_node.instrs.len() == 1
+                && matches!(source_node.instrs[0], ParsedInstr::GoodDoNotRemove(_))
+            {
                 panic!("yo");
                 source_or_target_is_permanent_jump_forward = true;
             }
 
-            if dest_node.instrs.len() == 1 && matches!(dest_node.instrs[0], ParsedInstr::GoodDoNotRemove(_)) {
+            if dest_node.instrs.len() == 1
+                && matches!(dest_node.instrs[0], ParsedInstr::GoodDoNotRemove(_))
+            {
                 panic!("yo2");
                 source_or_target_is_permanent_jump_forward = true;
             }
@@ -1461,7 +1520,6 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq> 
             if source_or_target_is_permanent_jump_forward {
                 continue;
             }
-
 
             self.join_block(source_node_index, nx);
 
@@ -1602,14 +1660,12 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::smallvm::tests::*;
-    use crate::{Deobfuscator, Instr, deob};
+    use crate::{deob, Deobfuscator, Instr};
     use pydis::opcode::Instruction;
 
     type TargetOpcode = pydis::opcode::py27::Standard;
 
-    fn deobfuscate_codeobj(
-        data: &[u8]
-    ) -> Result<Vec<Vec<u8>>, Error<TargetOpcode>> {
+    fn deobfuscate_codeobj(data: &[u8]) -> Result<Vec<Vec<u8>>, Error<TargetOpcode>> {
         let files_processed = AtomicUsize::new(0);
         Deobfuscator::new(data).deobfuscate().map(|res| {
             let mut output = vec![];

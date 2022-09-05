@@ -4,7 +4,7 @@ use log::{debug, trace};
 use py27_marshal::Code;
 use pydis::opcode::py27;
 use pydis::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use std::sync::Arc;
 
@@ -30,12 +30,14 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscat
         let _consts = Arc::clone(&code.consts);
         let mut new_bytecode: Vec<u8> = vec![];
         let mut mapped_function_names = HashMap::new();
+        let mut plain_imported_modules = HashSet::new();
 
         let mut code_graph = CodeGraph::<TargetOpcode>::from_code(
             Arc::clone(&code),
             file_identifier,
             self.enable_dotviz_graphs,
             self.on_graph_generated.as_ref(),
+            self.on_store_to_named_var.as_ref(),
         )?;
 
         code_graph.generate_dot_graph("before");
@@ -44,7 +46,7 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscat
 
         code_graph.generate_dot_graph("target");
 
-        code_graph.remove_const_conditions(&mut mapped_function_names);
+        code_graph.remove_const_conditions(&mut mapped_function_names, &mut plain_imported_modules);
 
         code_graph.generate_dot_graph("const_conditions_solved");
 
@@ -141,7 +143,8 @@ def cleanup_code_obj(code):
     key = "{0}_{1}".format(code.co_filename, code.co_name)
     name = code.co_name
     if key in mapped_names:
-        name = "{0}_{1}".format(mapped_names[key], name)
+        #name = "co_filename:{0} co_name:{1}".format(mapped_names[key], name)
+        name = mapped_names[key]
     else:
         name = fix_varnames([name])[0]
     filename = name
@@ -159,7 +162,7 @@ def fix_varnames(varnames):
     newvars = []
     for var in varnames:
         var = var.strip()
-        unallowed_chars = '=!@#$%^&*()"\'/,. '
+        unallowed_chars = '=!@#$%^&*()"\'/, '
         banned_char = False
         banned_words = ['assert', 'in', 'continue', 'break', 'for', 'def', 'as', 'elif', 'else', 'for', 'from', 'global', 'if', 'import', 'is', 'lambda', 'not', 'or', 'pass', 'print', 'return', 'while', 'with']
         for c in unallowed_chars:

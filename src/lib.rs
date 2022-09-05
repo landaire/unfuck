@@ -2,18 +2,22 @@
 #![feature(map_first_last)]
 
 use crate::error::Error;
+use code_graph::CodeGraph;
+use partial_execution::ExecutionPath;
+use petgraph::stable_graph::NodeIndex;
 use pydis::opcode::py27::{self, Standard};
-use pydis::prelude::Opcode;
+use pydis::prelude::{Opcode, Instruction};
 use rayon::prelude::*;
 
 use py27_marshal::{Code, Obj};
 use rayon::Scope;
-use std::collections::HashMap;
+use smallvm::InstructionTracker;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use strings::CodeObjString;
 
 /// Representing code as a graph of basic blocks
@@ -29,7 +33,7 @@ pub mod smallvm;
 /// Management of Python strings for string dumping
 pub mod strings;
 
-pub struct Deobfuscator<'a, O: Opcode<Mnemonic = py27::Mnemonic>> {
+pub struct Deobfuscator<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> {
     /// Input stream.
     input: &'a [u8],
 
@@ -38,10 +42,11 @@ pub struct Deobfuscator<'a, O: Opcode<Mnemonic = py27::Mnemonic>> {
     files_processed: AtomicUsize,
     graphviz_graphs: HashMap<String, String>,
     on_graph_generated: Option<Box<dyn Fn(&str, &str) + Send + Sync>>,
+    on_store_to_named_var: Option<Box<dyn Fn(&Code, &HashSet<String>, &RwLock<&mut CodeGraph<O>>, &Instruction<O>, &(Option<Obj>, InstructionTracker<(NodeIndex<u32>, usize)>)) + Send + Sync>>,
     _opcode_phantom: PhantomData<O>,
 }
 
-impl<'a, O: Opcode<Mnemonic = py27::Mnemonic>> Debug for Deobfuscator<'a, O> {
+impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Debug for Deobfuscator<'a, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Deobfuscator")
             .field("input", &self.input)
@@ -51,6 +56,14 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic>> Debug for Deobfuscator<'a, O> {
             .field(
                 "on_graph_generated",
                 if let Some(callback) = &self.on_graph_generated {
+                    &"Some(callback)"
+                } else {
+                    &"None"
+                },
+            )
+            .field(
+                "on_store_to_named_var",
+                if let Some(callback) = &self.on_store_to_named_var {
                     &"Some(callback)"
                 } else {
                     &"None"
@@ -70,6 +83,7 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscator<'a, O> {
             files_processed: AtomicUsize::new(0),
             graphviz_graphs: HashMap::new(),
             on_graph_generated: None,
+            on_store_to_named_var: None,
             _opcode_phantom: Default::default(),
         }
     }
@@ -89,6 +103,16 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscator<'a, O> {
         callback: impl Fn(&str, &str) + 'static + Send + Sync,
     ) -> Deobfuscator<'a, O> {
         self.on_graph_generated = Some(Box::new(callback));
+        self
+    }
+
+    /// Callback for when a `STORE_NAME` or `STORE_FAST` is encountered. This
+    /// may be useful for mapping obfuscated module names to their "clean" name.
+    pub fn on_store_to_named_var(
+        mut self,
+        callback: impl Fn(&Code, &HashSet<String>, &RwLock<&mut CodeGraph<O>>, &Instruction<O>, &(Option<Obj>, InstructionTracker<(NodeIndex<u32>, usize)>)) + 'static + Send + Sync,
+    ) -> Deobfuscator<'a, O> {
+        self.on_store_to_named_var = Some(Box::new(callback));
         self
     }
 

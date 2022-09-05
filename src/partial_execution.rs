@@ -1,7 +1,7 @@
 use crate::code_graph::{BasicBlockFlags, CodeGraph, EdgeWeight};
 
 use crossbeam::channel::Sender;
-use log::{debug, error, trace};
+use log::{debug, error, trace, warn};
 use num_bigint::ToBigInt;
 
 use petgraph::graph::NodeIndex;
@@ -11,7 +11,7 @@ use petgraph::Direction;
 use py27_marshal::{Code, Obj};
 use pydis::opcode::py27::{self, Mnemonic};
 use pydis::prelude::*;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -51,6 +51,7 @@ pub(crate) fn perform_partial_execution<
     code_graph: &'a RwLock<&'a mut CodeGraph<TargetOpcode>>,
     mut execution_path_lock: Mutex<ExecutionPath>,
     mapped_function_names: &'a Mutex<HashMap<String, String>>,
+    plain_loaded_modules: &'a Mutex<HashSet<String>>,
     code: Arc<Code>,
     scope: &rayon::Scope<'a>,
     completed_paths_sender: &'a Sender<Mutex<ExecutionPath>>,
@@ -203,6 +204,10 @@ pub(crate) fn perform_partial_execution<
                                 let result = result_lock.read().unwrap();
                                 !result.is_empty()
                             }
+                            Some(Obj::Dict(result_lock)) => {
+                                let result = result_lock.read().unwrap();
+                                !result.is_empty()
+                            }
                             Some(Obj::Tuple(result)) => !result.is_empty(),
                             Some(Obj::String(result)) => !result.is_empty(),
                             Some(Obj::None) => false,
@@ -285,6 +290,7 @@ pub(crate) fn perform_partial_execution<
                         code_graph,
                         execution_path_lock,
                         &mapped_function_names,
+                        &plain_loaded_modules,
                         Arc::clone(&code),
                         s,
                         &completed_paths_sender,
@@ -302,12 +308,43 @@ pub(crate) fn perform_partial_execution<
 
         // If this next instruction is _not_ a jump, we need to evaluate it
         if !instr.opcode.is_jump() {
+            // If this is a IMPORT_NAME, we may want to record it if it's a "plain"
+            // module load with no fromlist
+            if instr.opcode.mnemonic() == Mnemonic::IMPORT_NAME {
+                let name = &code.names[instr.arg.unwrap() as usize];
+                if let Some((Some(Obj::None), _)) = execution_path.stack.last() {
+                    plain_loaded_modules.lock().unwrap().insert(name.to_string());
+                } else {
+                    plain_loaded_modules.lock().unwrap().remove(&name.to_string());
+                }
+            }
             // if this is a "STORE_NAME" instruction let's see if this data originates
             // at a MAKE_FUNCTION
-            if instr.opcode.mnemonic() == Mnemonic::STORE_NAME {
+            if instr.opcode.mnemonic() == Mnemonic::STORE_NAME
+                || instr.opcode.mnemonic() == Mnemonic::STORE_FAST
+            {
+                {
+                    // Invoke the user callback
+                    if let Some(user_callback) =
+                        code_graph.read().unwrap().on_store_to_named_var.as_ref()
+                    {
+                        let plain_loaded_modules = plain_loaded_modules.lock().unwrap();
+                        (user_callback)(
+                            code.as_ref(),
+                            &*plain_loaded_modules,
+                            code_graph,
+                            instr.as_ref(),
+                            execution_path
+                                .stack
+                                .last()
+                                .expect("no TOS for STORE_NAME/STORE_FAST?"),
+                        );
+                    }
+                }
+
                 // TOS _may_ be a function object.
                 if let Some((_tos, accessing_instructions)) = execution_path.stack.last() {
-                    trace!("Found a STORE_NAME");
+                    trace!("Found a STORE_NAME or STORE_FAST");
                     // this is the data we're storing. where does it originate?
                     let was_make_function =
                         accessing_instructions.0.lock().unwrap().iter().rev().any(
@@ -321,7 +358,7 @@ pub(crate) fn perform_partial_execution<
 
                     // Does the data originate from a MAKE_FUNCTION?
                     if was_make_function {
-                        trace!("A MAKE_FUNCTION preceded the STORE_NAME");
+                        trace!("A MAKE_FUNCTION preceded the STORE_NAME/STORE_FAST");
                         let (const_origination_node, const_idx) =
                             accessing_instructions.0.lock().unwrap()[0].clone();
 
@@ -340,16 +377,25 @@ pub(crate) fn perform_partial_execution<
                         if const_instr.opcode.mnemonic() == Mnemonic::LOAD_CONST {
                             let const_idx = const_instr.arg.unwrap() as usize;
 
-                            if let Obj::Code(code) = &code.consts[const_idx] {
+                            if let Obj::Code(function_code) = &code.consts[const_idx] {
                                 let key = format!(
                                     "{}_{}",
-                                    code.filename.to_string(),
-                                    code.name.to_string()
+                                    function_code.filename.to_string(),
+                                    function_code.name.to_string()
                                 );
                                 // TODO: figure out why this Arc::clone is needed and we cannot
                                 // just take a reference...
-                                if (instr.arg.unwrap() as usize) < code.names.len() {
-                                    let name = Arc::clone(&code.names[instr.arg.unwrap() as usize]);
+                                let name = if instr.opcode.mnemonic() == Mnemonic::STORE_FAST
+                                    && (instr.arg.unwrap() as usize) < code.varnames.len()
+                                {
+                                    Some(Arc::clone(&code.varnames[instr.arg.unwrap() as usize]))
+                                } else if (instr.arg.unwrap() as usize) < code.names.len() {
+                                    Some(Arc::clone(&code.names[instr.arg.unwrap() as usize]))
+                                } else {
+                                    None
+                                };
+
+                                if let Some(name) = name {
                                     mapped_function_names
                                         .lock()
                                         .unwrap()
@@ -360,8 +406,8 @@ pub(crate) fn perform_partial_execution<
                             }
                         } else {
                             error!(
-                                "mapped function is supposed to be a code object. got {:?}",
-                                code.consts[const_idx].typ()
+                                "mapped function is supposed to be a LOAD_CONST. got {:?}",
+                                const_instr
                             );
                         };
                     }
@@ -400,7 +446,10 @@ pub(crate) fn perform_partial_execution<
                 (root, ins_idx),
             ) {
                 // We got an error. Let's end this trace -- we can not confidently identify further stack values
-                error!("Encountered error executing instruction: {:?}", e);
+                error!(
+                    "Encountered error executing instruction in {} at index: {:?}",
+                    ins_idx, e
+                );
                 let _last_instr = current_node!().instrs.last().unwrap().unwrap();
 
                 completed_paths_sender
@@ -508,6 +557,7 @@ pub(crate) fn perform_partial_execution<
                 code_graph,
                 Mutex::new(execution_path),
                 &mapped_function_names,
+                &plain_loaded_modules,
                 target_code,
                 s,
                 &completed_paths_sender,
