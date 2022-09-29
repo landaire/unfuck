@@ -15,24 +15,24 @@ path = "src/bin.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-zip = "0.5"
+zip = "0.6"
 structopt = "0.3"
 memmap = "0.7"
 byteorder = "1.3"
-py27-marshal = "0.3"
+py27-marshal = { version = "0.4", path = "../py-marshal" }
 base64 = "0.13"
 anyhow = "1.0"
 thiserror = "1.0"
 flate2 = "1.0"
 pydis = "0.4"
-num-bigint = "0.2"
-cpython = { version = "0.5", default-features = false, features = ["python27-sys"]}
+num-bigint = "0.4"
+cpython = { version = "0.7", default-features = false, features = ["python27-sys"] }
 log = "0.4"
-simplelog = "0.8"
-simple_logger = "1.11"
+simplelog = "0.12"
+simple_logger = "2.3"
 num-traits = "0.2"
-pretty-hex = "0.2.1"
-petgraph = "0.5"
+pretty-hex = "0.3"
+petgraph = "0.6"
 bitflags = "1.0"
 once_cell = "1.5"
 csv = "1.1"
