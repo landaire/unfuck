@@ -399,8 +399,7 @@ pub(crate) fn perform_partial_execution<
                                 {
                                     Some(Arc::clone(&code.varnames[store_idx]))
                                 } else if store_idx < code.names.len() {
-                                    Some(Arc::clone(&code.names[store_idx]));
-                                    name
+                                    Some(Arc::clone(&code.names[store_idx]))
                                 } else {
                                     None
                                 };
