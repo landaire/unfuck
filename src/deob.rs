@@ -1,7 +1,7 @@
 use cpython::{PyBytes, PyDict, PyList, PyModule, PyObject, PyResult, Python, PythonObject};
 use log::{debug, trace};
 
-use py27_marshal::Code;
+use py27_marshal::{Code, Obj};
 use pydis::opcode::py27;
 use pydis::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -12,7 +12,9 @@ use crate::code_graph::*;
 use crate::error::Error;
 use crate::{DeobfuscatedBytecode, Deobfuscator};
 
-impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscator<'a, TargetOpcode> {
+impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
+    Deobfuscator<'a, TargetOpcode>
+{
     /// Deobfuscate the given code object. This will remove opaque predicates where possible,
     /// simplify control flow to only go forward where possible, and rename local variables. This returns
     /// the new bytecode and any function names resolved while deobfuscating the code object.
@@ -63,6 +65,7 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscat
         code_graph.massage_returns_for_decompiler();
         code_graph.update_bb_offsets();
         code_graph.update_branches();
+
         // code_graph.insert_jump_0();
         // code_graph.update_bb_offsets();
 
@@ -140,7 +143,7 @@ def cleanup_code_obj(code):
     global mapped_names
     new_code = deobfuscated_code.pop(0)
     new_consts = []
-    key = "{0}_{1}".format(code.co_filename, code.co_name)
+    key = "{0}_{1}_{2}".format(code.co_filename, code.co_name, len(code.co_code))
     name = code.co_name
     if key in mapped_names:
         #name = "co_filename:{0} co_name:{1}".format(mapped_names[key], name)
@@ -154,7 +157,7 @@ def cleanup_code_obj(code):
         else:
             new_consts.append(const)
 
-    return types.CodeType(code.co_argcount, code.co_nlocals, code.co_stacksize, code.co_flags, new_code, tuple(new_consts), fix_varnames(code.co_names), fix_varnames(code.co_varnames), filename, name, code.co_firstlineno, code.co_lnotab, code.co_freevars, code.co_cellvars)
+    return types.CodeType(code.co_argcount, code.co_nlocals, code.co_stacksize, code.co_flags, new_code, tuple(new_consts), fix_varnames(code.co_names), fix_varnames(code.co_varnames), filename, "{0}_orig_{1}".format(name, code.co_name), code.co_firstlineno, code.co_lnotab, code.co_freevars, code.co_cellvars)
 
 
 def fix_varnames(varnames):

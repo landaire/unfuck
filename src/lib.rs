@@ -6,7 +6,7 @@ use code_graph::CodeGraph;
 use partial_execution::ExecutionPath;
 use petgraph::stable_graph::NodeIndex;
 use pydis::opcode::py27::{self, Standard};
-use pydis::prelude::{Opcode, Instruction};
+use pydis::prelude::{Instruction, Opcode};
 use rayon::prelude::*;
 
 use py27_marshal::{Code, Obj};
@@ -42,7 +42,18 @@ pub struct Deobfuscator<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> {
     files_processed: AtomicUsize,
     graphviz_graphs: HashMap<String, String>,
     on_graph_generated: Option<Box<dyn Fn(&str, &str) + Send + Sync>>,
-    on_store_to_named_var: Option<Box<dyn Fn(&Code, &HashSet<String>, &RwLock<&mut CodeGraph<O>>, &Instruction<O>, &(Option<Obj>, InstructionTracker<(NodeIndex<u32>, usize)>)) + Send + Sync>>,
+    on_store_to_named_var: Option<
+        Box<
+            dyn Fn(
+                    &Code,
+                    &HashSet<String>,
+                    &RwLock<&mut CodeGraph<O>>,
+                    &Instruction<O>,
+                    &(Option<Obj>, InstructionTracker<(NodeIndex<u32>, usize)>),
+                ) + Send
+                + Sync,
+        >,
+    >,
     _opcode_phantom: PhantomData<O>,
 }
 
@@ -110,7 +121,16 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscator<'a, O> {
     /// may be useful for mapping obfuscated module names to their "clean" name.
     pub fn on_store_to_named_var(
         mut self,
-        callback: impl Fn(&Code, &HashSet<String>, &RwLock<&mut CodeGraph<O>>, &Instruction<O>, &(Option<Obj>, InstructionTracker<(NodeIndex<u32>, usize)>)) + 'static + Send + Sync,
+        callback: impl Fn(
+                &Code,
+                &HashSet<String>,
+                &RwLock<&mut CodeGraph<O>>,
+                &Instruction<O>,
+                &(Option<Obj>, InstructionTracker<(NodeIndex<u32>, usize)>),
+            )
+            + 'static
+            + Send
+            + Sync,
     ) -> Deobfuscator<'a, O> {
         self.on_store_to_named_var = Some(Box::new(callback));
         self
@@ -151,7 +171,7 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscator<'a, O> {
             }
 
             // sort these items by their file number. ordering matters since our python code pulls the objects as a
-            // stack
+            // queue
             results.sort_by(|a, b| a.0.cmp(&b.0));
 
             let output_data = self
@@ -190,7 +210,6 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscator<'a, O> {
             if let Obj::Code(const_code) = c {
                 let thread_results = Arc::clone(&out_results);
                 let thread_code = Arc::clone(const_code);
-                // Call deobfuscate_bytecode first since the bytecode comes before consts and other data
 
                 self.deobfuscate_nested_code_objects(thread_code, scope, thread_results);
             }

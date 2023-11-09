@@ -1,4 +1,4 @@
-use log::{debug, trace, error, warn};
+use log::{debug, error, trace, warn};
 use num_bigint::ToBigInt;
 use num_traits::{Pow, ToPrimitive};
 use py27_marshal::bstr::BString;
@@ -799,13 +799,13 @@ where
                         }
                     },
                     Obj::Float(l) => match right {
-                        Obj::Long(r) => {
-                            stack.push((Some(Obj::Bool(l >= r.to_f64().unwrap())), left_modifying_instrs))
-                        }
-                        Obj::Float(r) => stack.push((
-                            Some(Obj::Bool(l >= r)),
+                        Obj::Long(r) => stack.push((
+                            Some(Obj::Bool(l >= r.to_f64().unwrap())),
                             left_modifying_instrs,
                         )),
+                        Obj::Float(r) => {
+                            stack.push((Some(Obj::Bool(l >= r)), left_modifying_instrs))
+                        }
                         other => {
                             panic!("unsupported right-hand operand for Long: {:?}", other.typ())
                         }
@@ -824,7 +824,7 @@ where
                             op,
                             other.typ()
                         ),
-                    }
+                    },
                     Obj::String(_left) => match right {
                         Obj::None => stack.push((Some(Obj::Bool(true)), left_modifying_instrs)),
                         other => panic!(
@@ -885,21 +885,32 @@ where
                         Obj::Dict(set) => {
                             let dict = set.read().unwrap();
                             let hashed_string = ObjHashable::String(left);
-                            stack.push((Some(Obj::Bool(dict.contains_key(&hashed_string))), left_modifying_instrs));
+                            stack.push((
+                                Some(Obj::Bool(dict.contains_key(&hashed_string))),
+                                left_modifying_instrs,
+                            ));
                         }
                         Obj::Set(set) => {
                             let set = set.read().unwrap();
                             let hashed_string = ObjHashable::String(left);
-                            stack.push((Some(Obj::Bool(set.contains(&hashed_string))), left_modifying_instrs));
+                            stack.push((
+                                Some(Obj::Bool(set.contains(&hashed_string))),
+                                left_modifying_instrs,
+                            ));
                         }
                         Obj::List(set) => {
                             let list = set.read().unwrap();
-                            let list_contains = list.iter().find(|obj| if let Obj::String(list_item) = obj {
-                                *list_item == left
-                            } else {
-                                false
+                            let list_contains = list.iter().find(|obj| {
+                                if let Obj::String(list_item) = obj {
+                                    *list_item == left
+                                } else {
+                                    false
+                                }
                             });
-                            stack.push((Some(Obj::Bool(list_contains.is_some())), left_modifying_instrs));
+                            stack.push((
+                                Some(Obj::Bool(list_contains.is_some())),
+                                left_modifying_instrs,
+                            ));
                         }
                         other => panic!(
                             "unsupported right-hand operand for string operator {:?}: {:?}",
@@ -914,7 +925,10 @@ where
                     ),
                 },
 
-                other => panic!("unsupported comparison operator: {:?} (left: {:?}, right: {:?})", other, left, right),
+                other => panic!(
+                    "unsupported comparison operator: {:?} (left: {:?}, right: {:?})",
+                    other, left, right
+                ),
             }
         }
         Mnemonic::IMPORT_NAME => {
@@ -972,6 +986,10 @@ where
             // modifying_instrs.borrow_mut().push(access_tracking);
 
             stack.push((new_tos, InstructionTracker::new()))
+        }
+        Mnemonic::DELETE_FAST => {
+            // Store TOS in a var slot
+            vars.remove(&instr.arg.unwrap());
         }
         Mnemonic::STORE_FAST => {
             let (tos, accessing_instrs) = stack.pop().unwrap();
@@ -1107,6 +1125,15 @@ where
                         panic!("TOS must be a long");
                     }
                 }
+                Some(Obj::Dict(dict_lock)) => {
+                    let dict = dict_lock.read().unwrap();
+                    if let Some(tos) = tos {
+                        let hashable_tos = (&tos).try_into().unwrap();
+                        stack.push((dict.get(&hashable_tos).cloned(), accessing_instrs));
+                    } else {
+                        stack.push((None, accessing_instrs));
+                    }
+                }
                 Some(other) => {
                     return Err(crate::error::ExecutionError::ComplexExpression(
                         instr.clone(),
@@ -1193,14 +1220,6 @@ where
         }
         Mnemonic::LIST_APPEND => {
             let (tos, tos_modifiers) = stack.pop().unwrap();
-            let tos_value = tos.map(|tos| {
-                match tos {
-                    Obj::Long(l) => Arc::clone(&l),
-                    other => panic!("did not expect type: {:?}", other.typ()),
-                }
-                .to_u8()
-                .unwrap()
-            });
 
             let stack_len = stack.len();
             let (output, output_modifiers) = &mut stack[stack_len - instr.arg.unwrap() as usize];
@@ -1208,20 +1227,39 @@ where
             output_modifiers.extend(&tos_modifiers);
             output_modifiers.push(access_tracking);
 
-            match output {
-                Some(Obj::String(s)) => {
-                    unsafe { Arc::get_mut_unchecked(s) }.push(tos_value.unwrap());
+            warn!("LIST_APPEND is implemented poorly");
+
+            if let Some(tos) = tos {
+                match output {
+                    Some(Obj::String(s)) => {
+                        // TODO: wtf? why did I write this shit relating to u8 and why
+                        // does this work. Is it appending a char?
+                        let tos_value = match tos {
+                            Obj::Long(l) => Arc::clone(&l),
+                            other => panic!("did not expect type: {:?}", other.typ()),
+                        }
+                        .to_u8();
+                        unsafe { Arc::get_mut_unchecked(s) }.push(tos_value.unwrap());
+                    }
+                    Some(Obj::List(list)) => {
+                        unsafe { Arc::get_mut_unchecked(list) }
+                            .write()
+                            .unwrap()
+                            .push(tos);
+                    }
+                    Some(other) => {
+                        return Err(crate::error::ExecutionError::ComplexExpression(
+                            instr.clone(),
+                            Some(other.typ()),
+                        )
+                        .into());
+                    }
+                    None => {
+                        // do nothing here
+                    }
                 }
-                Some(other) => {
-                    return Err(crate::error::ExecutionError::ComplexExpression(
-                        instr.clone(),
-                        Some(other.typ()),
-                    )
-                    .into());
-                }
-                None => {
-                    // do nothing here
-                }
+            } else {
+                output_modifiers.push(access_tracking);
             }
         }
         Mnemonic::UNPACK_SEQUENCE => {
@@ -1244,6 +1282,26 @@ where
                     }
                 }
             }
+        }
+        Mnemonic::EXEC_STMT => {
+            stack.pop();
+            stack.pop();
+            stack.pop();
+        }
+        Mnemonic::LOAD_LOCALS => {
+            warn!("LOAD_LOCALS is implemented poorly");
+            stack.push((None, InstructionTracker::new()));
+        }
+        Mnemonic::BUILD_SLICE => {
+            warn!("BUILD_SLICE is implemented poorly");
+            let slice_accessors = InstructionTracker::new();
+            slice_accessors.push(access_tracking);
+
+            for _ in 0..instr.arg.unwrap() {
+                stack.pop();
+            }
+
+            stack.push((None, slice_accessors));
         }
         Mnemonic::BUILD_SET => {
             let mut set = std::collections::HashSet::new();
@@ -1300,6 +1358,35 @@ where
                 stack.push((Some(Obj::Tuple(Arc::new(tuple))), tuple_accessors));
             }
         }
+        Mnemonic::MAP_ADD => {
+            let tracking = InstructionTracker::new();
+            tracking.push(access_tracking);
+
+            let (value, value_tracking) = stack.pop().unwrap();
+            let (key, key_tracking) = stack.pop().unwrap();
+            if key.is_none() || value.is_none() {
+                return Ok(());
+            }
+            if let Some((tos, tos_tracking)) = stack.last_mut() {
+                match tos {
+                    Some(Obj::Dict(dict)) => {
+                        dict.write()
+                            .unwrap()
+                            .insert(key.as_ref().unwrap().try_into().unwrap(), value.unwrap());
+                        tos_tracking.extend(&key_tracking);
+                        tos_tracking.extend(&value_tracking);
+                    }
+                    Some(_) => {
+                        panic!("Error executing MAP_ADD: tos is not a dict -- this indicates a bug somewhere");
+                    }
+                    None => {
+                        // This scenario is fine
+                    }
+                }
+            } else {
+                panic!("no TOS for MAP_ADD?");
+            }
+        }
         Mnemonic::BUILD_MAP => {
             let tracking = InstructionTracker::new();
             tracking.push(access_tracking);
@@ -1334,9 +1421,10 @@ where
         }
         Mnemonic::BUILD_LIST => {
             let mut list = Vec::new();
-            // TODO: this is always true right now to avoid
-            // testing empty sets that are added to as truthy values
-            let mut push_none = true;
+            // We default to pushing none if the initial list is empty. Right now
+            // lists are somewhat bugged when adding items to them, resulting in
+            // incorrect deobfuscation
+            let mut push_none = instr.arg.unwrap() == 0;
 
             let tuple_accessors = InstructionTracker::new();
             for _i in 0..instr.arg.unwrap() {
@@ -1376,6 +1464,11 @@ where
             let (_tos, tos_modifiers) = stack.pop().unwrap();
             let tos_modifiers = tos_modifiers.deep_clone();
             tos_modifiers.push(access_tracking);
+
+            for _ in 0..instr.arg.unwrap() {
+                // default args
+                stack.pop();
+            }
 
             // NOTE: We push TOS back to stack here so we can detect a STORE_FAST
             // with a code object. We do this to rename code objects.
@@ -1739,7 +1832,6 @@ where
             continue;
         }
 
-
         rdr.set_position(offset);
         // Ignore invalid instructions
         let instr = match decode_py27(&mut rdr) {
@@ -1865,11 +1957,11 @@ where
 
     let mut jump_forward_instrs = HashMap::new();
     for (offset, instr) in &analyzed_instructions {
-        if !instr.is_good() || matches!(instr.unwrap().opcode.mnemonic(), Mnemonic::JUMP_FORWARD) {
+        if !instr.is_good() {
             continue;
         }
 
-        let next_instr_offset = offset + u64::try_from(instr.unwrap().len()).unwrap();
+        let mut next_instr_offset = offset + u64::try_from(instr.unwrap().len()).unwrap();
         if usize::try_from(next_instr_offset).unwrap() >= bytecode.len()
             || analyzed_instructions.contains_key(&next_instr_offset)
         {
@@ -1880,13 +1972,32 @@ where
         // we care
         rdr.set_position(next_instr_offset);
 
-        if let Some(next_instr) = decode_py27::<O, _>(&mut rdr).ok() {
-            if next_instr.opcode.is_jump()
-                && matches!(next_instr.opcode.mnemonic(), Mnemonic::JUMP_FORWARD)
-            {
+        while let Some(next_instr) = decode_py27::<O, _>(&mut rdr).ok() {
+            let offset = next_instr_offset;
+            next_instr_offset += next_instr.len() as u64;
+
+            if next_instr.opcode.is_jump() {
+                match next_instr.opcode.mnemonic() {
+                    // Mnemonic::JUMP_ABSOLUTE => {
+                    //     let jump_offset = next_instr.arg.unwrap() as u64;
+                    //     if !analyzed_instructions.contains_key(&jump_offset) {
+                    //         break;
+                    //     }
+                    // }
+                    Mnemonic::JUMP_FORWARD => {
+                        let jump_offset = next_instr.arg.unwrap() as u64 + offset;
+                        if !analyzed_instructions.contains_key(&jump_offset) {
+                            break;
+                        }
+                    }
+                    _ => {
+                        break;
+                    }
+                }
                 let next_instr = Arc::new(next_instr);
-                jump_forward_instrs
-                    .insert(next_instr_offset, ParsedInstr::GoodDoNotRemove(next_instr));
+                jump_forward_instrs.insert(offset, ParsedInstr::GoodDoNotRemove(next_instr));
+            } else {
+                break;
             }
         }
     }

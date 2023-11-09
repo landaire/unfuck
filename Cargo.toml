@@ -15,7 +15,6 @@ path = "src/bin.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-zip = "0.6"
 structopt = "0.3"
 memmap = "0.7"
 byteorder = "1.3"
@@ -26,7 +25,9 @@ thiserror = "1.0"
 flate2 = "1.0"
 pydis = "0.4"
 num-bigint = "0.4"
-cpython = { version = "0.7", default-features = false, features = ["python27-sys"] }
+cpython = { version = "0.7", default-features = false, features = [
+    "python27-sys",
+] }
 log = "0.4"
 simplelog = "0.12"
 simple_logger = "2.3"

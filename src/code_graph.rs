@@ -5,7 +5,7 @@ use bitflags::bitflags;
 
 use crossbeam::channel::unbounded;
 
-use log::{trace, error};
+use log::{error, trace};
 
 use petgraph::algo::{astar, dijkstra};
 use petgraph::graph::{EdgeIndex, Graph, NodeIndex};
@@ -61,7 +61,7 @@ impl fmt::Display for EdgeWeight {
 }
 
 /// Represents a single block of code up until its next branching point
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BasicBlock<O: Opcode<Mnemonic = py27::Mnemonic>> {
     /// Offset of the first instruction in this BB
     pub start_offset: u64,
@@ -594,6 +594,8 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         mapped_function_names: &mut HashMap<String, String>,
         plain_loaded_modules: &mut HashSet<String>,
     ) {
+        self.generate_dot_graph("before_dead");
+
         let completed_paths =
             self.invoke_partial_execution(mapped_function_names, plain_loaded_modules);
         self.generate_dot_graph("after_dead");
@@ -1506,14 +1508,12 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             if source_node.instrs.len() == 1
                 && matches!(source_node.instrs[0], ParsedInstr::GoodDoNotRemove(_))
             {
-                panic!("yo");
                 source_or_target_is_permanent_jump_forward = true;
             }
 
             if dest_node.instrs.len() == 1
                 && matches!(dest_node.instrs[0], ParsedInstr::GoodDoNotRemove(_))
             {
-                panic!("yo2");
                 source_or_target_is_permanent_jump_forward = true;
             }
 
@@ -1703,7 +1703,7 @@ pub(crate) mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let mut code_graph = CodeGraph::from_code(code, 0, false, None).unwrap();
+        let mut code_graph = CodeGraph::from_code(code, 0, false, None, None).unwrap();
 
         code_graph.join_blocks();
 
@@ -1729,7 +1729,7 @@ pub(crate) mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let mut code_graph = CodeGraph::from_code(code, 0, false, None).unwrap();
+        let mut code_graph = CodeGraph::from_code(code, 0, false, None, None).unwrap();
 
         code_graph.join_blocks();
 
@@ -1756,7 +1756,7 @@ pub(crate) mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let mut code_graph = CodeGraph::from_code(code, 0, false, None).unwrap();
+        let mut code_graph = CodeGraph::from_code(code, 0, false, None, None).unwrap();
 
         code_graph.join_blocks();
 
@@ -1801,7 +1801,8 @@ pub(crate) mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let mut code_graph = CodeGraph::<TargetOpcode>::from_code(code, 0, false, None).unwrap();
+        let mut code_graph =
+            CodeGraph::<TargetOpcode>::from_code(code, 0, false, None, None).unwrap();
 
         code_graph.join_blocks();
         code_graph.update_bb_offsets();
@@ -1926,7 +1927,7 @@ pub(crate) mod tests {
 
         change_code_instrs(&mut code, &instrs[..]);
 
-        let mut code_graph = CodeGraph::from_code(code, 0, false, None).unwrap();
+        let mut code_graph = CodeGraph::from_code(code, 0, false, None, None).unwrap();
         code_graph.massage_returns_for_decompiler();
         code_graph.join_blocks();
         code_graph.update_bb_offsets();
@@ -1965,6 +1966,7 @@ pub(crate) mod tests {
                 Arc::clone(&obj),
                 files_processed,
                 false,
+                None,
                 None,
             )
             .unwrap();

@@ -313,9 +313,15 @@ pub(crate) fn perform_partial_execution<
             if instr.opcode.mnemonic() == Mnemonic::IMPORT_NAME {
                 let name = &code.names[instr.arg.unwrap() as usize];
                 if let Some((Some(Obj::None), _)) = execution_path.stack.last() {
-                    plain_loaded_modules.lock().unwrap().insert(name.to_string());
+                    plain_loaded_modules
+                        .lock()
+                        .unwrap()
+                        .insert(name.to_string());
                 } else {
-                    plain_loaded_modules.lock().unwrap().remove(&name.to_string());
+                    plain_loaded_modules
+                        .lock()
+                        .unwrap()
+                        .remove(&name.to_string());
                 }
             }
             // if this is a "STORE_NAME" instruction let's see if this data originates
@@ -379,18 +385,22 @@ pub(crate) fn perform_partial_execution<
 
                             if let Obj::Code(function_code) = &code.consts[const_idx] {
                                 let key = format!(
-                                    "{}_{}",
+                                    "{}_{}_{}",
                                     function_code.filename.to_string(),
-                                    function_code.name.to_string()
+                                    function_code.name.to_string(),
+                                    function_code.code.len(),
                                 );
+
+                                let store_idx = instr.arg.unwrap() as usize;
                                 // TODO: figure out why this Arc::clone is needed and we cannot
                                 // just take a reference...
                                 let name = if instr.opcode.mnemonic() == Mnemonic::STORE_FAST
-                                    && (instr.arg.unwrap() as usize) < code.varnames.len()
+                                    && store_idx < code.varnames.len()
                                 {
-                                    Some(Arc::clone(&code.varnames[instr.arg.unwrap() as usize]))
-                                } else if (instr.arg.unwrap() as usize) < code.names.len() {
-                                    Some(Arc::clone(&code.names[instr.arg.unwrap() as usize]))
+                                    Some(Arc::clone(&code.varnames[store_idx]))
+                                } else if store_idx < code.names.len() {
+                                    Some(Arc::clone(&code.names[store_idx]));
+                                    name
                                 } else {
                                     None
                                 };
@@ -447,8 +457,8 @@ pub(crate) fn perform_partial_execution<
             ) {
                 // We got an error. Let's end this trace -- we can not confidently identify further stack values
                 error!(
-                    "Encountered error executing instruction in {} at index: {:?}",
-                    ins_idx, e
+                    "Encountered error executing instruction in name {:?} (filename: {:?}) at index {}: {:?}",
+                    code.name, code.filename, ins_idx, e
                 );
                 let _last_instr = current_node!().instrs.last().unwrap().unwrap();
 
