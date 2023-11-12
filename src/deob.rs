@@ -102,22 +102,24 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                     mapped_function_names.insert(key, "<setcomp>".to_string());
                 }
                 _ => {
-                    let mut is_genexpr = false;
                     'node_loop: for node_idx in code_graph.graph.node_indices() {
                         for instr in &code_graph.graph[node_idx].instrs {
-                            if instr.unwrap().opcode.mnemonic() == Mnemonic::YIELD_VALUE {
-                                mapped_function_names.insert(key.clone(), "<genexpr>".to_string());
-                                is_genexpr = true;
-                                break 'node_loop;
+                            match instr.unwrap().opcode.mnemonic() {
+                                Mnemonic::YIELD_VALUE => {
+                                    mapped_function_names
+                                        .insert(key.clone(), "<genexpr>".to_string());
+                                    break 'node_loop;
+                                }
+                                Mnemonic::MAKE_CLOSURE => {
+                                    mapped_function_names
+                                        .insert(key.clone(), "<lambda>".to_string());
+                                    break 'node_loop;
+                                }
+                                _ => {
+                                    // do nothing
+                                }
                             }
                         }
-                    }
-
-                    if !is_genexpr
-                        && code.consts[0].is_none()
-                        && !mapped_function_names.contains_key(&key)
-                    {
-                        mapped_function_names.insert(key, "<lambda>".to_string());
                     }
                 }
             }
