@@ -83,13 +83,16 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             }
         }
 
-        if code.flags == CodeFlags::OPTIMIZED | CodeFlags::NEWLOCALS | CodeFlags::NOFREE {
-            let key = format!(
-                "{}_{}_{}",
-                code.filename.to_string(),
-                code.name.to_string(),
-                code.code.len(),
-            );
+        let key = format!(
+            "{}_{}_{}",
+            code.filename.to_string(),
+            code.name.to_string(),
+            code.code.len(),
+        );
+
+        if code.flags.contains(CodeFlags::GENERATOR) {
+            mapped_function_names.insert(key.clone(), "<genexpr>".to_string());
+        } else {
             match code_graph.graph[code_graph.root].instrs[0]
                 .unwrap()
                 .opcode
@@ -101,27 +104,7 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 py27::Mnemonic::BUILD_SET => {
                     mapped_function_names.insert(key, "<setcomp>".to_string());
                 }
-                _ => {
-                    'node_loop: for node_idx in code_graph.graph.node_indices() {
-                        for instr in &code_graph.graph[node_idx].instrs {
-                            match instr.unwrap().opcode.mnemonic() {
-                                Mnemonic::YIELD_VALUE => {
-                                    mapped_function_names
-                                        .insert(key.clone(), "<genexpr>".to_string());
-                                    break 'node_loop;
-                                }
-                                Mnemonic::MAKE_CLOSURE => {
-                                    mapped_function_names
-                                        .insert(key.clone(), "<lambda>".to_string());
-                                    break 'node_loop;
-                                }
-                                _ => {
-                                    // do nothing
-                                }
-                            }
-                        }
-                    }
-                }
+                _ => {}
             }
         }
 
@@ -183,6 +166,7 @@ unknowns = 0
 def cleanup_code_obj(code):
     global deobfuscated_code
     global mapped_names
+    global code_obj_count
     new_code = deobfuscated_code.pop(0)
     new_consts = []
     key = "{0}_{1}_{2}".format(code.co_filename, code.co_name, len(code.co_code))
