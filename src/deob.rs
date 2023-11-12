@@ -1,8 +1,8 @@
 use cpython::{PyBytes, PyDict, PyList, PyModule, PyObject, PyResult, Python, PythonObject};
 use log::{debug, trace};
 
-use py27_marshal::{Code, Obj};
-use pydis::opcode::py27;
+use py27_marshal::{Code, CodeFlags, Obj};
+use pydis::opcode::py27::{self, Mnemonic};
 use pydis::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -83,6 +83,46 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             }
         }
 
+        if code.flags == CodeFlags::OPTIMIZED | CodeFlags::NEWLOCALS | CodeFlags::NOFREE {
+            let key = format!(
+                "{}_{}_{}",
+                code.filename.to_string(),
+                code.name.to_string(),
+                code.code.len(),
+            );
+            match code_graph.graph[code_graph.root].instrs[0]
+                .unwrap()
+                .opcode
+                .mnemonic()
+            {
+                py27::Mnemonic::BUILD_MAP => {
+                    mapped_function_names.insert(key, "<dictcomp>".to_string());
+                }
+                py27::Mnemonic::BUILD_SET => {
+                    mapped_function_names.insert(key, "<setcomp>".to_string());
+                }
+                _ => {
+                    let mut is_genexpr = false;
+                    'node_loop: for node_idx in code_graph.graph.node_indices() {
+                        for instr in &code_graph.graph[node_idx].instrs {
+                            if instr.unwrap().opcode.mnemonic() == Mnemonic::YIELD_VALUE {
+                                mapped_function_names.insert(key.clone(), "<genexpr>".to_string());
+                                is_genexpr = true;
+                                break 'node_loop;
+                            }
+                        }
+                    }
+
+                    if !is_genexpr
+                        && code.consts[0].is_none()
+                        && !mapped_function_names.contains_key(&key)
+                    {
+                        mapped_function_names.insert(key, "<lambda>".to_string());
+                    }
+                }
+            }
+        }
+
         Ok(DeobfuscatedBytecode {
             file_number: file_identifier,
             new_bytecode,
@@ -157,7 +197,10 @@ def cleanup_code_obj(code):
         else:
             new_consts.append(const)
 
-    return types.CodeType(code.co_argcount, code.co_nlocals, code.co_stacksize, code.co_flags, new_code, tuple(new_consts), fix_varnames(code.co_names), fix_varnames(code.co_varnames), filename, "{0}_orig_{1}".format(name, code.co_name), code.co_firstlineno, code.co_lnotab, code.co_freevars, code.co_cellvars)
+    if '<' not in name:
+        name = "{0}_orig_{1}".format(name, code.co_name)
+
+    return types.CodeType(code.co_argcount, code.co_nlocals, code.co_stacksize, code.co_flags, new_code, tuple(new_consts), fix_varnames(code.co_names), fix_varnames(code.co_varnames), filename, name, code.co_firstlineno, code.co_lnotab, code.co_freevars, code.co_cellvars)
 
 
 def fix_varnames(varnames):
