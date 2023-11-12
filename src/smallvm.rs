@@ -710,10 +710,23 @@ where
                             other.typ()
                         ),
                     },
+                    Obj::String(l) => match right {
+                        Obj::String(r) => {
+                            stack.push((
+                                Some(Obj::Bool(l.as_ref() == r.as_ref())),
+                                left_modifying_instrs,
+                            ));
+                        }
+                        other => panic!(
+                            "unsupported right-hand operand for String == : {:?}",
+                            other.typ()
+                        ),
+                    },
                     other => panic!(
-                        "unsupported left-hand operand: {:?} for op {}",
+                        "unsupported left-hand operand: {:?} for op {}, RHS: {:?}",
                         other.typ(),
-                        op
+                        op,
+                        right.typ(),
                     ),
                 },
                 "!=" => match left {
