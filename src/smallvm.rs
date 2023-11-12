@@ -950,6 +950,29 @@ where
 
             stack.push((None, accessing_instrs));
         }
+        Mnemonic::LOAD_CLOSURE => {
+            // we don't support closers
+            let tracking = InstructionTracker::new();
+
+            tracking.push(access_tracking);
+
+            stack.push((None, tracking));
+        }
+        Mnemonic::MAKE_CLOSURE => {
+            // we don't support attributes
+            let (_code_obj, obj_modifying_instrs) = stack.pop().unwrap();
+            let (free_vars, free_var_instrs) = stack.pop().unwrap();
+
+            obj_modifying_instrs.push(access_tracking);
+
+            for _ in 0..instr.arg.unwrap() {
+                let (_obj, instrs) = stack.pop().unwrap();
+                obj_modifying_instrs.extend(&instrs);
+            }
+            obj_modifying_instrs.extend(&free_var_instrs);
+
+            stack.push((None, obj_modifying_instrs));
+        }
         Mnemonic::LOAD_ATTR => {
             // we don't support attributes
             let (_obj, obj_modifying_instrs) = stack.pop().unwrap();
@@ -1479,7 +1502,10 @@ where
             tos_modifiers.push(access_tracking);
         }
         Mnemonic::GET_ITER => {
-            // nop
+            let (_tos, tos_modifiers) = stack.pop().unwrap();
+            tos_modifiers.push(access_tracking);
+
+            stack.push((None, tos_modifiers));
         }
         Mnemonic::CALL_FUNCTION => {
             let accessed_instrs = InstructionTracker::new();
