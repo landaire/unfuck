@@ -34,6 +34,8 @@ pub struct ExecutionPath {
     pub executed_nodes: BTreeSet<NodeIndex>,
     /// Loops that we're executing in
     pub executing_loop_offsets: Vec<NodeIndex>,
+    /// Number of unknown-condition forks taken along this path
+    pub fork_depth: usize,
 }
 
 /// Information required to track back an instruction that accessed/tainted a var
@@ -58,6 +60,16 @@ pub(crate) fn perform_partial_execution<
 ) {
     trace!("Executing from node index {:?}", root);
     let execution_path: &mut ExecutionPath = execution_path_lock.get_mut().unwrap();
+    
+    // Bail out if this path has forked too many times on unknown conditions.
+    // With N forks, we get 2^N paths -- cap it to prevent exponential explosion.
+    const MAX_FORK_DEPTH: usize = 16;
+    if execution_path.fork_depth > MAX_FORK_DEPTH {
+        completed_paths_sender
+            .send(execution_path_lock)
+            .expect("failed to send the completed execution path");
+        return;
+    }
     let debug = !false;
     let debug_stack = false;
     macro_rules! current_node {
@@ -194,7 +206,7 @@ pub(crate) fn perform_partial_execution<
                     ($value:expr) => {
                         match $value {
                             Some(Obj::Bool(result)) => result,
-                            Some(Obj::Long(result)) => *result != 0.to_bigint().unwrap(),
+                            Some(Obj::Long(result)) => *result.read().unwrap() != 0.to_bigint().unwrap(),
                             Some(Obj::Float(result)) => result != 0.0,
                             Some(Obj::Set(result_lock)) => {
                                 let result = result_lock.read().unwrap();
@@ -208,8 +220,8 @@ pub(crate) fn perform_partial_execution<
                                 let result = result_lock.read().unwrap();
                                 !result.is_empty()
                             }
-                            Some(Obj::Tuple(result)) => !result.is_empty(),
-                            Some(Obj::String(result)) => !result.is_empty(),
+                            Some(Obj::Tuple(result)) => !result.read().unwrap().is_empty(),
+                            Some(Obj::String(result)) => !result.read().unwrap().is_empty(),
                             Some(Obj::None) => false,
                             other => {
                                 panic!("unexpected TOS type for condition: {:?}", other);
@@ -384,11 +396,12 @@ pub(crate) fn perform_partial_execution<
                             let const_idx = const_instr.arg.unwrap() as usize;
 
                             if let Obj::Code(function_code) = &code.consts[const_idx] {
+                                let function_code_guard = function_code.read().unwrap();
                                 let key = format!(
                                     "{}_{}_{}",
-                                    function_code.filename,
-                                    function_code.name,
-                                    function_code.code.len(),
+                                    function_code_guard.filename,
+                                    function_code_guard.name,
+                                    function_code_guard.code.len(),
                                 );
 
                                 let store_idx = instr.arg.unwrap() as usize;
@@ -457,7 +470,7 @@ pub(crate) fn perform_partial_execution<
                 (root, ins_idx),
             ) {
                 // We got an error. Let's end this trace -- we can not confidently identify further stack values
-                error!(
+                debug!(
                     "Encountered error executing instruction in name {:?} (filename: {:?}) at index {}: {:?}",
                     code.name, code.filename, ins_idx, e
                 );
@@ -554,6 +567,7 @@ pub(crate) fn perform_partial_execution<
         }
 
         let mut execution_path = execution_path.clone();
+        execution_path.fork_depth += 1;
         // TODO: this should be fixed once we properly support objects
         if last_instr_was_for_iter && weight == EdgeWeight::NonJump {
             execution_path

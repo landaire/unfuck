@@ -63,7 +63,15 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         code_graph.generate_dot_graph("updated_bb");
 
         code_graph.massage_returns_for_decompiler();
+        code_graph.ensure_terminal_returns(&code);
+
+        // Re-insert the body-terminating jumps the Python 2.7 compiler emits at the
+        // end of `if`/`elif` bodies. uncompyle6 relies on these to recover control
+        // flow; the deobfuscated CFG drops them because the body falls through. The
+        // dead `JUMP_ABSOLUTE` operands are patched once block offsets are final.
+        let decompiler_jump_fixups = code_graph.insert_decompiler_jumps();
         code_graph.update_bb_offsets();
+        code_graph.fixup_decompiler_dead_jumps(&decompiler_jump_fixups);
         code_graph.update_branches();
 
         // code_graph.insert_jump_0();
@@ -83,12 +91,7 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             }
         }
 
-        let key = format!(
-            "{}_{}_{}",
-            code.filename,
-            code.name,
-            code.code.len(),
-        );
+        let key = format!("{}_{}_{}", code.filename, code.name, code.code.len(),);
 
         if code.flags.contains(CodeFlags::GENERATOR) {
             mapped_function_names.insert(key.clone(), "<genexpr>".to_string());
@@ -210,7 +213,7 @@ def fix_varnames(varnames):
             unknowns += 1
         else:
             newvars.append(var)
-    
+
     return tuple(newvars)
 
 
@@ -243,6 +246,7 @@ mod tests {
     use num_bigint::BigInt;
     use py27_marshal::Obj;
     use pydis::opcode::Instruction;
+    use std::sync::Mutex;
 
     type TargetOpcode = pydis::opcode::py27::Standard;
 

@@ -25,6 +25,7 @@ thiserror = "1.0"
 flate2 = "1.0"
 pydis = "0.4"
 num-bigint = "0.4"
+num-integer = "0.1"
 cpython = { version = "0.7", default-features = false, features = [
     "python27-sys",
 ] }
@@ -45,3 +46,6 @@ rayon = "1.5"
 
 [features]
 reduced_functionality = []
+
+[patch.crates-io]
+py27-marshal = { path = "../py-marshal" }

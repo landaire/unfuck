@@ -24,4 +24,7 @@ pub enum ExecutionError<O: Opcode<Mnemonic = py27::Mnemonic>> {
 
     #[error("unsupported instruction encountered: {0:?}")]
     UnsupportedOpcode(O),
+
+    #[error("stack underflow: attempted to pop/peek from an empty VM stack")]
+    StackUnderflow,
 }

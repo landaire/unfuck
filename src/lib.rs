@@ -141,7 +141,8 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscator<'a, O> {
     /// Deobfuscates the marshalled code object and returns either the deobfuscated code object
     /// or the [`crate::errors::Error`] encountered during execution
     pub fn deobfuscate(&self) -> Result<DeobfuscatedCodeObject, Error<O>> {
-        if let py27_marshal::Obj::Code(code) = py27_marshal::read::marshal_loads(self.input)? {
+        if let py27_marshal::Obj::Code(code_mutex) = py27_marshal::read::marshal_loads(self.input)? {
+            let code = Arc::new(code_mutex.read().unwrap().clone());
             // This vector will contain the input code object and all nested objects
             let mut results = vec![];
             let mut mapped_names = HashMap::new();
@@ -205,7 +206,7 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscator<'a, O> {
         for c in code.consts.iter() {
             if let Obj::Code(const_code) = c {
                 let thread_results = Arc::clone(&out_results);
-                let thread_code = Arc::clone(const_code);
+                let thread_code = Arc::new(const_code.read().unwrap().clone());
 
                 self.deobfuscate_nested_code_objects(thread_code, scope, thread_results);
             }
@@ -235,7 +236,8 @@ pub fn dump_strings<'a>(
     pyc_filename: &'a Path,
     data: &[u8],
 ) -> Result<Vec<CodeObjString<'a>>, Error<Standard>> {
-    if let py27_marshal::Obj::Code(code) = py27_marshal::read::marshal_loads(data)? {
+    if let py27_marshal::Obj::Code(code_mutex) = py27_marshal::read::marshal_loads(data)? {
+        let code = Arc::new(code_mutex.read().unwrap().clone());
         Ok(dump_codeobject_strings(pyc_filename, code))
     } else {
         Err(Error::InvalidCodeObject)
@@ -270,7 +272,7 @@ fn dump_codeobject_strings(pyc_filename: &Path, code: Arc<Code>) -> Vec<CodeObjS
                 code.as_ref(),
                 pyc_filename,
                 crate::strings::StringType::Const,
-                s.to_string().as_ref(),
+                s.read().unwrap().to_string().as_ref(),
             ))
         }
     });
@@ -279,7 +281,7 @@ fn dump_codeobject_strings(pyc_filename: &Path, code: Arc<Code>) -> Vec<CodeObjS
     code.consts.par_iter().for_each(|c| {
         if let Obj::Code(const_code) = c {
             // Call deobfuscate_bytecode first since the bytecode comes before consts and other data
-            let mut strings = dump_codeobject_strings(pyc_filename, Arc::clone(const_code));
+            let mut strings = dump_codeobject_strings(pyc_filename, Arc::new(const_code.read().unwrap().clone()));
             new_strings.lock().unwrap().append(&mut strings);
         }
     });

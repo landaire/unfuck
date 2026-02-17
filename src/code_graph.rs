@@ -60,6 +60,18 @@ impl fmt::Display for EdgeWeight {
     }
 }
 
+/// A deferred operand patch for a dead body-terminating `JUMP_ABSOLUTE` inserted by
+/// [`CodeGraph::insert_decompiler_jumps`]. The operand is the merge block's offset,
+/// which is only known once block layout is final.
+pub(crate) struct DecompilerJumpFixup {
+    /// Block holding the inserted jumps.
+    pub(crate) block: NodeIndex,
+    /// Merge block the dead jumps target.
+    pub(crate) merge: NodeIndex,
+    /// Number of dead `JUMP_ABSOLUTE`s preceding the trailing `JUMP_FORWARD`.
+    pub(crate) dead_jumps: usize,
+}
+
 /// Represents a single block of code up until its next branching point
 #[derive(Debug, Clone)]
 pub struct BasicBlock<O: Opcode<Mnemonic = py27::Mnemonic>> {
@@ -684,6 +696,28 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                     Some(unused_path) => {
                         potentially_unused_nodes.insert(unused_path.1);
                         self.graph.remove_edge(unused_path.0);
+
+                        // If the node now has exactly 1 outgoing edge and its last
+                        // instruction is a conditional jump, convert it to an
+                        // unconditional JUMP_FORWARD so that join_blocks() can
+                        // merge it with the successor block.  Without this,
+                        // the orphaned conditional survives into update_branches()
+                        // and becomes a JUMP_FORWARD 0 that breaks uncompyle6.
+                        let outgoing_count = self
+                            .graph
+                            .edges_directed(*node, Direction::Outgoing)
+                            .count();
+                        if outgoing_count == 1 {
+                            let node_bb = &mut self.graph[*node];
+                            if let Some(last_instr) = node_bb.instrs.last()
+                                && last_instr.unwrap().opcode.is_conditional_jump()
+                            {
+                                let last_instr_mut =
+                                    node_bb.instrs.last_mut().unwrap().unwrap_mut();
+                                Arc::make_mut(last_instr_mut).opcode =
+                                    Mnemonic::JUMP_FORWARD.into();
+                            }
+                        }
                     }
                     None => {
                         if self
@@ -745,9 +779,8 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                     .map(|e| e.id())
                     .collect::<Vec<_>>();
 
-                self.graph.retain_edges(|_g, edge| {
-                    !child_edges.contains(&edge)
-                });
+                self.graph
+                    .retain_edges(|_g, edge| !child_edges.contains(&edge));
             }
         }
 
@@ -836,9 +869,10 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         while let Some(nx) = node_queue.pop() {
             trace!("current: {:#?}", self.graph[nx]);
             if let Some(stop_at) = stop_at_queue.last()
-                && *stop_at == nx {
-                    stop_at_queue.pop();
-                }
+                && *stop_at == nx
+            {
+                stop_at_queue.pop();
+            }
 
             if updated_nodes.contains(&nx) {
                 continue;
@@ -928,16 +962,238 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             }
 
             if let Some(jump_path) = jump_path
-                && !updated_nodes.contains(&jump_path) {
-                    // the other node may add this one
-                    if let Some(pending) = stop_at_queue.last() {
-                        if !self.is_downgraph(*pending, jump_path) {
-                            stop_at_queue.push(jump_path);
-                        }
-                    } else {
+                && !updated_nodes.contains(&jump_path)
+            {
+                // the other node may add this one
+                if let Some(pending) = stop_at_queue.last() {
+                    if !self.is_downgraph(*pending, jump_path) {
                         stop_at_queue.push(jump_path);
                     }
+                } else {
+                    stop_at_queue.push(jump_path);
                 }
+            }
+        }
+    }
+
+
+    /// Re-insert the body-terminating jumps that the Python 2.7 compiler emits at the
+    /// end of an `if`/`elif` body.
+    ///
+    /// The deobfuscator reconstructs a minimal control-flow graph: a block that simply
+    /// falls through into the merge point of an `if` carries no jump. The Python 2.7
+    /// compiler, however, always terminates such a body with a jump to the merge point
+    /// (`JUMP_FORWARD 0` when the merge is the next instruction). uncompyle6 relies on
+    /// that jump to place a `COME_FROM` at the merge and recover the `if` boundary;
+    /// without it the parser fails at the first instruction of the code object.
+    ///
+    /// For every block `B` that does not already end in a jump or `RETURN_VALUE` and
+    /// whose sole fall-through successor `M` is the merge point of one or more
+    /// statement-level `if`s, append the body-terminating jumps to `B` and promote the
+    /// fall-through edge to a jump edge.
+    ///
+    /// When `K` nested `if`s all close at the same merge `M` (a guard-clause chain
+    /// converging on a `return`, for instance) the compiler emits `K` jumps: `K - 1`
+    /// `JUMP_ABSOLUTE`s for the enclosing bodies followed by a single `JUMP_FORWARD`
+    /// for the innermost body. uncompyle6 requires that exact shape -- the trailing
+    /// `JUMP_FORWARD` closes the outermost `if` and each `JUMP_ABSOLUTE` closes one more
+    /// nested level. Consecutive guards that share a merge are an `and`-chain (one `if`),
+    /// so they count once.
+    ///
+    /// The `JUMP_ABSOLUTE` operands cannot be resolved here because block offsets are not
+    /// final; the returned fixups carry the merge node so [`Self::fixup_decompiler_dead_jumps`]
+    /// can patch them once [`Self::update_bb_offsets`] has run.
+    pub(crate) fn insert_decompiler_jumps(&mut self) -> Vec<DecompilerJumpFixup> {
+        let mut fixups = Vec::new();
+        let nodes: Vec<NodeIndex> = self.graph.node_indices().collect();
+        for nx in nodes {
+            let ends_in_terminal = match self.graph[nx].instrs.last() {
+                Some(last) => {
+                    let mnemonic = last.unwrap().opcode.mnemonic();
+                    last.unwrap().opcode.is_jump() || mnemonic == Mnemonic::RETURN_VALUE
+                }
+                None => true,
+            };
+            if ends_in_terminal {
+                continue;
+            }
+
+            // A body block has exactly one outgoing edge, the fall-through to its merge.
+            let outgoing = self
+                .graph
+                .edges_directed(nx, Direction::Outgoing)
+                .map(|edge| (edge.id(), edge.target(), *edge.weight()))
+                .collect::<Vec<_>>();
+            let (edge_id, target) = match outgoing.as_slice() {
+                [(edge_id, target, EdgeWeight::NonJump)] => (*edge_id, *target),
+                _ => continue,
+            };
+            if target == nx {
+                continue;
+            }
+
+            let group_count = self.if_group_count(target);
+            if group_count == 0 {
+                continue;
+            }
+
+            for _ in 1..group_count {
+                self.graph[nx]
+                    .instrs
+                    .push(ParsedInstr::Good(Arc::new(pydis::Instr!(
+                        Mnemonic::JUMP_ABSOLUTE.into(),
+                        0
+                    ))));
+            }
+            self.graph[nx]
+                .instrs
+                .push(ParsedInstr::Good(Arc::new(pydis::Instr!(
+                    Mnemonic::JUMP_FORWARD.into(),
+                    0
+                ))));
+            *self.graph.edge_weight_mut(edge_id).unwrap() = EdgeWeight::Jump;
+
+            if group_count > 1 {
+                fixups.push(DecompilerJumpFixup {
+                    block: nx,
+                    merge: target,
+                    dead_jumps: group_count - 1,
+                });
+            }
+        }
+        fixups
+    }
+
+    /// Count the number of statement-level `if`s that close at `merge`.
+    ///
+    /// `merge` is reached by the taken branch of every guarding `POP_JUMP_IF_FALSE`/
+    /// `POP_JUMP_IF_TRUE`. Guards in an `and`-chain fall through into one another, so a
+    /// guard begins a new `if` only when the block that falls through into it is not
+    /// itself a guard of the same merge. `JUMP_IF_*_OR_POP` targets are ignored: those
+    /// are boolean-expression merges uncompyle6 handles without a terminating jump.
+    fn if_group_count(&self, merge: NodeIndex) -> usize {
+        let guards: HashSet<NodeIndex> = self
+            .graph
+            .edges_directed(merge, Direction::Incoming)
+            .filter(|edge| *edge.weight() == EdgeWeight::Jump)
+            .map(|edge| edge.source())
+            .filter(|source| {
+                self.graph[*source].instrs.last().is_some_and(|last| {
+                    matches!(
+                        last.unwrap().opcode.mnemonic(),
+                        Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE
+                    )
+                })
+            })
+            .collect();
+
+        guards
+            .iter()
+            .filter(|guard| {
+                // A guard whose block also holds body statements (a `STORE`, a discarded
+                // expression, ...) before its condition cannot be the continuation of an
+                // `and`-chain -- the chained operands of one `if` are pure expressions.
+                if self.block_contains_statement(**guard) {
+                    return true;
+                }
+                match self.nonjump_predecessor(**guard) {
+                    Some(predecessor) => !guards.contains(&predecessor),
+                    None => true,
+                }
+            })
+            .count()
+    }
+
+    /// Whether the block holds a statement-level instruction before its terminal jump.
+    /// Used to distinguish an `if` body that ends in a guard (`x = ...; if y:`) from a
+    /// continuation of an `and`-chain (`if x and y:`), whose operands are pure expressions.
+    fn block_contains_statement(&self, node: NodeIndex) -> bool {
+        let instrs = &self.graph[node].instrs;
+        let body = instrs.len().saturating_sub(1);
+        instrs[..body].iter().any(|instr| {
+            let mnemonic = instr.unwrap().opcode.mnemonic();
+            let name = format!("{:?}", mnemonic);
+            name.starts_with("STORE_")
+                || name.starts_with("DELETE_")
+                || name.starts_with("PRINT_")
+                || matches!(
+                    mnemonic,
+                    Mnemonic::POP_TOP
+                        | Mnemonic::IMPORT_NAME
+                        | Mnemonic::IMPORT_FROM
+                        | Mnemonic::IMPORT_STAR
+                        | Mnemonic::EXEC_STMT
+                )
+        })
+    }
+
+    /// Returns the block that falls through (the `NonJump` edge) into `node`, if any.
+    fn nonjump_predecessor(&self, node: NodeIndex) -> Option<NodeIndex> {
+        self.graph
+            .edges_directed(node, Direction::Incoming)
+            .find(|edge| *edge.weight() == EdgeWeight::NonJump)
+            .map(|edge| edge.source())
+    }
+
+    /// Resolve the `JUMP_ABSOLUTE` operands of the dead body-terminating jumps inserted
+    /// by [`Self::insert_decompiler_jumps`]. Must run after [`Self::update_bb_offsets`]
+    /// so the merge offset is final. The trailing `JUMP_FORWARD` of each block is left
+    /// to [`Self::update_branches`], which resolves it from the edge.
+    pub(crate) fn fixup_decompiler_dead_jumps(&mut self, fixups: &[DecompilerJumpFixup]) {
+        for fixup in fixups {
+            let merge_offset = self.graph[fixup.merge].start_offset as u16;
+            let block = &mut self.graph[fixup.block];
+            let last = block.instrs.len() - 1;
+            for offset in 1..=fixup.dead_jumps {
+                let instr = block.instrs[last - offset].unwrap_mut();
+                Arc::make_mut(instr).arg = Some(merge_offset);
+            }
+        }
+    }
+
+
+    /// Ensure every leaf node (no outgoing edges) ends with RETURN_VALUE.
+    /// Python's compiler always emits an implicit 'return None' at the end of
+    /// every code object.  If the deobfuscator removes dead code that contained
+    /// the return, uncompyle6 fails with a parse error.
+    pub(crate) fn ensure_terminal_returns(&mut self, code: &Code) {
+        let node_indices: Vec<_> = self.graph.node_indices().collect();
+        for nx in node_indices {
+            let outgoing = self
+                .graph
+                .edges_directed(nx, Direction::Outgoing)
+                .count();
+            if outgoing != 0 {
+                continue;
+            }
+            let bb = &self.graph[nx];
+            let needs_return = match bb.instrs.last() {
+                Some(instr) => instr.unwrap().opcode.mnemonic() != Mnemonic::RETURN_VALUE,
+                None => true,
+            };
+            if needs_return {
+                let const_idx = code
+                    .consts
+                    .iter()
+                    .enumerate()
+                    .find_map(|(idx, obj)| {
+                        if matches!(obj, Obj::None) {
+                            Some(idx)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(0);
+                let bb = &mut self.graph[nx];
+                bb.instrs.push(ParsedInstr::Good(Arc::new(Instruction {
+                    opcode: Mnemonic::LOAD_CONST.into(),
+                    arg: Some(const_idx as u16),
+                })));
+                bb.instrs.push(ParsedInstr::Good(Arc::new(Instruction {
+                    opcode: Mnemonic::RETURN_VALUE.into(),
+                    arg: None,
+                })));
+            }
         }
     }
 
@@ -948,52 +1204,53 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         while let Some(nx) = bfs.next(&self.graph) {
             let bb = &self.graph[nx];
             if let Some(instr) = bb.instrs.first()
-                && instr.unwrap().opcode.mnemonic() == Mnemonic::FOR_ITER {
-                    // let's get this target node -- if it's just a RETURN_VALUE with other
-                    // people returning as well, we should just use our own
-                    //
-                    // Basically, we want to force the code into this pattern:
-                    //
-                    //
-                    // def foo():
-                    //     y = ['a', 'b', 'c']
-                    //     if true:
-                    //         return [c for c in y if c != 'c']
-                    //     else:
-                    //         return y
+                && instr.unwrap().opcode.mnemonic() == Mnemonic::FOR_ITER
+            {
+                // let's get this target node -- if it's just a RETURN_VALUE with other
+                // people returning as well, we should just use our own
+                //
+                // Basically, we want to force the code into this pattern:
+                //
+                //
+                // def foo():
+                //     y = ['a', 'b', 'c']
+                //     if true:
+                //         return [c for c in y if c != 'c']
+                //     else:
+                //         return y
 
-                    let (edge, target) = self
+                let (edge, target) = self
+                    .graph
+                    .edges_directed(nx, Direction::Outgoing)
+                    .find_map(|edge| {
+                        if *edge.weight() == EdgeWeight::Jump {
+                            Some((edge.id(), edge.target()))
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap();
+
+                let target_bb = &self.graph[target];
+                if target_bb.instrs.len() == 1
+                    && target_bb.instrs[0].unwrap().opcode.mnemonic() == Mnemonic::RETURN_VALUE
+                    && self
                         .graph
-                        .edges_directed(nx, Direction::Outgoing)
-                        .find_map(|edge| {
-                            if *edge.weight() == EdgeWeight::Jump {
-                                Some((edge.id(), edge.target()))
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap();
-
-                    let target_bb = &self.graph[target];
-                    if target_bb.instrs.len() == 1
-                        && target_bb.instrs[0].unwrap().opcode.mnemonic() == Mnemonic::RETURN_VALUE
-                        && self
-                            .graph
-                            .edges_directed(target, Direction::Incoming)
-                            .count()
-                            > 1
-                    {
-                        self.graph.remove_edge(edge);
-                        let return_bb = BasicBlock {
-                            instrs: vec![crate::smallvm::ParsedInstr::Good(Arc::new(
-                                pydis::Instr!(Mnemonic::RETURN_VALUE.into()),
-                            ))],
-                            ..Default::default()
-                        };
-                        let new_return_node = self.graph.add_node(return_bb);
-                        self.graph.add_edge(nx, new_return_node, EdgeWeight::Jump);
-                    }
+                        .edges_directed(target, Direction::Incoming)
+                        .count()
+                        > 1
+                {
+                    self.graph.remove_edge(edge);
+                    let return_bb = BasicBlock {
+                        instrs: vec![crate::smallvm::ParsedInstr::Good(Arc::new(pydis::Instr!(
+                            Mnemonic::RETURN_VALUE.into()
+                        )))],
+                        ..Default::default()
+                    };
+                    let new_return_node = self.graph.add_node(return_bb);
+                    self.graph.add_edge(nx, new_return_node, EdgeWeight::Jump);
                 }
+            }
         }
     }
 
@@ -1026,15 +1283,18 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 }
 
                 let source_node = &mut self.graph[incoming_edge];
-                let mut last_ins = source_node.instrs.last_mut().unwrap().unwrap();
+                let last_ins_ref = source_node.instrs.last().unwrap().unwrap();
 
-                if !last_ins.opcode.is_jump() {
+                if !last_ins_ref.opcode.is_jump() {
                     continue;
                 }
 
-                assert!(last_ins.opcode.has_arg());
+                assert!(last_ins_ref.opcode.has_arg());
 
-                let last_ins_len = last_ins.len();
+                let last_ins_len = last_ins_ref.len();
+                let last_ins_is_abs_jump_initial =
+                    last_ins_ref.opcode.mnemonic() == Mnemonic::JUMP_ABSOLUTE;
+                drop(last_ins_ref);
 
                 let target_node = &self.graph[nx];
                 let target_node_start = target_node.start_offset;
@@ -1042,36 +1302,49 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 let source_node = &mut self.graph[incoming_edge];
                 let end_of_jump_ins = source_node.end_offset + last_ins_len as u64;
 
-                if last_ins.opcode.mnemonic() == Mnemonic::JUMP_ABSOLUTE
-                    && target_node_start > source_node.start_offset
-                {
-                    Arc::get_mut(&mut last_ins).unwrap().opcode = Mnemonic::JUMP_FORWARD.into();
+                if last_ins_is_abs_jump_initial && target_node_start > source_node.start_offset {
+                    let last_ins = source_node.instrs.last_mut().unwrap().unwrap_mut();
+                    Arc::make_mut(last_ins).opcode = Mnemonic::JUMP_FORWARD.into();
                 }
 
-                if last_ins.opcode.mnemonic() == Mnemonic::JUMP_FORWARD
-                    && target_node_start < end_of_jump_ins
-                {
-                    Arc::get_mut(&mut last_ins).unwrap().opcode = Mnemonic::JUMP_ABSOLUTE.into();
+                // Re-check after potential mutation above
+                let is_fwd_jump = source_node
+                    .instrs
+                    .last()
+                    .unwrap()
+                    .unwrap()
+                    .opcode
+                    .mnemonic()
+                    == Mnemonic::JUMP_FORWARD;
+                if is_fwd_jump && target_node_start < end_of_jump_ins {
+                    let last_ins = source_node.instrs.last_mut().unwrap().unwrap_mut();
+                    Arc::make_mut(last_ins).opcode = Mnemonic::JUMP_ABSOLUTE.into();
                 }
 
-                let last_ins_is_abs_jump = last_ins.opcode.is_absolute_jump();
+                let last_ins_is_abs_jump = source_node
+                    .instrs
+                    .last()
+                    .unwrap()
+                    .unwrap()
+                    .opcode
+                    .is_absolute_jump();
 
                 let new_arg = if last_ins_is_abs_jump {
                     target_node_start
                 } else {
                     if target_node_start < source_node.end_offset {
-                        let target_node = &self.graph[nx];
-                        let source_node = &self.graph[incoming_edge];
-                        panic!(
-                            "target start < source end offset\nsource: {:#?},\ntarget {:#?}",
-                            source_node, target_node
-                        );
+                        // Target is behind source -- relative offset would be negative.
+                        // Convert to JUMP_ABSOLUTE so we can use an absolute target.
+                        let last_ins = source_node.instrs.last_mut().unwrap().unwrap_mut();
+                        Arc::make_mut(last_ins).opcode = Mnemonic::JUMP_ABSOLUTE.into();
+                        target_node_start
+                    } else {
+                        target_node_start - end_of_jump_ins
                     }
-                    target_node_start - end_of_jump_ins
                 };
 
-                let mut last_ins = source_node.instrs.last_mut().unwrap().unwrap();
-                Arc::get_mut(&mut last_ins).unwrap().arg = Some(new_arg as u16);
+                let last_ins = source_node.instrs.last_mut().unwrap().unwrap_mut();
+                Arc::make_mut(last_ins).arg = Some(new_arg as u16);
             }
         }
     }
@@ -1084,9 +1357,10 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         trace!("beginning bytecode bb visitor");
         'node_visitor: while let Some(nx) = node_queue.pop() {
             if let Some(stop_at) = stop_at_queue.last()
-                && *stop_at == nx {
-                    stop_at_queue.pop();
-                }
+                && *stop_at == nx
+            {
+                stop_at_queue.pop();
+            }
 
             let current_node = &mut self.graph[nx];
             if current_node
@@ -1175,16 +1449,16 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 && !self.graph[jump_path]
                     .flags
                     .contains(BasicBlockFlags::BYTECODE_WRITTEN)
-                {
-                    // the other node may add this one
-                    if let Some(pending) = stop_at_queue.last() {
-                        if !self.is_downgraph(*pending, jump_path) {
-                            stop_at_queue.push(jump_path);
-                        }
-                    } else {
+            {
+                // the other node may add this one
+                if let Some(pending) = stop_at_queue.last() {
+                    if !self.is_downgraph(*pending, jump_path) {
                         stop_at_queue.push(jump_path);
                     }
+                } else {
+                    stop_at_queue.push(jump_path);
                 }
+            }
         }
     }
 
@@ -1230,6 +1504,8 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                     } else if matches!(
                         instr.unwrap().opcode.mnemonic(),
                         Mnemonic::SETUP_EXCEPT | Mnemonic::SETUP_FINALLY
+                            | Mnemonic::WITH_CLEANUP
+                            | Mnemonic::EXTENDED_ARG
                     ) {
                         stack_size += 0;
                     } else {
@@ -1290,9 +1566,10 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         while let Some(nx) = node_queue.pop() {
             trace!("current: {:#?}", self.graph[nx]);
             if let Some(stop_at) = stop_at_queue.last()
-                && *stop_at == nx {
-                    stop_at_queue.pop();
-                }
+                && *stop_at == nx
+            {
+                stop_at_queue.pop();
+            }
 
             if updated_nodes.contains(&nx) {
                 continue;
@@ -1359,12 +1636,16 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                             .opcode
                             .is_jump()
                             && let Some(outstanding) = outstanding_conditions.last()
-                                && *outstanding == target {
-                                    outstanding_conditions.pop();
-                                    self.graph[nx].instrs.push(ParsedInstr::Good(Arc::new(
-                                        pydis::Instr!(Mnemonic::JUMP_FORWARD.into(), 0),
-                                    )));
-                                }
+                            && *outstanding == target
+                        {
+                            outstanding_conditions.pop();
+                            self.graph[nx]
+                                .instrs
+                                .push(ParsedInstr::Good(Arc::new(pydis::Instr!(
+                                    Mnemonic::JUMP_FORWARD.into(),
+                                    0
+                                ))));
+                        }
                         continue;
                     }
 
@@ -1399,23 +1680,11 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             }
 
             if let Some(jump_path) = jump_path
-                && !updated_nodes.contains(&jump_path) {
-                    // the other node may add this one
-                    if let Some(pending) = stop_at_queue.last() {
-                        if !self.is_downgraph(*pending, jump_path) {
-                            if self.graph[nx]
-                                .instrs
-                                .last()
-                                .unwrap()
-                                .unwrap()
-                                .opcode
-                                .is_conditional_jump()
-                            {
-                                outstanding_conditions.push(jump_path);
-                            }
-                            stop_at_queue.push(jump_path);
-                        }
-                    } else {
+                && !updated_nodes.contains(&jump_path)
+            {
+                // the other node may add this one
+                if let Some(pending) = stop_at_queue.last() {
+                    if !self.is_downgraph(*pending, jump_path) {
                         if self.graph[nx]
                             .instrs
                             .last()
@@ -1428,7 +1697,20 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                         }
                         stop_at_queue.push(jump_path);
                     }
+                } else {
+                    if self.graph[nx]
+                        .instrs
+                        .last()
+                        .unwrap()
+                        .unwrap()
+                        .opcode
+                        .is_conditional_jump()
+                    {
+                        outstanding_conditions.push(jump_path);
+                    }
+                    stop_at_queue.push(jump_path);
                 }
+            }
         }
     }
 
@@ -1555,28 +1837,29 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         let parent_node = &mut self.graph[source_node_index];
 
         if let Some(last_instr) = parent_node.instrs.last().map(|i| i.unwrap())
-            && last_instr.opcode.is_jump() {
-                // Remove the last instruction -- this is our jump
-                let removed_instruction = parent_node.instrs.pop().unwrap();
+            && last_instr.opcode.is_jump()
+        {
+            // Remove the last instruction -- this is our jump
+            let removed_instruction = parent_node.instrs.pop().unwrap();
 
-                trace!("{:?}", removed_instruction);
-                assert!(
-                    !removed_instruction.unwrap().opcode.is_conditional_jump(),
-                    "Removed instruction is a conditional jump: {:#x?}. File: {}",
-                    removed_instruction,
-                    self.generate_file_name(None)
-                );
+            trace!("{:?}", removed_instruction);
+            assert!(
+                !removed_instruction.unwrap().opcode.is_conditional_jump(),
+                "Removed instruction is a conditional jump: {:#x?}. File: {}",
+                removed_instruction,
+                self.generate_file_name(None)
+            );
 
-                assert!(
-                    !matches!(removed_instruction, ParsedInstr::GoodDoNotRemove(_)),
-                    "Removed instruction is a permanent instruction: {:#x?}. File: {}",
-                    removed_instruction,
-                    self.generate_file_name(None)
-                );
-                // parent_node.instrs.push(ParsedInstr::Good(Arc::new(Instr!(TargetOpcode::POP_TOP))));
-                // current_end_offset -= removed_instruction.unwrap().len() as u64;
-                // current_end_offset += parent_node.instrs.last().unwrap().unwrap().len() as u64;
-            }
+            assert!(
+                !matches!(removed_instruction, ParsedInstr::GoodDoNotRemove(_)),
+                "Removed instruction is a permanent instruction: {:#x?}. File: {}",
+                removed_instruction,
+                self.generate_file_name(None)
+            );
+            // parent_node.instrs.push(ParsedInstr::Good(Arc::new(Instr!(TargetOpcode::POP_TOP))));
+            // current_end_offset -= removed_instruction.unwrap().len() as u64;
+            // current_end_offset += parent_node.instrs.last().unwrap().unwrap().len() as u64;
+        }
 
         // Adjust the merged node's offsets
         parent_node.end_offset = current_end_offset;
@@ -1655,7 +1938,8 @@ pub(crate) mod tests {
             let mut code_objects = vec![py27_marshal::read::marshal_loads(&res.data).unwrap()];
 
             let _files_processed = 0;
-            while let Some(py27_marshal::Obj::Code(obj)) = code_objects.pop() {
+            while let Some(py27_marshal::Obj::Code(obj_mutex)) = code_objects.pop() {
+                let obj = obj_mutex.lock().unwrap();
                 output.push(obj.code.as_ref().clone());
 
                 for c in obj
@@ -1944,9 +2228,11 @@ pub(crate) mod tests {
             vec![py27_marshal::read::marshal_loads(&source_of_truth[8..]).unwrap()];
 
         let mut files_processed = 0;
-        while let Some(py27_marshal::Obj::Code(obj)) = code_objects.pop() {
+        while let Some(py27_marshal::Obj::Code(obj_mutex)) = code_objects.pop() {
+            let obj = obj_mutex.lock().unwrap();
+            let code_arc = Arc::new(obj.clone());
             let mut code_graph = CodeGraph::<TargetOpcode>::from_code(
-                Arc::clone(&obj),
+                Arc::clone(&code_arc),
                 files_processed,
                 false,
                 None,
