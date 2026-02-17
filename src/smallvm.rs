@@ -433,7 +433,7 @@ where
                                 }
                                 "+" => {
                                     let mut value = left.clone();
-                                    unsafe { Arc::get_mut_unchecked(&mut value) }.extend_from_slice(right.to_string().as_bytes());
+                                    Arc::get_mut(&mut value).unwrap().extend_from_slice(right.to_string().as_bytes());
                                     stack.push((
                                         Some(Obj::String(value)),
                                         tos_accesses,
@@ -446,7 +446,7 @@ where
                             match operator_str {
                                 "+" => {
                                     let mut value = left.clone();
-                                    unsafe { Arc::get_mut_unchecked(&mut value) }.extend_from_slice(right.as_slice());
+                                    Arc::get_mut(&mut value).unwrap().extend_from_slice(right.as_slice());
                                     stack.push((
                                         Some(Obj::String(value)),
                                         tos_accesses,
@@ -468,7 +468,7 @@ where
                             match operator_str {
                                 "+" => {
                                     let mut value = left.clone();
-                                    unsafe { Arc::get_mut_unchecked(&mut value) }.extend(right.iter().cloned());
+                                    Arc::get_mut(&mut value).unwrap().extend(right.iter().cloned());
                                     stack.push((
                                         Some(Obj::Tuple(value)),
                                         tos_accesses,
@@ -618,7 +618,24 @@ where
                 "<" => match left {
                     Obj::Long(l) => match right {
                         Obj::Long(r) => stack.push((Some(Obj::Bool(l < r)), left_modifying_instrs)),
+                        Obj::Float(r) => stack.push((
+                            Some(Obj::Bool(l.to_f64().unwrap() < r)),
+                            left_modifying_instrs,
+                        )),
                         other => panic!("unsupported right-hand operand: {:?}", other.typ()),
+                    },
+                    Obj::Float(l) => match right {
+                        Obj::Long(r) => stack.push((
+                            Some(Obj::Bool(l < r.to_f64().unwrap())),
+                            left_modifying_instrs,
+                        )),
+                        Obj::Float(r) => {
+                            stack.push((Some(Obj::Bool(l < r)), left_modifying_instrs))
+                        }
+                        other => panic!(
+                            "unsupported right-hand operand for Float <: {:?}",
+                            other.typ()
+                        ),
                     },
                     Obj::String(left) => match right {
                         Obj::String(right) => {
@@ -680,6 +697,19 @@ where
                             other.typ()
                         ),
                     },
+                    Obj::Float(l) => match right {
+                        Obj::Long(r) => stack.push((
+                            Some(Obj::Bool(l <= r.to_f64().unwrap())),
+                            left_modifying_instrs,
+                        )),
+                        Obj::Float(r) => {
+                            stack.push((Some(Obj::Bool(l <= r)), left_modifying_instrs))
+                        }
+                        other => panic!(
+                            "unsupported right-hand operand for Float <=: {:?}",
+                            other.typ()
+                        ),
+                    },
                     other => panic!(
                         "unsupported left-hand operand: {:?} for op {}",
                         other.typ(),
@@ -691,8 +721,25 @@ where
                         Obj::Long(r) => {
                             stack.push((Some(Obj::Bool(l == r)), left_modifying_instrs))
                         }
+                        Obj::Float(r) => stack.push((
+                            Some(Obj::Bool(l.to_f64().unwrap() == r)),
+                            left_modifying_instrs,
+                        )),
                         other => panic!(
                             "unsupported right-hand operand for Long ==: {:?}",
+                            other.typ()
+                        ),
+                    },
+                    Obj::Float(l) => match right {
+                        Obj::Long(r) => stack.push((
+                            Some(Obj::Bool(l == r.to_f64().unwrap())),
+                            left_modifying_instrs,
+                        )),
+                        Obj::Float(r) => {
+                            stack.push((Some(Obj::Bool(l == r)), left_modifying_instrs))
+                        }
+                        other => panic!(
+                            "unsupported right-hand operand for Float ==: {:?}",
                             other.typ()
                         ),
                     },
@@ -721,8 +768,25 @@ where
                         Obj::Long(r) => {
                             stack.push((Some(Obj::Bool(l != r)), left_modifying_instrs))
                         }
+                        Obj::Float(r) => stack.push((
+                            Some(Obj::Bool(l.to_f64().unwrap() != r)),
+                            left_modifying_instrs,
+                        )),
                         other => panic!(
                             "unsupported right-hand operand for Long !=: {:?}",
+                            other.typ()
+                        ),
+                    },
+                    Obj::Float(l) => match right {
+                        Obj::Long(r) => stack.push((
+                            Some(Obj::Bool(l != r.to_f64().unwrap())),
+                            left_modifying_instrs,
+                        )),
+                        Obj::Float(r) => {
+                            stack.push((Some(Obj::Bool(l != r)), left_modifying_instrs))
+                        }
+                        other => panic!(
+                            "unsupported right-hand operand for Float !=: {:?}",
                             other.typ()
                         ),
                     },
@@ -752,6 +816,19 @@ where
                         )),
                         other => panic!(
                             "unsupported right-hand operand for Long >: {:?}",
+                            other.typ()
+                        ),
+                    },
+                    Obj::Float(l) => match right {
+                        Obj::Long(r) => stack.push((
+                            Some(Obj::Bool(l > r.to_f64().unwrap())),
+                            left_modifying_instrs,
+                        )),
+                        Obj::Float(r) => {
+                            stack.push((Some(Obj::Bool(l > r)), left_modifying_instrs))
+                        }
+                        other => panic!(
+                            "unsupported right-hand operand for Float >: {:?}",
                             other.typ()
                         ),
                     },
@@ -994,7 +1071,7 @@ where
             let (tos, _modifying_instrs) = &mut stack[top_of_stack_index];
             let new_tos = match tos {
                 Some(Obj::String(s)) => {
-                    if let Some(byte) = unsafe { Arc::get_mut_unchecked(s) }.pop() {
+                    if let Some(byte) = Arc::get_mut(s).unwrap().pop() {
                         Some(Obj::Long(Arc::new(byte.to_bigint().unwrap())))
                     } else {
                         // iterator is empty -- return
@@ -1262,13 +1339,10 @@ where
                             other => panic!("did not expect type: {:?}", other.typ()),
                         }
                         .to_u8();
-                        unsafe { Arc::get_mut_unchecked(s) }.push(tos_value.unwrap());
+                        Arc::get_mut(s).unwrap().push(tos_value.unwrap());
                     }
                     Some(Obj::List(list)) => {
-                        unsafe { Arc::get_mut_unchecked(list) }
-                            .write()
-                            .unwrap()
-                            .push(tos);
+                        Arc::get_mut(list).unwrap().write().unwrap().push(tos);
                     }
                     Some(other) => {
                         return Err(crate::error::ExecutionError::ComplexExpression(
@@ -1400,7 +1474,9 @@ where
                         tos_tracking.extend(&value_tracking);
                     }
                     Some(_) => {
-                        panic!("Error executing MAP_ADD: tos is not a dict -- this indicates a bug somewhere");
+                        panic!(
+                            "Error executing MAP_ADD: tos is not a dict -- this indicates a bug somewhere"
+                        );
                     }
                     None => {
                         // This scenario is fine

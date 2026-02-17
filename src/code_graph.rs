@@ -694,7 +694,9 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                             .count()
                             == 0
                         {
-                            error!("Could not find an outgoing path from node that was not taken. Outgoing node count is 0 -- this may be a bug")
+                            error!(
+                                "Could not find an outgoing path from node that was not taken. Outgoing node count is 0 -- this may be a bug"
+                            )
                         }
                     }
                 }
@@ -1048,15 +1050,13 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 if last_ins.opcode.mnemonic() == Mnemonic::JUMP_ABSOLUTE
                     && target_node_start > source_node.start_offset
                 {
-                    unsafe { Arc::get_mut_unchecked(&mut last_ins) }.opcode =
-                        Mnemonic::JUMP_FORWARD.into();
+                    Arc::get_mut(&mut last_ins).unwrap().opcode = Mnemonic::JUMP_FORWARD.into();
                 }
 
                 if last_ins.opcode.mnemonic() == Mnemonic::JUMP_FORWARD
                     && target_node_start < end_of_jump_ins
                 {
-                    unsafe { Arc::get_mut_unchecked(&mut last_ins) }.opcode =
-                        Mnemonic::JUMP_ABSOLUTE.into();
+                    Arc::get_mut(&mut last_ins).unwrap().opcode = Mnemonic::JUMP_ABSOLUTE.into();
                 }
 
                 let last_ins_is_abs_jump = last_ins.opcode.is_absolute_jump();
@@ -1076,7 +1076,7 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 };
 
                 let mut last_ins = source_node.instrs.last_mut().unwrap().unwrap();
-                unsafe { Arc::get_mut_unchecked(&mut last_ins) }.arg = Some(new_arg as u16);
+                Arc::get_mut(&mut last_ins).unwrap().arg = Some(new_arg as u16);
             }
         }
     }
@@ -1660,7 +1660,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::smallvm::tests::*;
-    use crate::{deob, Deobfuscator, Instr};
+    use crate::{Deobfuscator, Instr, deob};
     use pydis::opcode::Instruction;
 
     type TargetOpcode = pydis::opcode::py27::Standard;

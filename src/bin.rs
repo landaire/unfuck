@@ -1,6 +1,3 @@
-#![feature(get_mut_unchecked)]
-#![feature(map_first_last)]
-
 use anyhow::{Context, Result};
 
 use pydis::opcode::py27::Standard;

@@ -1,6 +1,3 @@
-#![feature(get_mut_unchecked)]
-#![feature(map_first_last)]
-
 use crate::error::Error;
 use code_graph::CodeGraph;
 use partial_execution::ExecutionPath;
@@ -122,15 +119,15 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscator<'a, O> {
     pub fn on_store_to_named_var(
         mut self,
         callback: impl Fn(
-                &Code,
-                &HashSet<String>,
-                &RwLock<&mut CodeGraph<O>>,
-                &Instruction<O>,
-                &(Option<Obj>, InstructionTracker<(NodeIndex<u32>, usize)>),
-            )
-            + 'static
-            + Send
-            + Sync,
+            &Code,
+            &HashSet<String>,
+            &RwLock<&mut CodeGraph<O>>,
+            &Instruction<O>,
+            &(Option<Obj>, InstructionTracker<(NodeIndex<u32>, usize)>),
+        )
+        + 'static
+        + Send
+        + Sync,
     ) -> Deobfuscator<'a, O> {
         self.on_store_to_named_var = Some(Box::new(callback));
         self
