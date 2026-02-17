@@ -136,9 +136,7 @@ impl<O: Opcode<Mnemonic = py27::Mnemonic>> BasicBlock<O> {
             }
         }
 
-        if ins_index.is_none() {
-            return None;
-        }
+        ins_index?;
 
         let ins_index = ins_index.unwrap();
 
@@ -313,7 +311,7 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             // joins
             let next_is_join = join_at_queue
                 .last()
-                .map_or(false, |next_join| next_instr == *next_join);
+                .is_some_and(|next_join| next_instr == *next_join);
             // If this is the end of this basic block...
             if instr.opcode.is_jump() || next_is_join {
                 if next_is_join {
@@ -326,7 +324,7 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 // If so, we should split it
                 let mut split_at = BTreeSet::new();
                 for (_from, to, weight) in &edges {
-                    if curr_basic_block.start_offset == 755 {}
+                    curr_basic_block.start_offset == 755;
                     let _weight = *weight;
                     if *to > curr_basic_block.start_offset && *to <= curr_basic_block.end_offset {
                         split_at.insert(*to);
@@ -534,7 +532,7 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
     fn invoke_partial_execution(
         &mut self,
         mapped_function_names: &mut HashMap<String, String>,
-        plain_loaded_modules: &mut HashSet<String>,
+        _plain_loaded_modules: &mut HashSet<String>,
     ) -> Vec<ExecutionPath> {
         // create our thread communication channels
         let (completed_paths_sender, completed_paths_receiver) = unbounded();
@@ -628,7 +626,7 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 self.graph[*node].flags |= BasicBlockFlags::USED_IN_EXECUTION;
 
                 // we already did the work for this node
-                if node_branch_direction.contains_key(&node) {
+                if node_branch_direction.contains_key(node) {
                     continue;
                 }
 
@@ -637,7 +635,7 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 let mut path_instructions = vec![];
 
                 for other_path in &completed_paths {
-                    match other_path.condition_results.get(&node) {
+                    match other_path.condition_results.get(node) {
                         Some(Some(current_path_value)) => {
                             // we have a mismatch -- we cannot safely remove this
                             if branch_taken != current_path_value.0 {
@@ -748,7 +746,7 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                     .collect::<Vec<_>>();
 
                 self.graph.retain_edges(|_g, edge| {
-                    !child_edges.iter().any(|child_edge| *child_edge == edge)
+                    !child_edges.contains(&edge)
                 });
             }
         }
@@ -837,11 +835,10 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         trace!("beginning bb offset updating visitor");
         while let Some(nx) = node_queue.pop() {
             trace!("current: {:#?}", self.graph[nx]);
-            if let Some(stop_at) = stop_at_queue.last() {
-                if *stop_at == nx {
+            if let Some(stop_at) = stop_at_queue.last()
+                && *stop_at == nx {
                     stop_at_queue.pop();
                 }
-            }
 
             if updated_nodes.contains(&nx) {
                 continue;
@@ -930,8 +927,8 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 node_queue.push(target);
             }
 
-            if let Some(jump_path) = jump_path {
-                if !updated_nodes.contains(&jump_path) {
+            if let Some(jump_path) = jump_path
+                && !updated_nodes.contains(&jump_path) {
                     // the other node may add this one
                     if let Some(pending) = stop_at_queue.last() {
                         if !self.is_downgraph(*pending, jump_path) {
@@ -941,7 +938,6 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                         stop_at_queue.push(jump_path);
                     }
                 }
-            }
         }
     }
 
@@ -951,8 +947,8 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         let mut bfs = Bfs::new(&self.graph, self.root);
         while let Some(nx) = bfs.next(&self.graph) {
             let bb = &self.graph[nx];
-            if let Some(instr) = bb.instrs.first() {
-                if instr.unwrap().opcode.mnemonic() == Mnemonic::FOR_ITER {
+            if let Some(instr) = bb.instrs.first()
+                && instr.unwrap().opcode.mnemonic() == Mnemonic::FOR_ITER {
                     // let's get this target node -- if it's just a RETURN_VALUE with other
                     // people returning as well, we should just use our own
                     //
@@ -998,7 +994,6 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                         self.graph.add_edge(nx, new_return_node, EdgeWeight::Jump);
                     }
                 }
-            }
         }
     }
 
@@ -1088,11 +1083,10 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         node_queue.push(root);
         trace!("beginning bytecode bb visitor");
         'node_visitor: while let Some(nx) = node_queue.pop() {
-            if let Some(stop_at) = stop_at_queue.last() {
-                if *stop_at == nx {
+            if let Some(stop_at) = stop_at_queue.last()
+                && *stop_at == nx {
                     stop_at_queue.pop();
                 }
-            }
 
             let current_node = &mut self.graph[nx];
             if current_node
@@ -1177,8 +1171,8 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 node_queue.push(target);
             }
 
-            if let Some(jump_path) = jump_path {
-                if !self.graph[jump_path]
+            if let Some(jump_path) = jump_path
+                && !self.graph[jump_path]
                     .flags
                     .contains(BasicBlockFlags::BYTECODE_WRITTEN)
                 {
@@ -1191,7 +1185,6 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                         stop_at_queue.push(jump_path);
                     }
                 }
-            }
         }
     }
 
@@ -1234,15 +1227,13 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                         } else {
                             // do nothing if we take the branch
                         }
+                    } else if matches!(
+                        instr.unwrap().opcode.mnemonic(),
+                        Mnemonic::SETUP_EXCEPT | Mnemonic::SETUP_FINALLY
+                    ) {
+                        stack_size += 0;
                     } else {
-                        if matches!(
-                            instr.unwrap().opcode.mnemonic(),
-                            Mnemonic::SETUP_EXCEPT | Mnemonic::SETUP_FINALLY
-                        ) {
-                            stack_size += 0;
-                        } else {
-                            stack_size += instr.unwrap().stack_adjustment_after();
-                        }
+                        stack_size += instr.unwrap().stack_adjustment_after();
                     }
                 }
             }
@@ -1298,11 +1289,10 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         trace!("beginning jump 0 visitor");
         while let Some(nx) = node_queue.pop() {
             trace!("current: {:#?}", self.graph[nx]);
-            if let Some(stop_at) = stop_at_queue.last() {
-                if *stop_at == nx {
+            if let Some(stop_at) = stop_at_queue.last()
+                && *stop_at == nx {
                     stop_at_queue.pop();
                 }
-            }
 
             if updated_nodes.contains(&nx) {
                 continue;
@@ -1368,16 +1358,13 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                             .unwrap()
                             .opcode
                             .is_jump()
-                        {
-                            if let Some(outstanding) = outstanding_conditions.last() {
-                                if *outstanding == target {
+                            && let Some(outstanding) = outstanding_conditions.last()
+                                && *outstanding == target {
                                     outstanding_conditions.pop();
                                     self.graph[nx].instrs.push(ParsedInstr::Good(Arc::new(
                                         pydis::Instr!(Mnemonic::JUMP_FORWARD.into(), 0),
                                     )));
                                 }
-                            }
-                        }
                         continue;
                     }
 
@@ -1411,8 +1398,8 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 node_queue.push(target);
             }
 
-            if let Some(jump_path) = jump_path {
-                if !updated_nodes.contains(&jump_path) {
+            if let Some(jump_path) = jump_path
+                && !updated_nodes.contains(&jump_path) {
                     // the other node may add this one
                     if let Some(pending) = stop_at_queue.last() {
                         if !self.is_downgraph(*pending, jump_path) {
@@ -1442,7 +1429,6 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                         stop_at_queue.push(jump_path);
                     }
                 }
-            }
         }
     }
 
@@ -1568,8 +1554,8 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         let current_end_offset = current_node.end_offset;
         let parent_node = &mut self.graph[source_node_index];
 
-        if let Some(last_instr) = parent_node.instrs.last().map(|i| i.unwrap()) {
-            if last_instr.opcode.is_jump() {
+        if let Some(last_instr) = parent_node.instrs.last().map(|i| i.unwrap())
+            && last_instr.opcode.is_jump() {
                 // Remove the last instruction -- this is our jump
                 let removed_instruction = parent_node.instrs.pop().unwrap();
 
@@ -1591,7 +1577,6 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 // current_end_offset -= removed_instruction.unwrap().len() as u64;
                 // current_end_offset += parent_node.instrs.last().unwrap().unwrap().len() as u64;
             }
-        }
 
         // Adjust the merged node's offsets
         parent_node.end_offset = current_end_offset;
@@ -1606,9 +1591,7 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             !outgoing_edges
                 .iter()
                 .any(|(outgoing_index, _target_offset, _weight)| *outgoing_index == edge)
-                && !incoming_edges
-                    .iter()
-                    .any(|incoming_index| *incoming_index == edge)
+                && !incoming_edges.contains(&edge)
         });
 
         // Re-add the old node's outgoing edges

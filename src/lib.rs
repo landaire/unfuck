@@ -1,6 +1,5 @@
 use crate::error::Error;
 use code_graph::CodeGraph;
-use partial_execution::ExecutionPath;
 use petgraph::stable_graph::NodeIndex;
 use pydis::opcode::py27::{self, Standard};
 use pydis::prelude::{Instruction, Opcode};
@@ -63,7 +62,7 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Debug for Deobfuscato
             .field("graphviz_graphs", &self.graphviz_graphs)
             .field(
                 "on_graph_generated",
-                if let Some(callback) = &self.on_graph_generated {
+                if let Some(_callback) = &self.on_graph_generated {
                     &"Some(callback)"
                 } else {
                     &"None"
@@ -71,7 +70,7 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Debug for Deobfuscato
             )
             .field(
                 "on_store_to_named_var",
-                if let Some(callback) = &self.on_store_to_named_var {
+                if let Some(_callback) = &self.on_store_to_named_var {
                     &"Some(callback)"
                 } else {
                     &"None"
@@ -142,7 +141,7 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscator<'a, O> {
     /// Deobfuscates the marshalled code object and returns either the deobfuscated code object
     /// or the [`crate::errors::Error`] encountered during execution
     pub fn deobfuscate(&self) -> Result<DeobfuscatedCodeObject, Error<O>> {
-        if let py27_marshal::Obj::Code(code) = py27_marshal::read::marshal_loads(&self.input)? {
+        if let py27_marshal::Obj::Code(code) = py27_marshal::read::marshal_loads(self.input)? {
             // This vector will contain the input code object and all nested objects
             let mut results = vec![];
             let mut mapped_names = HashMap::new();
@@ -245,7 +244,7 @@ pub fn dump_strings<'a>(
 
 /// Dumps all strings from a Code object. This will go over all of the `names`, variable names (`varnames`),
 /// `consts`, and all strings from any nested code objects.
-fn dump_codeobject_strings(pyc_filename: &Path, code: Arc<Code>) -> Vec<CodeObjString> {
+fn dump_codeobject_strings(pyc_filename: &Path, code: Arc<Code>) -> Vec<CodeObjString<'_>> {
     let new_strings = Mutex::new(vec![]);
     code.names.par_iter().for_each(|name| {
         new_strings.lock().unwrap().push(CodeObjString::new(
@@ -280,7 +279,7 @@ fn dump_codeobject_strings(pyc_filename: &Path, code: Arc<Code>) -> Vec<CodeObjS
     code.consts.par_iter().for_each(|c| {
         if let Obj::Code(const_code) = c {
             // Call deobfuscate_bytecode first since the bytecode comes before consts and other data
-            let mut strings = dump_codeobject_strings(pyc_filename, Arc::clone(&const_code));
+            let mut strings = dump_codeobject_strings(pyc_filename, Arc::clone(const_code));
             new_strings.lock().unwrap().append(&mut strings);
         }
     });

@@ -1,4 +1,4 @@
-use log::{debug, error, trace, warn};
+use log::{debug, trace, warn};
 use num_bigint::ToBigInt;
 use num_traits::{Pow, ToPrimitive};
 use py27_marshal::bstr::BString;
@@ -748,7 +748,7 @@ where
                             let left_set_lock = left_set.read().unwrap();
                             let right_set_lock = right_set.read().unwrap();
                             stack.push((
-                                Some(Obj::Bool(&*left_set_lock == &*right_set_lock)),
+                                Some(Obj::Bool(*left_set_lock == *right_set_lock)),
                                 left_modifying_instrs,
                             ))
                         }
@@ -795,7 +795,7 @@ where
                             let left_set_lock = left_set.read().unwrap();
                             let right_set_lock = right_set.read().unwrap();
                             stack.push((
-                                Some(Obj::Bool(&*left_set_lock != &*right_set_lock)),
+                                Some(Obj::Bool(*left_set_lock != *right_set_lock)),
                                 left_modifying_instrs,
                             ))
                         }
@@ -1038,7 +1038,7 @@ where
         Mnemonic::MAKE_CLOSURE => {
             // we don't support attributes
             let (_code_obj, obj_modifying_instrs) = stack.pop().unwrap();
-            let (free_vars, free_var_instrs) = stack.pop().unwrap();
+            let (_free_vars, free_var_instrs) = stack.pop().unwrap();
 
             obj_modifying_instrs.push(access_tracking);
 
@@ -1988,8 +1988,8 @@ where
         //println!("Instruction: {:X?}", instr);
         add_instruction!(offset, ParsedInstr::Good(Arc::clone(&instr)));
 
-        if instr.opcode.is_jump() {
-            if matches!(
+        if instr.opcode.is_jump()
+            && matches!(
                 instr.opcode.mnemonic(),
                 Mnemonic::JUMP_ABSOLUTE | Mnemonic::JUMP_FORWARD | Mnemonic::CONTINUE_LOOP
             ) {
@@ -2024,7 +2024,6 @@ where
                     }
                 }
             }
-        }
 
         let ignore_jump_target = false;
         if !ignore_jump_target && instr.opcode.is_absolute_jump() {
@@ -2074,7 +2073,7 @@ where
         // we care
         rdr.set_position(next_instr_offset);
 
-        while let Some(next_instr) = decode_py27::<O, _>(&mut rdr).ok() {
+        while let Ok(next_instr) = decode_py27::<O, _>(&mut rdr) {
             let offset = next_instr_offset;
             next_instr_offset += next_instr.len() as u64;
 
@@ -2132,7 +2131,6 @@ fn remove_bad_instructions_behind_offset<O: Opcode<Mnemonic = py27::Mnemonic>>(
     {
         let bad_offsets: Vec<u64> = analyzed_instructions
             .keys()
-            .into_iter()
             .filter(|addr| **addr > last_jump_offset && **addr < offset)
             .copied()
             .collect();

@@ -1,12 +1,12 @@
 use crate::code_graph::{BasicBlockFlags, CodeGraph, EdgeWeight};
 
 use crossbeam::channel::Sender;
-use log::{debug, error, trace, warn};
+use log::{debug, error, trace};
 use num_bigint::ToBigInt;
 
+use petgraph::Direction;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::{Bfs, EdgeRef};
-use petgraph::Direction;
 
 use py27_marshal::{Code, Obj};
 use pydis::opcode::py27::{self, Mnemonic};
@@ -77,7 +77,7 @@ pub(crate) fn perform_partial_execution<
         edges.sort_by(|a, b| a.weight().cmp(b.weight()));
         edges
             .iter()
-            .map(|edge| (edge.weight().clone(), edge.target(), edge.id()))
+            .map(|edge| (*edge.weight(), edge.target(), edge.id()))
             .collect::<Vec<_>>()
     };
 
@@ -289,11 +289,11 @@ pub(crate) fn perform_partial_execution<
                         target,
                         code_graph,
                         execution_path_lock,
-                        &mapped_function_names,
-                        &plain_loaded_modules,
+                        mapped_function_names,
+                        plain_loaded_modules,
                         Arc::clone(&code),
                         s,
-                        &completed_paths_sender,
+                        completed_paths_sender,
                     );
                 });
                 return;
@@ -337,7 +337,7 @@ pub(crate) fn perform_partial_execution<
                         let plain_loaded_modules = plain_loaded_modules.lock().unwrap();
                         (user_callback)(
                             code.as_ref(),
-                            &*plain_loaded_modules,
+                            &plain_loaded_modules,
                             code_graph,
                             instr.as_ref(),
                             execution_path
@@ -366,7 +366,7 @@ pub(crate) fn perform_partial_execution<
                     if was_make_function {
                         trace!("A MAKE_FUNCTION preceded the STORE_NAME/STORE_FAST");
                         let (const_origination_node, const_idx) =
-                            accessing_instructions.0.lock().unwrap()[0].clone();
+                            accessing_instructions.0.lock().unwrap()[0];
 
                         let const_instr = &code_graph.read().unwrap().graph[const_origination_node]
                             .instrs[const_idx];
@@ -386,8 +386,8 @@ pub(crate) fn perform_partial_execution<
                             if let Obj::Code(function_code) = &code.consts[const_idx] {
                                 let key = format!(
                                     "{}_{}_{}",
-                                    function_code.filename.to_string(),
-                                    function_code.name.to_string(),
+                                    function_code.filename,
+                                    function_code.name,
                                     function_code.code.len(),
                                 );
 
@@ -411,7 +411,10 @@ pub(crate) fn perform_partial_execution<
                                         .insert(key, name.to_string());
                                 }
                             } else {
-                                error!("could not trace MAKE_FUNCTION back to a LOAD_CONST -- first instruction in access tracking is {:?}. this is likely a bug", const_instr.opcode.mnemonic());
+                                error!(
+                                    "could not trace MAKE_FUNCTION back to a LOAD_CONST -- first instruction in access tracking is {:?}. this is likely a bug",
+                                    const_instr.opcode.mnemonic()
+                                );
                             }
                         } else {
                             error!(
@@ -445,11 +448,10 @@ pub(crate) fn perform_partial_execution<
                     // we dont execute functions here
                     if function.is_some() {
                         debug!("need to implement call_function: {:?}", function);
-                    } else if let Some(name) = names_loaded.lock().unwrap().last() {
-                        if let Ok(function_name) = std::str::from_utf8(&*name.as_slice()) {
+                    } else if let Some(name) = names_loaded.lock().unwrap().last()
+                        && let Ok(function_name) = std::str::from_utf8(name.as_slice()) {
                             debug!("maybe can implement call_function: {:?}", function_name);
                         }
-                    }
                     None
                 },
                 (root, ins_idx),
@@ -565,11 +567,11 @@ pub(crate) fn perform_partial_execution<
                 target,
                 code_graph,
                 Mutex::new(execution_path),
-                &mapped_function_names,
-                &plain_loaded_modules,
+                mapped_function_names,
+                plain_loaded_modules,
                 target_code,
                 s,
-                &completed_paths_sender,
+                completed_paths_sender,
             );
         });
     }

@@ -1,8 +1,8 @@
 use cpython::{PyBytes, PyDict, PyList, PyModule, PyObject, PyResult, Python, PythonObject};
 use log::{debug, trace};
 
-use py27_marshal::{Code, CodeFlags, Obj};
-use pydis::opcode::py27::{self, Mnemonic};
+use py27_marshal::{Code, CodeFlags};
+use pydis::opcode::py27::{self};
 use pydis::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -85,8 +85,8 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
 
         let key = format!(
             "{}_{}_{}",
-            code.filename.to_string(),
-            code.name.to_string(),
+            code.filename,
+            code.name,
             code.code.len(),
         );
 
@@ -133,7 +133,7 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
 
         module.add(py, "marshal", marshal)?;
         module.add(py, "types", types)?;
-        module.add(py, "data", PyBytes::new(py, &self.input))?;
+        module.add(py, "data", PyBytes::new(py, self.input))?;
 
         let converted_objects: Vec<PyObject> = deobfuscated_code
             .map(|code| PyBytes::new(py, code).into_object())
@@ -220,8 +220,8 @@ output = marshal.dumps(cleanup_code_obj(code))
 
         locals.set_item(py, "source", source)?;
 
-        let output = py.run("exec source in deob.__dict__", None, Some(&locals))?;
-        debug!("{:?}", output);
+        py.run("exec source in deob.__dict__", None, Some(&locals))?;
+        debug!("{:?}", ());
 
         let output = module
             .get(py, "output")?
@@ -237,8 +237,8 @@ output = marshal.dumps(cleanup_code_obj(code))
 mod tests {
     use super::*;
     use crate::code_graph::tests::*;
-    use crate::smallvm::tests::*;
     use crate::smallvm::PYTHON27_COMPARE_OPS;
+    use crate::smallvm::tests::*;
     use crate::{Instr, Long};
     use num_bigint::BigInt;
     use py27_marshal::Obj;
