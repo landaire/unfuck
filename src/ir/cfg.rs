@@ -2,9 +2,9 @@
 //!
 //! The function is split into basic blocks at jump targets and after every
 //! branch or return. Each block carries its straight-line statements and a typed
-//! [`Terminator`] whose conditions reference the shared [`ExprArena`]. Milestone
-//! 2 supports forward control flow only; back edges (loops) and exception or
-//! short-circuit setup are rejected so the supported surface stays explicit.
+//! [`Terminator`] whose conditions reference the shared [`ExprArena`]. Loops are
+//! recovered from back edges by the structurer; exception and short-circuit setup
+//! are still rejected so the supported surface stays explicit.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -35,7 +35,7 @@ pub enum Terminator {
     /// Returns `value` (or `None` for a bare return).
     Return(Option<ValueId>),
     /// Raises an exception. Carries 0..=3 arguments (type, value, traceback).
-    /// Control leaves the function (no normal successor in Milestone 3).
+    /// Control leaves the function (no normal successor).
     Raise(Vec<ValueId>),
     /// `FOR_ITER`: a loop header. Falls through to `body` for the next item, or
     /// jumps to `exit` when the iterator is exhausted. The iterator and loop
@@ -293,8 +293,8 @@ enum TerminatorKind {
     Raise,
 }
 
-/// Classifies an opcode's effect on control flow, rejecting constructs Milestone
-/// 2 does not structure.
+/// Classifies an opcode's effect on control flow, rejecting constructs the
+/// structurer does not handle.
 fn terminator_kind(mnemonic: Mnemonic) -> Result<TerminatorKind, IrError> {
     Ok(match mnemonic {
         Mnemonic::RETURN_VALUE => TerminatorKind::Return,

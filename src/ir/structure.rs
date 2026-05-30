@@ -5,8 +5,8 @@
 //! the graph recursively, emitting a loop when it first reaches a loop header and
 //! translating jumps to the loop header or follow into `continue`/`break`.
 //!
-//! Milestone: forward control flow plus `while` loops. `for` loops (which keep a
-//! value live across the loop on the stack) and exceptions are not yet handled.
+//! `if`/`else`, `while`, and `for` are recovered; short-circuit operators and
+//! exceptions are not yet handled.
 
 use std::collections::{HashMap, HashSet};
 

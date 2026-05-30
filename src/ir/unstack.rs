@@ -2,10 +2,9 @@
 //! of statements over an [`ExprArena`].
 //!
 //! Each value-producing instruction pushes a [`ValueId`] onto a symbolic stack;
-//! each effecting instruction pops its operands and emits a [`Stmt`]. This is
-//! the Milestone 1 scope: a single basic block with no control flow. Opcodes
-//! outside that scope return [`IrError::Unsupported`] so coverage gaps surface
-//! instead of producing wrong output.
+//! each effecting instruction pops its operands and emits a [`Stmt`]. Opcodes
+//! outside the supported set return [`IrError::Unsupported`] so coverage gaps
+//! surface instead of producing wrong output.
 
 use pydis::opcode::py27::{Mnemonic, Standard};
 use pydis::prelude::*;
