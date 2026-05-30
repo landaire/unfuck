@@ -48,6 +48,7 @@ rayon = "1.5"
 py27-marshal = { version = "0.4" }
 num-bigint = "0.4"
 pydis = "0.4"
+insta = "1"
 
 [features]
 reduced_functionality = []

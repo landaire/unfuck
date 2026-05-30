@@ -1,0 +1,8 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def attr_call(self):
+    x = self.a.b(1, 2)
+    return x

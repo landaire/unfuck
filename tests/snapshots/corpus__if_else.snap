@@ -1,0 +1,11 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def if_else(x):
+    if x:
+        y = 1
+    else:
+        y = 2
+    return y

@@ -1,0 +1,7 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def do_raise():
+    raise Boom
