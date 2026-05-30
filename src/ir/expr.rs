@@ -236,6 +236,13 @@ impl ExprArena {
     pub fn get(&self, id: ValueId) -> &Expr {
         &self.exprs[id.0 as usize]
     }
+
+    /// Replaces an expression in place. Used to grow a container literal (a dict
+    /// built by `BUILD_MAP`/`STORE_MAP`) while it sits on the stack, before any
+    /// other expression can reference it.
+    pub fn set(&mut self, id: ValueId, expr: Expr) {
+        self.exprs[id.0 as usize] = expr;
+    }
 }
 
 impl fmt::Display for ValueId {

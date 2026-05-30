@@ -47,3 +47,7 @@ def count_down(n):
 def unpack(p):
     a, b = p
     return a + b
+
+
+def make_dict(a, b):
+    return {'x': a, 'y': b}

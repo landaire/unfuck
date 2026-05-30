@@ -179,6 +179,22 @@ impl Unstacker {
                 let items = self.pop_n(arg_u16(arg)? as usize)?;
                 self.push(Expr::Set(items));
             }
+            // BUILD_MAP makes an empty dict; the STORE_MAPs that follow grow it in
+            // place while it stays on the stack.
+            Mnemonic::BUILD_MAP => self.push(Expr::Dict(Vec::new())),
+            Mnemonic::STORE_MAP => {
+                let key = self.pop()?;
+                let value = self.pop()?;
+                let dict = *self.stack.last().ok_or(IrError::StackUnderflow)?;
+                match self.arena.get(dict) {
+                    Expr::Dict(pairs) => {
+                        let mut pairs = pairs.clone();
+                        pairs.push((key, value));
+                        self.arena.set(dict, Expr::Dict(pairs));
+                    }
+                    _ => return Err(IrError::Unsupported(mnemonic)),
+                }
+            }
             Mnemonic::DUP_TOP => {
                 let top = *self.stack.last().ok_or(IrError::StackUnderflow)?;
                 self.stack.push(top);

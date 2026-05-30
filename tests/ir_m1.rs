@@ -306,6 +306,20 @@ fn tuple_assignment() {
 }
 
 #[test]
+fn dict_literal() {
+    // def f(): return {'k': 1}
+    let code = Builder::new("f", 0, &[], &[], vec![Obj::None, long(1), pystr("k")])
+        .arg(Standard::BUILD_MAP, 1)
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::LOAD_CONST, 2)
+        .op(Standard::STORE_MAP)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f():\n    return {'k': 1}\n");
+}
+
+#[test]
 fn exceptions_are_rejected() {
     let code = Builder::new("f", 0, &[], &[], vec![Obj::None])
         .jump(Standard::SETUP_EXCEPT, "after")

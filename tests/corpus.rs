@@ -47,6 +47,7 @@ fn cases() {
         "sum_list",
         "count_down",
         "unpack",
+        "make_dict",
     ] {
         insta::assert_snapshot!(name, decompile(fixture, name));
     }
