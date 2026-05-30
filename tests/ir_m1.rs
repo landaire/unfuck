@@ -291,6 +291,21 @@ fn while_loop() {
 }
 
 #[test]
+fn tuple_assignment() {
+    // def f(p): a, b = p; return a
+    let code = Builder::new("f", 1, &["p", "a", "b"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::UNPACK_SEQUENCE, 2)
+        .arg(Standard::STORE_FAST, 1)
+        .arg(Standard::STORE_FAST, 2)
+        .arg(Standard::LOAD_FAST, 1)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(p):\n    a, b = p\n    return a\n");
+}
+
+#[test]
 fn exceptions_are_rejected() {
     let code = Builder::new("f", 0, &[], &[], vec![Obj::None])
         .jump(Standard::SETUP_EXCEPT, "after")

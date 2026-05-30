@@ -13,11 +13,20 @@ use pydis::prelude::*;
 use super::expr::*;
 use super::IrError;
 
+/// A tuple-assignment target under construction by `UNPACK_SEQUENCE` and the
+/// stores that follow it.
+struct PendingUnpack {
+    rhs: ValueId,
+    arity: usize,
+    targets: Vec<LValue>,
+}
+
 /// Symbolic stack machine for one basic block.
 pub struct Unstacker {
     arena: ExprArena,
     stack: Vec<ValueId>,
     stmts: Vec<Stmt>,
+    unpack: Option<PendingUnpack>,
 }
 
 impl Unstacker {
@@ -26,6 +35,7 @@ impl Unstacker {
             arena: ExprArena::new(),
             stack: Vec::new(),
             stmts: Vec::new(),
+            unpack: None,
         }
     }
 
@@ -36,6 +46,22 @@ impl Unstacker {
 
     fn pop(&mut self) -> Result<ValueId, IrError> {
         self.stack.pop().ok_or(IrError::StackUnderflow)
+    }
+
+    /// Records an assignment to `target`. While an `UNPACK_SEQUENCE` is in progress
+    /// the stores it feeds collect into a single tuple assignment instead of
+    /// emitting one statement each.
+    fn complete_store(&mut self, target: LValue, value: ValueId) {
+        if self.unpack.is_some() && matches!(self.arena.get(value), Expr::UnpackSlot) {
+            let pending = self.unpack.as_mut().unwrap();
+            pending.targets.push(target);
+            if pending.targets.len() == pending.arity {
+                let pending = self.unpack.take().unwrap();
+                self.emit(Stmt::Assign(LValue::Tuple(pending.targets), pending.rhs));
+            }
+        } else {
+            self.emit(Stmt::Assign(target, value));
+        }
     }
 
     fn pop_n(&mut self, n: usize) -> Result<Vec<ValueId>, IrError> {
@@ -53,6 +79,7 @@ impl Unstacker {
     /// accumulated statements are retained across blocks of the same function.
     pub fn start_block(&mut self) {
         self.stack.clear();
+        self.unpack = None;
     }
 
     /// Pops a value left on the stack, e.g. a branch condition or return value.
@@ -158,30 +185,46 @@ impl Unstacker {
             }
             Mnemonic::STORE_FAST => {
                 let value = self.pop()?;
-                self.emit(Stmt::Assign(LValue::Local(VarId(arg_u16(arg)?)), value));
+                self.complete_store(LValue::Local(VarId(arg_u16(arg)?)), value);
             }
             Mnemonic::STORE_DEREF => {
                 let value = self.pop()?;
-                self.emit(Stmt::Assign(LValue::Deref(DerefId(arg_u16(arg)?)), value));
+                self.complete_store(LValue::Deref(DerefId(arg_u16(arg)?)), value);
             }
             Mnemonic::STORE_NAME => {
                 let value = self.pop()?;
-                self.emit(Stmt::Assign(LValue::Name(NameId(arg_u16(arg)?)), value));
+                self.complete_store(LValue::Name(NameId(arg_u16(arg)?)), value);
             }
             Mnemonic::STORE_GLOBAL => {
                 let value = self.pop()?;
-                self.emit(Stmt::Assign(LValue::Global(NameId(arg_u16(arg)?)), value));
+                self.complete_store(LValue::Global(NameId(arg_u16(arg)?)), value);
             }
             Mnemonic::STORE_ATTR => {
                 let obj = self.pop()?;
                 let value = self.pop()?;
-                self.emit(Stmt::Assign(LValue::Attr(obj, NameId(arg_u16(arg)?)), value));
+                self.complete_store(LValue::Attr(obj, NameId(arg_u16(arg)?)), value);
             }
             Mnemonic::STORE_SUBSCR => {
                 let key = self.pop()?;
                 let container = self.pop()?;
                 let value = self.pop()?;
-                self.emit(Stmt::Assign(LValue::Subscript(container, key), value));
+                self.complete_store(LValue::Subscript(container, key), value);
+            }
+            Mnemonic::UNPACK_SEQUENCE => {
+                let arity = arg_u16(arg)? as usize;
+                let rhs = self.pop()?;
+                // Nested unpack targets, e.g. `(a, b), c = ...`, are not handled yet.
+                if matches!(self.arena.get(rhs), Expr::UnpackSlot) {
+                    return Err(IrError::Unsupported(mnemonic));
+                }
+                self.unpack = Some(PendingUnpack {
+                    rhs,
+                    arity,
+                    targets: Vec::new(),
+                });
+                for _ in 0..arity {
+                    self.push(Expr::UnpackSlot);
+                }
             }
             Mnemonic::POP_TOP => {
                 let value = self.pop()?;

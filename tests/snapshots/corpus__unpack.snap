@@ -1,0 +1,8 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def unpack(p):
+    a, b = p
+    return a + b

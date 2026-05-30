@@ -244,6 +244,9 @@ impl<'a> Emitter<'a> {
                     .collect();
                 (format!("{{{}}}", rendered.join(", ")), prec::ATOM)
             }
+            // An unconsumed unpack slot indicates a tuple-assignment shape the
+            // unstacker did not fully match; surface it rather than hide it.
+            Expr::UnpackSlot => ("<unpack>".to_string(), prec::ATOM),
         }
     }
 

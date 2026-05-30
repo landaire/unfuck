@@ -42,3 +42,8 @@ def count_down(n):
     while n > 0:
         n = n - 1
     return n
+
+
+def unpack(p):
+    a, b = p
+    return a + b

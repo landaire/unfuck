@@ -165,6 +165,9 @@ pub enum Expr {
     List(Vec<ValueId>),
     Dict(Vec<(ValueId, ValueId)>),
     Set(Vec<ValueId>),
+    /// A transient placeholder pushed by `UNPACK_SEQUENCE`; consumed by the stores
+    /// that follow to build a tuple-assignment target. Never reaches emission.
+    UnpackSlot,
 }
 
 /// The target of an assignment.
