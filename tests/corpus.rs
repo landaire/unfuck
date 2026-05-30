@@ -44,6 +44,8 @@ fn cases() {
         "guard",
         "if_else",
         "do_raise",
+        "sum_list",
+        "count_down",
     ] {
         insta::assert_snapshot!(name, decompile(fixture, name));
     }

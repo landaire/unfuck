@@ -11,7 +11,7 @@ use std::collections::{BTreeSet, HashMap};
 use pydis::opcode::py27::{Mnemonic, Standard};
 use pydis::prelude::*;
 
-use super::expr::{ExprArena, Offset, Stmt, ValueId};
+use super::expr::{DerefId, ExprArena, LValue, NameId, Offset, Stmt, ValueId, VarId};
 use super::unstack::Unstacker;
 use super::IrError;
 
@@ -37,6 +37,10 @@ pub enum Terminator {
     /// Raises an exception. Carries 0..=3 arguments (type, value, traceback).
     /// Control leaves the function (no normal successor in Milestone 3).
     Raise(Vec<ValueId>),
+    /// `FOR_ITER`: a loop header. Falls through to `body` for the next item, or
+    /// jumps to `exit` when the iterator is exhausted. The iterator and loop
+    /// target are recovered by the structurer, not stored here.
+    ForIter { body: Offset, exit: Offset },
 }
 
 /// A basic block: straight-line statements plus a terminator.
@@ -45,6 +49,9 @@ pub struct Block {
     pub start: Offset,
     pub stmts: Vec<Stmt>,
     pub terminator: Terminator,
+    /// Values left on the symbolic stack after the block. Empty except where a
+    /// value lives across a block boundary, e.g. a `for` loop iterator.
+    pub stack_out: Vec<ValueId>,
 }
 
 impl Block {
@@ -55,6 +62,7 @@ impl Block {
             Terminator::CondBranch {
                 if_true, if_false, ..
             } => vec![*if_true, *if_false],
+            Terminator::ForIter { body, exit } => vec![*body, *exit],
             Terminator::Return(_) | Terminator::Raise(_) => Vec::new(),
         }
     }
@@ -66,6 +74,9 @@ pub struct Cfg {
     pub entry: BlockId,
     pub by_offset: HashMap<Offset, BlockId>,
     pub arena: ExprArena,
+    /// For each `ForIter` header block, the loop target assigned from the next
+    /// item (the `STORE` that follows `FOR_ITER`).
+    pub for_targets: HashMap<BlockId, LValue>,
 }
 
 impl Cfg {
@@ -86,8 +97,20 @@ impl Cfg {
             by_offset.insert(*leader, BlockId(idx as u32));
         }
 
+        // The instruction after a FOR_ITER begins the loop body with the loop
+        // target's store; map that body leader back to its header offset.
+        let mut for_body_header: HashMap<Offset, Offset> = HashMap::new();
+        for (idx, item) in instrs.iter().enumerate() {
+            if item.instr.opcode.mnemonic() == Mnemonic::FOR_ITER {
+                if let Some(next) = instrs.get(idx + 1) {
+                    for_body_header.insert(next.offset, item.offset);
+                }
+            }
+        }
+
         let mut unstacker = Unstacker::new();
         let mut blocks = Vec::with_capacity(leaders.len());
+        let mut for_targets = HashMap::new();
 
         for (idx, &leader) in leaders.iter().enumerate() {
             let end = leaders.get(idx + 1).copied().unwrap_or(Offset(u32::MAX));
@@ -95,7 +118,10 @@ impl Cfg {
                 .iter()
                 .filter(|i| i.offset >= leader && i.offset < end)
                 .collect();
-            let block = lower_block(&mut unstacker, leader, end, &body)?;
+            let for_header = for_body_header
+                .get(&leader)
+                .and_then(|header| by_offset.get(header).copied());
+            let block = lower_block(&mut unstacker, leader, end, &body, for_header, &mut for_targets)?;
             blocks.push(block);
         }
 
@@ -104,6 +130,7 @@ impl Cfg {
             entry: BlockId(0),
             by_offset,
             arena: unstacker.into_arena(),
+            for_targets,
         })
     }
 }
@@ -139,7 +166,7 @@ fn block_leaders(instrs: &[OffsetInstr]) -> Result<Vec<Offset>, IrError> {
         let mnemonic = item.instr.opcode.mnemonic();
         let next = instrs.get(idx + 1).map(|i| i.offset);
         match terminator_kind(mnemonic)? {
-            TerminatorKind::Branch | TerminatorKind::Jump => {
+            TerminatorKind::Branch | TerminatorKind::Jump | TerminatorKind::ForIter => {
                 // Backward targets are loop back edges; the structurer recovers the
                 // loop, so they are allowed here.
                 leaders.insert(branch_target(item)?);
@@ -164,6 +191,8 @@ fn lower_block(
     leader: Offset,
     end: Offset,
     body: &[&OffsetInstr],
+    for_header: Option<BlockId>,
+    for_targets: &mut HashMap<BlockId, LValue>,
 ) -> Result<Block, IrError> {
     unstacker.start_block();
 
@@ -171,17 +200,31 @@ fn lower_block(
     let mnemonic = last.instr.opcode.mnemonic();
     let kind = terminator_kind(mnemonic)?;
 
-    let feed_len = match kind {
+    // A for-loop body begins with the store of the loop target. Record it and skip
+    // it so the remaining body unstacks with a balanced stack (the body refers to
+    // the target through ordinary loads).
+    let mut start = 0;
+    if let Some(header) = for_header {
+        let first = body.first().ok_or(IrError::Decode)?;
+        for_targets.insert(header, store_target(&first.instr)?);
+        start = 1;
+    }
+
+    let feed_end = match kind {
         TerminatorKind::None => body.len(),
         _ => body.len() - 1,
     };
-    for item in &body[..feed_len] {
+    for item in &body[start.min(feed_end)..feed_end] {
         unstacker.step(&item.instr)?;
     }
 
     let terminator = match kind {
         TerminatorKind::None => Terminator::Fallthrough(end),
         TerminatorKind::Jump => Terminator::Jump(branch_target(last)?),
+        TerminatorKind::ForIter => Terminator::ForIter {
+            body: end,
+            exit: branch_target(last)?,
+        },
         TerminatorKind::Return => {
             let value = unstacker.pop_value()?;
             Terminator::Return(Some(value))
@@ -218,10 +261,26 @@ fn lower_block(
         }
     };
 
+    let stack_out = unstacker.stack_snapshot();
     Ok(Block {
         start: leader,
         stmts: unstacker.take_stmts(),
         terminator,
+        stack_out,
+    })
+}
+
+/// Extracts the assignment target of a `STORE_*` instruction, used for the loop
+/// variable that follows `FOR_ITER`.
+fn store_target(instr: &Instruction<Standard>) -> Result<LValue, IrError> {
+    let arg = instr.arg.ok_or(IrError::MissingOperand)?;
+    Ok(match instr.opcode.mnemonic() {
+        Mnemonic::STORE_FAST => LValue::Local(VarId(arg)),
+        Mnemonic::STORE_NAME => LValue::Name(NameId(arg)),
+        Mnemonic::STORE_GLOBAL => LValue::Global(NameId(arg)),
+        Mnemonic::STORE_DEREF => LValue::Deref(DerefId(arg)),
+        // Tuple targets (UNPACK_SEQUENCE) are not handled yet.
+        other => return Err(IrError::Unsupported(other)),
     })
 }
 
@@ -229,6 +288,7 @@ enum TerminatorKind {
     None,
     Jump,
     Branch,
+    ForIter,
     Return,
     Raise,
 }
@@ -241,10 +301,10 @@ fn terminator_kind(mnemonic: Mnemonic) -> Result<TerminatorKind, IrError> {
         Mnemonic::RAISE_VARARGS => TerminatorKind::Raise,
         Mnemonic::JUMP_ABSOLUTE | Mnemonic::JUMP_FORWARD => TerminatorKind::Jump,
         Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE => TerminatorKind::Branch,
+        Mnemonic::FOR_ITER => TerminatorKind::ForIter,
         Mnemonic::SETUP_EXCEPT
         | Mnemonic::SETUP_FINALLY
         | Mnemonic::SETUP_WITH
-        | Mnemonic::FOR_ITER
         | Mnemonic::BREAK_LOOP
         | Mnemonic::CONTINUE_LOOP
         | Mnemonic::END_FINALLY
@@ -262,7 +322,9 @@ fn branch_target(item: &OffsetInstr) -> Result<Offset, IrError> {
         Mnemonic::JUMP_ABSOLUTE | Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE => {
             Offset(arg)
         }
-        Mnemonic::JUMP_FORWARD => Offset(item.offset.0 + item.instr.len() as u32 + arg),
+        Mnemonic::JUMP_FORWARD | Mnemonic::FOR_ITER => {
+            Offset(item.offset.0 + item.instr.len() as u32 + arg)
+        }
         other => return Err(IrError::HasControlFlow(other)),
     })
 }

@@ -47,10 +47,12 @@ struct LoopFrame {
 /// Structures a control-flow graph into a nested statement list.
 pub fn structure(cfg: &Cfg) -> Result<Vec<Stmt>, IrError> {
     let graph = Graph::build(cfg);
-    let loops = graph.detect_loops(cfg);
+    let preds = predecessors(cfg);
+    let loops = graph.detect_loops(cfg, &preds);
     let mut structurer = Structurer {
         cfg,
         graph: &graph,
+        preds,
         loops,
         loop_stack: Vec::new(),
     };
@@ -60,6 +62,7 @@ pub fn structure(cfg: &Cfg) -> Result<Vec<Stmt>, IrError> {
 struct Structurer<'a> {
     cfg: &'a Cfg,
     graph: &'a Graph,
+    preds: HashMap<BlockId, Vec<BlockId>>,
     loops: HashMap<BlockId, LoopInfo>,
     loop_stack: Vec<LoopFrame>,
 }
@@ -126,6 +129,9 @@ impl Structurer<'_> {
                     });
                     cursor = self.point_block(follow);
                 }
+                // A ForIter block is always a loop header and is handled by the loop
+                // check above; reaching it here means the back edge was missing.
+                Terminator::ForIter { .. } => return Err(IrError::Unstructurable),
             }
         }
         Ok(out)
@@ -143,8 +149,8 @@ impl Structurer<'_> {
         self.region(entry, follow, depth + 1)
     }
 
-    /// Emits a `while` loop for the header `header` (a conditional) and returns the
-    /// statement plus the loop's follow.
+    /// Emits the loop headed at `header` (a `while` for a conditional header, a
+    /// `for` for a `FOR_ITER` header) and returns the statement plus the follow.
     fn structure_loop(
         &mut self,
         header: BlockId,
@@ -153,49 +159,74 @@ impl Structurer<'_> {
         let info = self.loops.get(&header).expect("loop header");
         let follow = info.follow;
         let body_set = info.body.clone();
+        let terminator = self.cfg.block(header).terminator.clone();
 
-        let block = self.cfg.block(header);
-        let (cond, negated, body_entry) = match &block.terminator {
+        match terminator {
             Terminator::CondBranch {
                 cond,
                 if_true,
                 if_false,
             } => {
-                let true_block = self.cfg.target(*if_true)?;
-                let false_block = self.cfg.target(*if_false)?;
+                let true_block = self.cfg.target(if_true)?;
+                let false_block = self.cfg.target(if_false)?;
                 // The branch that stays inside the loop is the body; if that is the
                 // false branch the loop runs while `not cond`.
-                if body_set.contains(&true_block) {
-                    (*cond, false, true_block)
+                let (negated, body_entry) = if body_set.contains(&true_block) {
+                    (false, true_block)
                 } else if body_set.contains(&false_block) {
-                    (*cond, true, false_block)
+                    (true, false_block)
                 } else {
                     return Err(IrError::Unstructurable);
-                }
+                };
+                let body = self.loop_body(header, body_entry, follow, depth)?;
+                Ok((Stmt::While { cond, negated, body }, follow))
+            }
+            Terminator::ForIter { body: body_off, .. } => {
+                let body_entry = self.cfg.target(body_off)?;
+                let target = self
+                    .cfg
+                    .for_targets
+                    .get(&header)
+                    .cloned()
+                    .ok_or(IrError::Unstructurable)?;
+                // The iterable was produced by GET_ITER in the loop's entry
+                // predecessor, the one predecessor outside the loop body.
+                let entry_pred = self
+                    .preds
+                    .get(&header)
+                    .and_then(|preds| preds.iter().copied().find(|p| !body_set.contains(p)))
+                    .ok_or(IrError::Unstructurable)?;
+                let iter = self
+                    .cfg
+                    .block(entry_pred)
+                    .stack_out
+                    .last()
+                    .copied()
+                    .ok_or(IrError::Unstructurable)?;
+                let body = self.loop_body(header, body_entry, follow, depth)?;
+                Ok((Stmt::For { target, iter, body }, follow))
             }
             // A non-conditional header would be an infinite `while True`, which the
             // game's compiled code does not produce. Reject rather than guess.
-            _ => return Err(IrError::Unstructurable),
-        };
+            _ => Err(IrError::Unstructurable),
+        }
+    }
 
+    /// Structures a loop body, dropping the back edge's trailing `continue`.
+    fn loop_body(
+        &mut self,
+        header: BlockId,
+        body_entry: BlockId,
+        follow: Point,
+        depth: usize,
+    ) -> Result<Vec<Stmt>, IrError> {
         self.loop_stack.push(LoopFrame { header, follow });
         let mut body = self.region(body_entry, Point::Block(header), depth + 1)?;
         self.loop_stack.pop();
-
-        // The back edge becomes a trailing `continue`; drop it since falling off the
-        // body loops anyway.
         if matches!(body.last(), Some(Stmt::Continue)) {
             body.pop();
         }
-
-        Ok((
-            Stmt::While {
-                cond,
-                negated,
-                body,
-            },
-            follow,
-        ))
+        Ok(body)
     }
 
     /// If `target` is the header or follow of the innermost active loop, returns the
@@ -279,8 +310,11 @@ impl Graph {
     }
 
     /// Finds loop headers (back-edge targets), their body sets, and follows.
-    fn detect_loops(&self, cfg: &Cfg) -> HashMap<BlockId, LoopInfo> {
-        let preds = predecessors(cfg);
+    fn detect_loops(
+        &self,
+        cfg: &Cfg,
+        preds: &HashMap<BlockId, Vec<BlockId>>,
+    ) -> HashMap<BlockId, LoopInfo> {
         let mut headers: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
         for (idx, block) in cfg.blocks.iter().enumerate() {
             let source = BlockId(idx as u32);
@@ -295,7 +329,7 @@ impl Graph {
 
         let mut loops = HashMap::new();
         for (header, latches) in headers {
-            let body = natural_loop(header, &latches, &preds);
+            let body = natural_loop(header, &latches, preds);
             let follow = self.loop_follow(cfg, header, &body);
             loops.insert(header, LoopInfo { body, follow });
         }

@@ -65,6 +65,11 @@ impl Unstacker {
         std::mem::take(&mut self.stmts)
     }
 
+    /// Returns the values currently left on the symbolic stack.
+    pub fn stack_snapshot(&self) -> Vec<ValueId> {
+        self.stack.clone()
+    }
+
     /// Consumes the machine, yielding just the expression arena.
     pub fn into_arena(self) -> ExprArena {
         self.arena
@@ -94,9 +99,10 @@ impl Unstacker {
 
         match mnemonic {
             // SETUP_LOOP / POP_BLOCK manage the runtime block stack; they have no
-            // effect on the recovered statement stream. The structurer recovers the
-            // loop from the back edge, not these markers.
-            Mnemonic::NOP | Mnemonic::SETUP_LOOP | Mnemonic::POP_BLOCK => {}
+            // effect on the recovered statement stream. GET_ITER is a no-op for
+            // source purposes: the operand it would wrap is the value the `for`
+            // loop iterates, so it is left on the stack as-is.
+            Mnemonic::NOP | Mnemonic::SETUP_LOOP | Mnemonic::POP_BLOCK | Mnemonic::GET_ITER => {}
             Mnemonic::LOAD_CONST => self.push(Expr::Const(ConstId(arg_u16(arg)?))),
             Mnemonic::LOAD_FAST => self.push(Expr::Local(VarId(arg_u16(arg)?))),
             Mnemonic::LOAD_DEREF => self.push(Expr::Deref(DerefId(arg_u16(arg)?))),

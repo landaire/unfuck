@@ -1,0 +1,9 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def count_down(n):
+    while n > 0:
+        n = n - 1
+    return n

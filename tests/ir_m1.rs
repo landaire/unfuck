@@ -212,9 +212,9 @@ fn while_loop() {
 }
 
 #[test]
-fn for_loops_are_rejected() {
+fn exceptions_are_rejected() {
     let code = Builder::new("f", 0, &[], &[], vec![Obj::None])
-        .emit(op(Standard::FOR_ITER, 4))
+        .emit(op(Standard::SETUP_EXCEPT, 4))
         .emit(op(Standard::LOAD_CONST, 0))
         .emit(op0(Standard::RETURN_VALUE))
         .finish();

@@ -115,6 +115,11 @@ impl<'a> Emitter<'a> {
                 self.line(&rendered);
                 self.block(body);
             }
+            Stmt::For { target, iter, body } => {
+                let rendered = format!("for {} in {}:", self.lvalue(target), self.expr(*iter, 0));
+                self.line(&rendered);
+                self.block(body);
+            }
             Stmt::Break => self.line("break"),
             Stmt::Continue => self.line("continue"),
             Stmt::If { cond, then, els } => {

@@ -29,3 +29,16 @@ def if_else(x):
 
 def do_raise():
     raise Boom
+
+
+def sum_list(items):
+    total = 0
+    for x in items:
+        total = total + x
+    return total
+
+
+def count_down(n):
+    while n > 0:
+        n = n - 1
+    return n

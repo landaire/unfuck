@@ -203,6 +203,11 @@ pub enum Stmt {
         negated: bool,
         body: Vec<Stmt>,
     },
+    For {
+        target: LValue,
+        iter: ValueId,
+        body: Vec<Stmt>,
+    },
     Break,
     Continue,
 }
