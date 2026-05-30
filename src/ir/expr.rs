@@ -169,6 +169,9 @@ pub enum Expr {
     Attr(ValueId, NameId),
     Subscript(ValueId, ValueId),
     BinOp(BinOp, ValueId, ValueId),
+    /// An in-place binary op result (`INPLACE_*`), kept distinct from `BinOp` so a
+    /// store back to the operand recovers as an augmented assignment (`x += y`).
+    Inplace(BinOp, ValueId, ValueId),
     Unary(UnaryOp, ValueId),
     Compare(CmpOp, ValueId, ValueId),
     /// A flattened short-circuit chain, e.g. `a and b and c`. Always two or more
@@ -246,6 +249,9 @@ pub enum LValue {
 #[derive(Debug, Clone)]
 pub enum Stmt {
     Assign(LValue, ValueId),
+    /// `target op= value`, recovered from an `INPLACE_*` op stored back to its
+    /// left operand.
+    AugAssign(LValue, BinOp, ValueId),
     Expr(ValueId),
     Return(Option<ValueId>),
     Print {

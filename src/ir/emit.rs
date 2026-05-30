@@ -203,6 +203,11 @@ impl<'a> Emitter<'a> {
                 let line = format!("{} = {}", self.lvalue(target), self.expr(*value, 0));
                 self.line(&line);
             }
+            Stmt::AugAssign(target, op, value) => {
+                let line =
+                    format!("{} {}= {}", self.lvalue(target), op.symbol(), self.expr(*value, 0));
+                self.line(&line);
+            }
             Stmt::Expr(value) => {
                 let line = self.expr(*value, 0);
                 self.line(&line);
@@ -336,7 +341,9 @@ impl<'a> Emitter<'a> {
                 format!("{}[{}]", self.expr(*container, prec::ATOM), self.expr(*key, 0)),
                 prec::ATOM,
             ),
-            Expr::BinOp(op, lhs, rhs) => {
+            // An in-place op normally becomes an augmented assignment; if one is
+            // ever used as a value it renders like the plain binary operation.
+            Expr::BinOp(op, lhs, rhs) | Expr::Inplace(op, lhs, rhs) => {
                 let p = binop_prec(*op);
                 // Left-associative for everything except power; render the right
                 // operand one level tighter so same-precedence chains parenthesise.

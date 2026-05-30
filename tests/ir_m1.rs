@@ -306,6 +306,41 @@ fn tuple_assignment() {
 }
 
 #[test]
+fn aug_assign_name() {
+    // def f(x): x += 1; return x
+    let code = Builder::new("f", 1, &["x"], &[], vec![Obj::None, long(1)])
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::LOAD_CONST, 1)
+        .op(Standard::INPLACE_ADD)
+        .arg(Standard::STORE_FAST, 0)
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(x):\n    x += 1\n    return x\n");
+}
+
+#[test]
+fn swap_is_rejected() {
+    // A ROT_TWO swap (`a, b = b, a`) is not an augmented assignment; recovering it
+    // as sequential stores would be wrong, so it is rejected rather than emitted.
+    let code = Builder::new("f", 2, &["a", "b"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::ROT_TWO)
+        .arg(Standard::STORE_FAST, 0)
+        .arg(Standard::STORE_FAST, 1)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert!(matches!(
+        unfuck::ir::decompile_function(code),
+        Err(unfuck::ir::IrError::Unsupported(_))
+    ));
+}
+
+#[test]
 fn dict_literal() {
     // def f(): return {'k': 1}
     let code = Builder::new("f", 0, &[], &[], vec![Obj::None, long(1), pystr("k")])

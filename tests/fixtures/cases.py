@@ -90,6 +90,22 @@ def choose_not(c, a, b):
     return x
 
 
+def aug_name(x):
+    x += 1
+    x *= 2
+    return x
+
+
+def aug_attr(obj, d):
+    obj.count += d
+    return obj
+
+
+def aug_subscript(d, k):
+    d[k] -= 5
+    return d
+
+
 def try_bare(data):
     try:
         load(data)

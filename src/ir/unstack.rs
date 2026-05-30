@@ -105,6 +105,21 @@ impl Unstacker {
             .is_some_and(|top| matches!(self.arena.get(*top), Expr::Import(_)))
     }
 
+    /// Whether the top of the stack is an in-place result (an augmented-assignment
+    /// rotation).
+    fn tos_is_inplace(&self) -> bool {
+        self.stack
+            .last()
+            .is_some_and(|top| matches!(self.arena.get(*top), Expr::Inplace(..)))
+    }
+
+    /// Whether the top two stack values are the same id, the signature of a
+    /// `DUP_TOP` feeding a chained comparison's `ROT_THREE`.
+    fn tos_equals_below(&self) -> bool {
+        let len = self.stack.len();
+        len >= 2 && self.stack[len - 1] == self.stack[len - 2]
+    }
+
     /// Resolves any pending short-circuit or ternary whose merge point is `offset`:
     /// the remaining operand is on the stack, so combine it with what was recorded.
     pub fn resolve_pending(&mut self, offset: Offset) -> Result<(), IrError> {
@@ -149,6 +164,21 @@ impl Unstacker {
         self.arena.alloc(Expr::BoolOp(kind, operands))
     }
 
+    /// Whether `lhs` is the same place as the assignment target `target`, used to
+    /// confirm an augmented assignment stores back to its own operand. The operand
+    /// expression and target share ids (built from the same `DUP_TOP`), so a
+    /// shallow comparison suffices.
+    fn lvalue_matches(&self, target: &LValue, lhs: ValueId) -> bool {
+        match (target, self.arena.get(lhs)) {
+            (LValue::Local(a), Expr::Local(b)) => a == b,
+            (LValue::Deref(a), Expr::Deref(b)) => a == b,
+            (LValue::Name(a) | LValue::Global(a), Expr::Name(b) | Expr::Global(b)) => a == b,
+            (LValue::Attr(obj, name), Expr::Attr(obj2, name2)) => obj == obj2 && name == name2,
+            (LValue::Subscript(c, k), Expr::Subscript(c2, k2)) => c == c2 && k == k2,
+            _ => false,
+        }
+    }
+
     fn push(&mut self, expr: Expr) {
         let id = self.arena.alloc(expr);
         self.stack.push(id);
@@ -185,6 +215,14 @@ impl Unstacker {
                 pending.names.push((name, target));
             }
             return;
+        }
+        // An in-place result stored back to its own left operand is an augmented
+        // assignment (`target op= rhs`).
+        if let Expr::Inplace(op, lhs, rhs) = *self.arena.get(value) {
+            if self.lvalue_matches(&target, lhs) {
+                self.emit(Stmt::AugAssign(target, op, rhs));
+                return;
+            }
         }
         if self.unpack.is_some() && matches!(self.arena.get(value), Expr::UnpackSlot) {
             let pending = self.unpack.as_mut().unwrap();
@@ -330,6 +368,12 @@ impl Unstacker {
         let arg = instr.arg;
         let mnemonic = instr.opcode.mnemonic();
 
+        if let Some(op) = inplace_op(mnemonic) {
+            let rhs = self.pop()?;
+            let lhs = self.pop()?;
+            self.push(Expr::Inplace(op, lhs, rhs));
+            return Ok(());
+        }
         if let Some(op) = binary_op(mnemonic) {
             let rhs = self.pop()?;
             let lhs = self.pop()?;
@@ -423,6 +467,33 @@ impl Unstacker {
             Mnemonic::DUP_TOP => {
                 let top = *self.stack.last().ok_or(IrError::StackUnderflow)?;
                 self.stack.push(top);
+            }
+            Mnemonic::DUP_TOPX => {
+                let n = arg_u16(arg)? as usize;
+                if self.stack.len() < n {
+                    return Err(IrError::StackUnderflow);
+                }
+                let dup = self.stack[self.stack.len() - n..].to_vec();
+                self.stack.extend(dup);
+            }
+            // ROT_TWO/ROT_THREE only reach a supported construct in two shapes: an
+            // augmented assignment (the rotated top is the INPLACE result) and a
+            // chained comparison (the top two are the same DUP_TOP'd value). Any
+            // other rotation is a simultaneous assignment, which is not recovered.
+            Mnemonic::ROT_TWO => {
+                let len = self.stack.len();
+                if len < 2 || !self.tos_is_inplace() {
+                    return Err(IrError::Unsupported(mnemonic));
+                }
+                self.stack.swap(len - 1, len - 2);
+            }
+            Mnemonic::ROT_THREE => {
+                let len = self.stack.len();
+                if len < 3 || !(self.tos_is_inplace() || self.tos_equals_below()) {
+                    return Err(IrError::Unsupported(mnemonic));
+                }
+                let top = self.stack.remove(len - 1);
+                self.stack.insert(len - 3, top);
             }
             Mnemonic::STORE_FAST => {
                 let value = self.pop()?;
@@ -651,19 +722,40 @@ fn comp_target(instr: &Instruction<Standard>) -> Result<LValue, IrError> {
 
 fn binary_op(mnemonic: Mnemonic) -> Option<BinOp> {
     Some(match mnemonic {
-        Mnemonic::BINARY_ADD | Mnemonic::INPLACE_ADD => BinOp::Add,
-        Mnemonic::BINARY_SUBTRACT | Mnemonic::INPLACE_SUBTRACT => BinOp::Subtract,
-        Mnemonic::BINARY_MULTIPLY | Mnemonic::INPLACE_MULTIPLY => BinOp::Multiply,
-        Mnemonic::BINARY_DIVIDE | Mnemonic::INPLACE_DIVIDE => BinOp::Divide,
-        Mnemonic::BINARY_FLOOR_DIVIDE | Mnemonic::INPLACE_FLOOR_DIVIDE => BinOp::FloorDivide,
-        Mnemonic::BINARY_TRUE_DIVIDE | Mnemonic::INPLACE_TRUE_DIVIDE => BinOp::TrueDivide,
-        Mnemonic::BINARY_MODULO | Mnemonic::INPLACE_MODULO => BinOp::Modulo,
-        Mnemonic::BINARY_POWER | Mnemonic::INPLACE_POWER => BinOp::Power,
-        Mnemonic::BINARY_LSHIFT | Mnemonic::INPLACE_LSHIFT => BinOp::LeftShift,
-        Mnemonic::BINARY_RSHIFT | Mnemonic::INPLACE_RSHIFT => BinOp::RightShift,
-        Mnemonic::BINARY_AND | Mnemonic::INPLACE_AND => BinOp::And,
-        Mnemonic::BINARY_OR | Mnemonic::INPLACE_OR => BinOp::Or,
-        Mnemonic::BINARY_XOR | Mnemonic::INPLACE_XOR => BinOp::Xor,
+        Mnemonic::BINARY_ADD => BinOp::Add,
+        Mnemonic::BINARY_SUBTRACT => BinOp::Subtract,
+        Mnemonic::BINARY_MULTIPLY => BinOp::Multiply,
+        Mnemonic::BINARY_DIVIDE => BinOp::Divide,
+        Mnemonic::BINARY_FLOOR_DIVIDE => BinOp::FloorDivide,
+        Mnemonic::BINARY_TRUE_DIVIDE => BinOp::TrueDivide,
+        Mnemonic::BINARY_MODULO => BinOp::Modulo,
+        Mnemonic::BINARY_POWER => BinOp::Power,
+        Mnemonic::BINARY_LSHIFT => BinOp::LeftShift,
+        Mnemonic::BINARY_RSHIFT => BinOp::RightShift,
+        Mnemonic::BINARY_AND => BinOp::And,
+        Mnemonic::BINARY_OR => BinOp::Or,
+        Mnemonic::BINARY_XOR => BinOp::Xor,
+        _ => return None,
+    })
+}
+
+/// The operator of an `INPLACE_*` opcode, kept separate from [`binary_op`] so an
+/// augmented assignment is distinguishable from a plain binary operation.
+fn inplace_op(mnemonic: Mnemonic) -> Option<BinOp> {
+    Some(match mnemonic {
+        Mnemonic::INPLACE_ADD => BinOp::Add,
+        Mnemonic::INPLACE_SUBTRACT => BinOp::Subtract,
+        Mnemonic::INPLACE_MULTIPLY => BinOp::Multiply,
+        Mnemonic::INPLACE_DIVIDE => BinOp::Divide,
+        Mnemonic::INPLACE_FLOOR_DIVIDE => BinOp::FloorDivide,
+        Mnemonic::INPLACE_TRUE_DIVIDE => BinOp::TrueDivide,
+        Mnemonic::INPLACE_MODULO => BinOp::Modulo,
+        Mnemonic::INPLACE_POWER => BinOp::Power,
+        Mnemonic::INPLACE_LSHIFT => BinOp::LeftShift,
+        Mnemonic::INPLACE_RSHIFT => BinOp::RightShift,
+        Mnemonic::INPLACE_AND => BinOp::And,
+        Mnemonic::INPLACE_OR => BinOp::Or,
+        Mnemonic::INPLACE_XOR => BinOp::Xor,
         _ => return None,
     })
 }
