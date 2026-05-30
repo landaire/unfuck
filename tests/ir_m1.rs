@@ -1,5 +1,9 @@
-//! Raising IR tests: branch-free lowering (Milestone 1) and conditional
-//! structuring (Milestone 2).
+//! Raising IR tests built from hand-written bytecode.
+//!
+//! Instructions are assembled through a small label-based builder so jump targets
+//! are written as names, not hand-computed offsets: `finish` lays the program out
+//! once to resolve each label, then emits, encoding absolute or relative operands
+//! per opcode.
 //!
 //! These run as an integration test so they compile against unfuck's public API
 //! only, independent of the crate's in-tree unit-test modules.
@@ -23,12 +27,34 @@ fn pystr(text: &str) -> Obj {
     Obj::String(Arc::new(RwLock::new(BString::from(text))))
 }
 
-fn op(opcode: Standard, arg: u16) -> Vec<u8> {
-    vec![opcode as u8, (arg & 0xff) as u8, (arg >> 8) as u8]
+/// Jump opcodes whose operand is relative to the following instruction.
+fn is_relative(opcode: Standard) -> bool {
+    matches!(
+        opcode,
+        Standard::JUMP_FORWARD
+            | Standard::FOR_ITER
+            | Standard::SETUP_LOOP
+            | Standard::SETUP_EXCEPT
+            | Standard::SETUP_FINALLY
+            | Standard::SETUP_WITH
+    )
 }
 
-fn op0(opcode: Standard) -> Vec<u8> {
-    vec![opcode as u8]
+enum Item {
+    Op(Standard),
+    Arg(Standard, u16),
+    Jump(Standard, &'static str),
+    Label(&'static str),
+}
+
+impl Item {
+    fn size(&self) -> u32 {
+        match self {
+            Item::Label(_) => 0,
+            Item::Op(_) => 1,
+            Item::Arg(..) | Item::Jump(..) => 3,
+        }
+    }
 }
 
 struct Builder {
@@ -37,7 +63,7 @@ struct Builder {
     varnames: Vec<Arc<BString>>,
     names: Vec<Arc<BString>>,
     consts: Vec<Obj>,
-    code: Vec<u8>,
+    items: Vec<Item>,
 }
 
 impl Builder {
@@ -48,22 +74,67 @@ impl Builder {
             varnames: varnames.iter().map(|v| bstr(v)).collect(),
             names: names.iter().map(|n| bstr(n)).collect(),
             consts,
-            code: Vec::new(),
+            items: Vec::new(),
         }
     }
 
-    fn emit(mut self, bytes: Vec<u8>) -> Builder {
-        self.code.extend(bytes);
+    fn op(mut self, opcode: Standard) -> Builder {
+        self.items.push(Item::Op(opcode));
+        self
+    }
+
+    fn arg(mut self, opcode: Standard, arg: u16) -> Builder {
+        self.items.push(Item::Arg(opcode, arg));
+        self
+    }
+
+    fn jump(mut self, opcode: Standard, label: &'static str) -> Builder {
+        self.items.push(Item::Jump(opcode, label));
+        self
+    }
+
+    fn label(mut self, name: &'static str) -> Builder {
+        self.items.push(Item::Label(name));
         self
     }
 
     fn finish(self) -> Arc<Code> {
+        // Pass 1: offset of every item and the position of each label.
+        let mut labels = std::collections::HashMap::new();
+        let mut offset = 0u32;
+        for item in &self.items {
+            if let Item::Label(name) = item {
+                labels.insert(*name, offset);
+            }
+            offset += item.size();
+        }
+
+        // Pass 2: emit, resolving label references to absolute or relative operands.
+        let mut code = Vec::new();
+        for item in &self.items {
+            let here = code.len() as u32;
+            match item {
+                Item::Label(_) => {}
+                Item::Op(opcode) => code.push(*opcode as u8),
+                Item::Arg(opcode, arg) => emit_arg(&mut code, *opcode, *arg),
+                Item::Jump(opcode, label) => {
+                    let target = labels[label];
+                    let operand = if is_relative(*opcode) {
+                        target - (here + 3)
+                    } else {
+                        target
+                    };
+                    emit_arg(&mut code, *opcode, operand as u16);
+                }
+            }
+        }
+
         Arc::new(Code {
             argcount: self.argcount,
             nlocals: self.varnames.len() as u32,
             stacksize: 16,
             flags: CodeFlags::empty(),
-            code: Arc::new(self.code),
+            code: Arc::new(code),
             consts: Arc::new(self.consts),
             names: self.names,
             varnames: self.varnames,
@@ -77,90 +148,59 @@ impl Builder {
     }
 }
 
+fn emit_arg(code: &mut Vec<u8>, opcode: Standard, arg: u16) {
+    code.push(opcode as u8);
+    code.push((arg & 0xff) as u8);
+    code.push((arg >> 8) as u8);
+}
+
+fn decompile(code: Arc<Code>) -> String {
+    unfuck::ir::decompile_function(code).expect("decompile failed")
+}
+
 #[test]
 fn arithmetic_return() {
     let code = Builder::new("add_one_two", 0, &[], &[], vec![Obj::None, long(1), long(2)])
-        .emit(op(Standard::LOAD_CONST, 1))
-        .emit(op(Standard::LOAD_CONST, 2))
-        .emit(op0(Standard::BINARY_ADD))
-        .emit(op0(Standard::RETURN_VALUE))
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::LOAD_CONST, 2)
+        .op(Standard::BINARY_ADD)
+        .op(Standard::RETURN_VALUE)
         .finish();
 
-    let source = unfuck::ir::decompile_function(code).expect("decompile failed");
-    assert_eq!(source, "def add_one_two():\n    return 1 + 2\n");
+    assert_eq!(decompile(code), "def add_one_two():\n    return 1 + 2\n");
 }
 
 #[test]
 fn precedence_parenthesises() {
     // (1 + 2) * 3
     let code = Builder::new("f", 0, &[], &[], vec![Obj::None, long(1), long(2), long(3)])
-        .emit(op(Standard::LOAD_CONST, 1))
-        .emit(op(Standard::LOAD_CONST, 2))
-        .emit(op0(Standard::BINARY_ADD))
-        .emit(op(Standard::LOAD_CONST, 3))
-        .emit(op0(Standard::BINARY_MULTIPLY))
-        .emit(op0(Standard::RETURN_VALUE))
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::LOAD_CONST, 2)
+        .op(Standard::BINARY_ADD)
+        .arg(Standard::LOAD_CONST, 3)
+        .op(Standard::BINARY_MULTIPLY)
+        .op(Standard::RETURN_VALUE)
         .finish();
 
-    let source = unfuck::ir::decompile_function(code).expect("decompile failed");
-    assert_eq!(source, "def f():\n    return (1 + 2) * 3\n");
+    assert_eq!(decompile(code), "def f():\n    return (1 + 2) * 3\n");
 }
 
 #[test]
 fn attribute_call_assignment() {
     // def f(self): x = self.a.b(1, 2); return x
     let code = Builder::new("f", 1, &["self", "x"], &["a", "b"], vec![Obj::None, long(1), long(2)])
-        .emit(op(Standard::LOAD_FAST, 0))
-        .emit(op(Standard::LOAD_ATTR, 0))
-        .emit(op(Standard::LOAD_ATTR, 1))
-        .emit(op(Standard::LOAD_CONST, 1))
-        .emit(op(Standard::LOAD_CONST, 2))
-        .emit(op(Standard::CALL_FUNCTION, 2))
-        .emit(op(Standard::STORE_FAST, 1))
-        .emit(op(Standard::LOAD_FAST, 1))
-        .emit(op0(Standard::RETURN_VALUE))
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::LOAD_ATTR, 0)
+        .arg(Standard::LOAD_ATTR, 1)
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::LOAD_CONST, 2)
+        .arg(Standard::CALL_FUNCTION, 2)
+        .arg(Standard::STORE_FAST, 1)
+        .arg(Standard::LOAD_FAST, 1)
+        .op(Standard::RETURN_VALUE)
         .finish();
 
-    let source = unfuck::ir::decompile_function(code).expect("decompile failed");
-    assert_eq!(source, "def f(self):\n    x = self.a.b(1, 2)\n    return x\n");
-}
-
-#[test]
-fn simple_if() {
-    // def f(x): if x: y = 1; return y
-    let code = Builder::new("f", 1, &["x", "y"], &[], vec![Obj::None, long(1)])
-        .emit(op(Standard::LOAD_FAST, 0))
-        .emit(op(Standard::POP_JUMP_IF_FALSE, 12))
-        .emit(op(Standard::LOAD_CONST, 1))
-        .emit(op(Standard::STORE_FAST, 1))
-        .emit(op(Standard::LOAD_FAST, 1))
-        .emit(op0(Standard::RETURN_VALUE))
-        .finish();
-
-    let source = unfuck::ir::decompile_function(code).expect("decompile failed");
-    assert_eq!(source, "def f(x):\n    if x:\n        y = 1\n    return y\n");
-}
-
-#[test]
-fn if_else() {
-    // def f(x): if x: y = 1 else: y = 2; return y
-    let code = Builder::new("f", 1, &["x", "y"], &[], vec![Obj::None, long(1), long(2)])
-        .emit(op(Standard::LOAD_FAST, 0))
-        .emit(op(Standard::POP_JUMP_IF_FALSE, 15))
-        .emit(op(Standard::LOAD_CONST, 1))
-        .emit(op(Standard::STORE_FAST, 1))
-        .emit(op(Standard::JUMP_FORWARD, 6))
-        .emit(op(Standard::LOAD_CONST, 2))
-        .emit(op(Standard::STORE_FAST, 1))
-        .emit(op(Standard::LOAD_FAST, 1))
-        .emit(op0(Standard::RETURN_VALUE))
-        .finish();
-
-    let source = unfuck::ir::decompile_function(code).expect("decompile failed");
-    assert_eq!(
-        source,
-        "def f(x):\n    if x:\n        y = 1\n    else:\n        y = 2\n    return y\n"
-    );
+    assert_eq!(decompile(code), "def f(self):\n    x = self.a.b(1, 2)\n    return x\n");
 }
 
 #[test]
@@ -168,55 +208,95 @@ fn keyword_arguments() {
     // def f(): return g(1, x=2)
     let consts = vec![Obj::None, long(1), pystr("x"), long(2)];
     let code = Builder::new("f", 0, &[], &["g"], consts)
-        .emit(op(Standard::LOAD_GLOBAL, 0))
-        .emit(op(Standard::LOAD_CONST, 1))
-        .emit(op(Standard::LOAD_CONST, 2))
-        .emit(op(Standard::LOAD_CONST, 3))
-        .emit(op(Standard::CALL_FUNCTION, 0x0101))
-        .emit(op0(Standard::RETURN_VALUE))
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::LOAD_CONST, 2)
+        .arg(Standard::LOAD_CONST, 3)
+        .arg(Standard::CALL_FUNCTION, 0x0101)
+        .op(Standard::RETURN_VALUE)
         .finish();
 
-    let source = unfuck::ir::decompile_function(code).expect("decompile failed");
-    assert_eq!(source, "def f():\n    return g(1, x=2)\n");
+    assert_eq!(decompile(code), "def f():\n    return g(1, x=2)\n");
 }
 
 #[test]
 fn raise_statement() {
     // def f(): raise Boom
     let code = Builder::new("f", 0, &[], &["Boom"], vec![Obj::None])
-        .emit(op(Standard::LOAD_GLOBAL, 0))
-        .emit(op(Standard::RAISE_VARARGS, 1))
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::RAISE_VARARGS, 1)
         .finish();
 
-    let source = unfuck::ir::decompile_function(code).expect("decompile failed");
-    assert_eq!(source, "def f():\n    raise Boom\n");
+    assert_eq!(decompile(code), "def f():\n    raise Boom\n");
+}
+
+#[test]
+fn simple_if() {
+    // def f(x): if x: y = 1; return y
+    let code = Builder::new("f", 1, &["x", "y"], &[], vec![Obj::None, long(1)])
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::POP_JUMP_IF_FALSE, "after")
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::STORE_FAST, 1)
+        .label("after")
+        .arg(Standard::LOAD_FAST, 1)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(x):\n    if x:\n        y = 1\n    return y\n");
+}
+
+#[test]
+fn if_else() {
+    // def f(x): if x: y = 1 else: y = 2; return y
+    let code = Builder::new("f", 1, &["x", "y"], &[], vec![Obj::None, long(1), long(2)])
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::POP_JUMP_IF_FALSE, "else_")
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::STORE_FAST, 1)
+        .jump(Standard::JUMP_FORWARD, "after")
+        .label("else_")
+        .arg(Standard::LOAD_CONST, 2)
+        .arg(Standard::STORE_FAST, 1)
+        .label("after")
+        .arg(Standard::LOAD_FAST, 1)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(x):\n    if x:\n        y = 1\n    else:\n        y = 2\n    return y\n"
+    );
 }
 
 #[test]
 fn while_loop() {
-    // def f(n): while n: n = n; return n   (n as a bare truth test, body reassigns)
+    // def f(n): while n: n = n; return n
     let code = Builder::new("f", 1, &["n"], &[], vec![Obj::None])
-        .emit(op(Standard::SETUP_LOOP, 16)) // 0, exit -> 19
-        .emit(op(Standard::LOAD_FAST, 0)) // 3 (header)
-        .emit(op(Standard::POP_JUMP_IF_FALSE, 18)) // 6 -> POP_BLOCK
-        .emit(op(Standard::LOAD_FAST, 0)) // 9 body
-        .emit(op(Standard::STORE_FAST, 0)) // 12
-        .emit(op(Standard::JUMP_ABSOLUTE, 3)) // 15 back edge
-        .emit(op0(Standard::POP_BLOCK)) // 18
-        .emit(op(Standard::LOAD_FAST, 0)) // 19
-        .emit(op0(Standard::RETURN_VALUE)) // 22
+        .jump(Standard::SETUP_LOOP, "exit")
+        .label("top")
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::POP_JUMP_IF_FALSE, "pop")
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::STORE_FAST, 0)
+        .jump(Standard::JUMP_ABSOLUTE, "top")
+        .label("pop")
+        .op(Standard::POP_BLOCK)
+        .label("exit")
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::RETURN_VALUE)
         .finish();
 
-    let source = unfuck::ir::decompile_function(code).expect("decompile failed");
-    assert_eq!(source, "def f(n):\n    while n:\n        n = n\n    return n\n");
+    assert_eq!(decompile(code), "def f(n):\n    while n:\n        n = n\n    return n\n");
 }
 
 #[test]
 fn exceptions_are_rejected() {
     let code = Builder::new("f", 0, &[], &[], vec![Obj::None])
-        .emit(op(Standard::SETUP_EXCEPT, 4))
-        .emit(op(Standard::LOAD_CONST, 0))
-        .emit(op0(Standard::RETURN_VALUE))
+        .jump(Standard::SETUP_EXCEPT, "after")
+        .arg(Standard::LOAD_CONST, 0)
+        .label("after")
+        .op(Standard::RETURN_VALUE)
         .finish();
 
     let result = unfuck::ir::decompile_function(code);
