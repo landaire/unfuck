@@ -85,6 +85,11 @@ def choose(c, a, b):
     return x
 
 
+def choose_not(c, a, b):
+    x = a if not c else b
+    return x
+
+
 def try_bare(data):
     try:
         load(data)

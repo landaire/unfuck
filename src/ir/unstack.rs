@@ -469,11 +469,17 @@ impl Unstacker {
             // POP_JUMP_IF_FALSE and JUMP_FORWARD reach the unstacker only as the two
             // jumps of a ternary diamond the pre-pass identified; otherwise they are
             // block terminators and never fed here.
-            Mnemonic::POP_JUMP_IF_FALSE => {
+            // POP_JUMP_IF_FALSE/TRUE reach the unstacker only as a ternary diamond's
+            // test (find_ternaries keeps it in-block). The true form takes the else
+            // branch when the condition holds, so the recovered condition is negated.
+            Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE => {
                 if self.ternary.is_some() {
                     return Err(IrError::Unsupported(mnemonic));
                 }
-                let cond = self.pop()?;
+                let mut cond = self.pop()?;
+                if mnemonic == Mnemonic::POP_JUMP_IF_TRUE {
+                    cond = self.arena.alloc(Expr::Unary(UnaryOp::Not, cond));
+                }
                 self.ternary = Some(PendingTernary {
                     cond,
                     then: None,

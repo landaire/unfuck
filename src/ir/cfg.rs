@@ -467,7 +467,12 @@ fn find_ternaries(instrs: &[OffsetInstr]) -> HashSet<Offset> {
         .collect();
     let mut ternaries = HashSet::new();
     for item in instrs {
-        if item.instr.opcode.mnemonic() != Mnemonic::POP_JUMP_IF_FALSE {
+        // A ternary diamond branches on either POP_JUMP form; the unstacker negates
+        // the condition for the true form so both render `then if cond else other`.
+        if !matches!(
+            item.instr.opcode.mnemonic(),
+            Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE
+        ) {
             continue;
         }
         let Ok(else_target) = branch_target(item) else {

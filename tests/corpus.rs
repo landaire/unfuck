@@ -54,6 +54,7 @@ fn cases() {
         "outer",
         "pairs",
         "choose",
+        "choose_not",
         "try_bare",
         "try_typed",
         "gen_squares",
