@@ -45,6 +45,9 @@ pub enum IrError {
     StackUnderflow,
     /// The control-flow graph did not reduce to nested regions.
     Unstructurable,
+    /// A construct was only partially recovered, so the emitted source would be
+    /// incomplete or invalid.
+    Incomplete,
 }
 
 impl std::fmt::Display for IrError {
@@ -57,6 +60,7 @@ impl std::fmt::Display for IrError {
             IrError::BadOperand => write!(f, "instruction operand out of range"),
             IrError::StackUnderflow => write!(f, "symbolic stack underflow"),
             IrError::Unstructurable => write!(f, "control-flow graph did not reduce to regions"),
+            IrError::Incomplete => write!(f, "construct only partially recovered"),
         }
     }
 }
@@ -105,22 +109,24 @@ impl StructuredFunction {
         source
     }
 
-    /// Builds the `def name(args):` line from the code object's metadata.
+    /// Builds the `def name(args):` line from the code object's metadata, with
+    /// identifiers sanitized so deobfuscator-mangled names still parse.
     fn signature(&self) -> String {
+        let ident = |name: &str| emit::sanitize_identifier(name);
         let argcount = self.code.argcount as usize;
         let mut params: Vec<String> = self
             .code
             .varnames
             .iter()
             .take(argcount)
-            .map(|p| p.to_string())
+            .map(|p| ident(&p.to_string()))
             .collect();
         if self.code.flags.contains(CodeFlags::VARARGS) {
             let name = self
                 .code
                 .varnames
                 .get(argcount)
-                .map_or_else(|| "args".to_string(), |v| v.to_string());
+                .map_or_else(|| "args".to_string(), |v| ident(&v.to_string()));
             params.push(format!("*{}", name));
         }
         if self.code.flags.contains(CodeFlags::VARKEYWORDS) {
@@ -129,14 +135,20 @@ impl StructuredFunction {
                 .code
                 .varnames
                 .get(idx)
-                .map_or_else(|| "kwargs".to_string(), |v| v.to_string());
+                .map_or_else(|| "kwargs".to_string(), |v| ident(&v.to_string()));
             params.push(format!("**{}", name));
         }
-        format!("def {}({}):", self.code.name, params.join(", "))
+        format!("def {}({}):", ident(&self.code.name.to_string()), params.join(", "))
     }
 }
 
-/// Decompiles a single code object to Python source.
+/// Decompiles a single code object to Python source. Returns
+/// [`IrError::Incomplete`] if any construct could not be fully recovered, so the
+/// caller never receives invalid or partial source.
 pub fn decompile_function(code: Arc<Code>) -> Result<String, IrError> {
-    Ok(DecodedFunction::decode(code)?.structure()?.to_source())
+    let source = DecodedFunction::decode(code)?.structure()?.to_source();
+    if source.contains(emit::UNRECOVERED) {
+        return Err(IrError::Incomplete);
+    }
+    Ok(source)
 }

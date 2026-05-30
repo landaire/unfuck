@@ -42,6 +42,23 @@ fn main() {
         _ => panic!("not a code object"),
     };
 
+    if target == "--validate" {
+        let dir = std::path::Path::new(&args[3]);
+        std::fs::create_dir_all(dir).expect("create dir");
+        let mut all = Vec::new();
+        collect(&root, &mut all);
+        let mut written = 0usize;
+        for (index, code) in all.into_iter().enumerate() {
+            if let Ok(source) = unfuck::ir::decompile_function(code) {
+                let path = dir.join(format!("f{}.py", index));
+                std::fs::write(&path, source).expect("write");
+                written += 1;
+            }
+        }
+        println!("wrote {} decompiled sources to {}", written, dir.display());
+        return;
+    }
+
     if target == "--stats" {
         let mut all = Vec::new();
         collect(&root, &mut all);

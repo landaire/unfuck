@@ -11,6 +11,11 @@ use py27_marshal::{Code, Obj};
 
 use super::expr::*;
 
+/// Marker emitted where a construct could not be fully recovered. Its presence in
+/// the output makes [`super::decompile_function`] reject the function rather than
+/// return source that is invalid or incomplete.
+pub(crate) const UNRECOVERED: &str = "__unrecovered__";
+
 /// Binding precedence levels, lowest to highest.
 mod prec {
     pub const OR: u8 = 0;
@@ -70,27 +75,23 @@ impl<'a> Emitter<'a> {
         let nested = match self.code.consts.get(code.0 as usize) {
             Some(Obj::Code(nested)) => Arc::new(nested.read().unwrap().clone()),
             _ => {
-                let line = format!("{} = None", self.lvalue(target));
-                self.line(&line);
+                self.line(UNRECOVERED);
                 return;
             }
         };
         // A `def` names itself; a non-identifier name (`<lambda>`, `<genexpr>`) is a
-        // form this path does not render, so leave it visible rather than emit
-        // invalid syntax.
+        // form this path does not render, so mark it unrecovered.
         if nested.name.to_string().starts_with('<') {
-            let line = format!(
-                "# {} = {} (not recovered)",
-                self.lvalue(target),
-                nested.name
-            );
-            self.line(&line);
+            self.line(UNRECOVERED);
             return;
         }
-        let source = super::decompile_function(nested)
-            .unwrap_or_else(|err| format!("# decompile error: {}", err));
-        for text in source.trim_end_matches('\n').split('\n') {
-            self.line(text);
+        match super::decompile_function(nested) {
+            Ok(source) => {
+                for text in source.trim_end_matches('\n').split('\n') {
+                    self.line(text);
+                }
+            }
+            Err(_) => self.line(UNRECOVERED),
         }
     }
 
@@ -295,24 +296,24 @@ impl<'a> Emitter<'a> {
                 (format!("{{{}}}", rendered.join(", ")), prec::ATOM)
             }
             // An unconsumed unpack slot indicates a tuple-assignment shape the
-            // unstacker did not fully match; surface it rather than hide it.
-            Expr::UnpackSlot => ("<unpack>".to_string(), prec::ATOM),
+            // unstacker did not fully match; mark it so the function is rejected.
+            Expr::UnpackSlot => (UNRECOVERED.to_string(), prec::ATOM),
             // A function used inline (a lambda or a decorated def) is not recovered
-            // here; surface it instead of emitting wrong code.
-            Expr::MakeFunction(_) => ("<function>".to_string(), prec::ATOM),
+            // here; mark it so the function is rejected rather than mis-emitted.
+            Expr::MakeFunction(_) => (UNRECOVERED.to_string(), prec::ATOM),
         }
     }
 
     fn varname(&self, var: VarId) -> String {
         match self.code.varnames.get(var.0 as usize) {
-            Some(name) => name.to_string(),
+            Some(name) => sanitize_identifier(&name.to_string()),
             None => format!("var{}", var.0),
         }
     }
 
     fn name(&self, name: NameId) -> String {
         match self.code.names.get(name.0 as usize) {
-            Some(name) => name.to_string(),
+            Some(name) => sanitize_identifier(&name.to_string()),
             None => format!("name{}", name.0),
         }
     }
@@ -328,7 +329,7 @@ impl<'a> Emitter<'a> {
             self.code.freevars.get(index - cells)
         };
         match resolved {
-            Some(name) => name.to_string(),
+            Some(name) => sanitize_identifier(&name.to_string()),
             None => format!("deref{}", deref.0),
         }
     }
@@ -352,6 +353,38 @@ impl<'a> Emitter<'a> {
     }
 }
 
+/// Python 2.7 reserved words that cannot be used as identifiers.
+const KEYWORDS: &[&str] = &[
+    "and", "as", "assert", "break", "class", "continue", "def", "del", "elif", "else", "except",
+    "exec", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "not", "or",
+    "pass", "print", "raise", "return", "try", "while", "with", "yield",
+];
+
+/// Maps a name to a valid Python identifier. The deobfuscator's variable renaming
+/// can leave reserved words or names with illegal characters; replace illegal
+/// characters with `_` and suffix reserved words so the output parses.
+pub(crate) fn sanitize_identifier(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for (index, ch) in name.chars().enumerate() {
+        let legal = if index == 0 {
+            ch.is_ascii_alphabetic() || ch == '_'
+        } else {
+            ch.is_ascii_alphanumeric() || ch == '_'
+        };
+        out.push(if legal { ch } else { '_' });
+    }
+    if out.is_empty() {
+        out.push('_');
+    }
+    if out.starts_with(|c: char| c.is_ascii_digit()) {
+        out.insert(0, '_');
+    }
+    if KEYWORDS.contains(&out.as_str()) {
+        out.push('_');
+    }
+    out
+}
+
 /// Renders a constant object as a Python literal.
 fn render_obj(obj: &Obj) -> String {
     match obj {
@@ -369,7 +402,7 @@ fn render_obj(obj: &Obj) -> String {
                 format!("({})", rendered.join(", "))
             }
         }
-        other => format!("<const {:?}>", other.typ()),
+        other => format!("{}_const_{:?}", UNRECOVERED, other.typ()),
     }
 }
 
