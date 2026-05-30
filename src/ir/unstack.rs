@@ -92,6 +92,11 @@ impl Unstacker {
     /// the stores it feeds collect into a single tuple assignment instead of
     /// emitting one statement each.
     fn complete_store(&mut self, target: LValue, value: ValueId) {
+        if let Expr::MakeFunction(code) = self.arena.get(value) {
+            let code = *code;
+            self.emit(Stmt::FunctionDef { target, code });
+            return;
+        }
         if self.unpack.is_some() && matches!(self.arena.get(value), Expr::UnpackSlot) {
             let pending = self.unpack.as_mut().unwrap();
             pending.targets.push(target);
@@ -281,6 +286,21 @@ impl Unstacker {
                 let container = self.pop()?;
                 let value = self.pop()?;
                 self.complete_store(LValue::Subscript(container, key), value);
+            }
+            Mnemonic::MAKE_FUNCTION => {
+                // Default arguments are not recovered into the signature yet, so
+                // only the no-default form is supported.
+                if arg_u16(arg)? != 0 {
+                    return Err(IrError::Unsupported(mnemonic));
+                }
+                let code = self.pop()?;
+                match self.arena.get(code) {
+                    Expr::Const(const_id) => {
+                        let const_id = *const_id;
+                        self.push(Expr::MakeFunction(const_id));
+                    }
+                    _ => return Err(IrError::Unsupported(mnemonic)),
+                }
             }
             Mnemonic::JUMP_IF_FALSE_OR_POP | Mnemonic::JUMP_IF_TRUE_OR_POP => {
                 let kind = if mnemonic == Mnemonic::JUMP_IF_FALSE_OR_POP {

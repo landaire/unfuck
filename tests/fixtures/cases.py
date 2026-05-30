@@ -63,3 +63,11 @@ def either(a, b, c):
 
 def guard_chain(self):
     return self.a and self.b > 0
+
+
+def outer(x):
+
+    def inner(y):
+        return y + 1
+
+    return inner(x)

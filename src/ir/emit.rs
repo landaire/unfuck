@@ -4,6 +4,8 @@
 //! precedence and parenthesises a child only when the child binds more loosely
 //! than its position requires.
 
+use std::sync::Arc;
+
 use num_traits::ToPrimitive;
 use py27_marshal::{Code, Obj};
 
@@ -62,6 +64,36 @@ impl<'a> Emitter<'a> {
         self.out.push('\n');
     }
 
+    /// Emits a nested `def` by recursively decompiling its code constant and
+    /// indenting the result under the current block.
+    fn function_def(&mut self, target: &LValue, code: ConstId) {
+        let nested = match self.code.consts.get(code.0 as usize) {
+            Some(Obj::Code(nested)) => Arc::new(nested.read().unwrap().clone()),
+            _ => {
+                let line = format!("{} = None", self.lvalue(target));
+                self.line(&line);
+                return;
+            }
+        };
+        // A `def` names itself; a non-identifier name (`<lambda>`, `<genexpr>`) is a
+        // form this path does not render, so leave it visible rather than emit
+        // invalid syntax.
+        if nested.name.to_string().starts_with('<') {
+            let line = format!(
+                "# {} = {} (not recovered)",
+                self.lvalue(target),
+                nested.name
+            );
+            self.line(&line);
+            return;
+        }
+        let source = super::decompile_function(nested)
+            .unwrap_or_else(|err| format!("# decompile error: {}", err));
+        for text in source.trim_end_matches('\n').split('\n') {
+            self.line(text);
+        }
+    }
+
     /// Renders a suite at one deeper indent level, emitting `pass` if empty.
     fn block(&mut self, stmts: &[Stmt]) {
         self.indent += 1;
@@ -100,6 +132,7 @@ impl<'a> Emitter<'a> {
                 }
                 self.line(line.trim_end());
             }
+            Stmt::FunctionDef { target, code } => self.function_def(target, *code),
             Stmt::Raise(args) => {
                 let rendered: Vec<String> = args.iter().map(|a| self.expr(*a, 0)).collect();
                 if rendered.is_empty() {
@@ -264,6 +297,9 @@ impl<'a> Emitter<'a> {
             // An unconsumed unpack slot indicates a tuple-assignment shape the
             // unstacker did not fully match; surface it rather than hide it.
             Expr::UnpackSlot => ("<unpack>".to_string(), prec::ATOM),
+            // A function used inline (a lambda or a decorated def) is not recovered
+            // here; surface it instead of emitting wrong code.
+            Expr::MakeFunction(_) => ("<function>".to_string(), prec::ATOM),
         }
     }
 

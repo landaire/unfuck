@@ -191,6 +191,9 @@ pub enum Expr {
     /// A transient placeholder pushed by `UNPACK_SEQUENCE`; consumed by the stores
     /// that follow to build a tuple-assignment target. Never reaches emission.
     UnpackSlot,
+    /// A function object built from a nested code constant by `MAKE_FUNCTION`.
+    /// Becomes a `def` when stored to a name.
+    MakeFunction(ConstId),
 }
 
 /// The target of an assignment.
@@ -223,6 +226,12 @@ pub enum Stmt {
     },
     /// `raise`, `raise exc`, `raise exc, value`, or `raise exc, value, tb`.
     Raise(Vec<ValueId>),
+    /// A nested function definition: `def name(...): ...`, decompiled from the
+    /// code constant `code` and bound to `target`.
+    FunctionDef {
+        target: LValue,
+        code: ConstId,
+    },
     While {
         cond: ValueId,
         /// True when the loop continues while `cond` is false (`while not cond`).
