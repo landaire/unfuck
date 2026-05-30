@@ -96,6 +96,7 @@ impl Unstacker {
             Mnemonic::NOP => {}
             Mnemonic::LOAD_CONST => self.push(Expr::Const(ConstId(arg_u16(arg)?))),
             Mnemonic::LOAD_FAST => self.push(Expr::Local(VarId(arg_u16(arg)?))),
+            Mnemonic::LOAD_DEREF => self.push(Expr::Deref(DerefId(arg_u16(arg)?))),
             Mnemonic::LOAD_GLOBAL => self.push(Expr::Global(NameId(arg_u16(arg)?))),
             Mnemonic::LOAD_NAME => self.push(Expr::Name(NameId(arg_u16(arg)?))),
             Mnemonic::LOAD_ATTR => {
@@ -117,12 +118,18 @@ impl Unstacker {
                 let raw = arg_u16(arg)?;
                 let positional = (raw & 0xff) as usize;
                 let keyword = (raw >> 8) as usize;
-                if keyword != 0 {
-                    return Err(IrError::Unsupported(mnemonic));
+                // The stack holds func, positionals, then (key, value) pairs with
+                // the last pair on top. Pop the pairs first, then the positionals.
+                let mut kwargs = Vec::with_capacity(keyword);
+                for _ in 0..keyword {
+                    let value = self.pop()?;
+                    let key = self.pop()?;
+                    kwargs.push((key, value));
                 }
+                kwargs.reverse();
                 let args = self.pop_n(positional)?;
                 let func = self.pop()?;
-                self.push(Expr::Call { func, args });
+                self.push(Expr::Call { func, args, kwargs });
             }
             Mnemonic::BUILD_TUPLE => {
                 let items = self.pop_n(arg_u16(arg)? as usize)?;
@@ -143,6 +150,10 @@ impl Unstacker {
             Mnemonic::STORE_FAST => {
                 let value = self.pop()?;
                 self.emit(Stmt::Assign(LValue::Local(VarId(arg_u16(arg)?)), value));
+            }
+            Mnemonic::STORE_DEREF => {
+                let value = self.pop()?;
+                self.emit(Stmt::Assign(LValue::Deref(DerefId(arg_u16(arg)?)), value));
             }
             Mnemonic::STORE_NAME => {
                 let value = self.pop()?;

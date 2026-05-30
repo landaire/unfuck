@@ -19,6 +19,10 @@ fn long(value: i64) -> Obj {
     Obj::Long(Arc::new(RwLock::new(BigInt::from(value))))
 }
 
+fn pystr(text: &str) -> Obj {
+    Obj::String(Arc::new(RwLock::new(BString::from(text))))
+}
+
 fn op(opcode: Standard, arg: u16) -> Vec<u8> {
     vec![opcode as u8, (arg & 0xff) as u8, (arg >> 8) as u8]
 }
@@ -157,6 +161,23 @@ fn if_else() {
         source,
         "def f(x):\n    if x:\n        y = 1\n    else:\n        y = 2\n    return y\n"
     );
+}
+
+#[test]
+fn keyword_arguments() {
+    // def f(): return g(1, x=2)
+    let consts = vec![Obj::None, long(1), pystr("x"), long(2)];
+    let code = Builder::new("f", 0, &[], &["g"], consts)
+        .emit(op(Standard::LOAD_GLOBAL, 0))
+        .emit(op(Standard::LOAD_CONST, 1))
+        .emit(op(Standard::LOAD_CONST, 2))
+        .emit(op(Standard::LOAD_CONST, 3))
+        .emit(op(Standard::CALL_FUNCTION, 0x0101))
+        .emit(op0(Standard::RETURN_VALUE))
+        .finish();
+
+    let source = unfuck::ir::decompile_function(code).expect("decompile failed");
+    assert_eq!(source, "def f():\n    return g(1, x=2)\n");
 }
 
 #[test]

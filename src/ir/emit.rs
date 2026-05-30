@@ -127,6 +127,7 @@ impl<'a> Emitter<'a> {
     fn lvalue(&self, target: &LValue) -> String {
         match target {
             LValue::Local(var) => self.varname(*var),
+            LValue::Deref(deref) => self.derefname(*deref),
             LValue::Name(name) | LValue::Global(name) => self.name(*name),
             LValue::Attr(obj, name) => {
                 format!("{}.{}", self.expr(*obj, prec::ATOM), self.name(*name))
@@ -156,6 +157,7 @@ impl<'a> Emitter<'a> {
         match self.arena.get(id) {
             Expr::Const(c) => (self.render_const(*c), prec::ATOM),
             Expr::Local(var) => (self.varname(*var), prec::ATOM),
+            Expr::Deref(deref) => (self.derefname(*deref), prec::ATOM),
             Expr::Global(name) | Expr::Name(name) => (self.name(*name), prec::ATOM),
             Expr::Attr(obj, name) => (
                 format!("{}.{}", self.expr(*obj, prec::ATOM), self.name(*name)),
@@ -192,8 +194,11 @@ impl<'a> Emitter<'a> {
                 ),
                 prec::COMPARE,
             ),
-            Expr::Call { func, args } => {
-                let rendered: Vec<String> = args.iter().map(|a| self.expr(*a, 0)).collect();
+            Expr::Call { func, args, kwargs } => {
+                let mut rendered: Vec<String> = args.iter().map(|a| self.expr(*a, 0)).collect();
+                for (key, value) in kwargs {
+                    rendered.push(format!("{}={}", self.kwarg_name(*key), self.expr(*value, 0)));
+                }
                 (
                     format!("{}({})", self.expr(*func, prec::ATOM), rendered.join(", ")),
                     prec::ATOM,
@@ -238,6 +243,33 @@ impl<'a> Emitter<'a> {
             Some(name) => name.to_string(),
             None => format!("name{}", name.0),
         }
+    }
+
+    /// Resolves a `LOAD_DEREF`/`STORE_DEREF` index against `co_cellvars` followed
+    /// by `co_freevars`.
+    fn derefname(&self, deref: DerefId) -> String {
+        let index = deref.0 as usize;
+        let cells = self.code.cellvars.len();
+        let resolved = if index < cells {
+            self.code.cellvars.get(index)
+        } else {
+            self.code.freevars.get(index - cells)
+        };
+        match resolved {
+            Some(name) => name.to_string(),
+            None => format!("deref{}", deref.0),
+        }
+    }
+
+    /// Renders a keyword-argument name. `CALL_FUNCTION` keys are always constant
+    /// strings; fall back to an inline form if that ever does not hold.
+    fn kwarg_name(&self, key: ValueId) -> String {
+        if let Expr::Const(c) = self.arena.get(key) {
+            if let Some(Obj::String(s)) = self.code.consts.get(c.0 as usize) {
+                return String::from_utf8_lossy(s.read().unwrap().as_slice()).into_owned();
+            }
+        }
+        format!("**{{{}}}", self.expr(key, 0))
     }
 
     fn render_const(&self, c: ConstId) -> String {

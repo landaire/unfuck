@@ -22,6 +22,11 @@ pub struct NameId(pub u16);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConstId(pub u16);
 
+/// Index into the concatenation of `co_cellvars` and `co_freevars`, as used by
+/// `LOAD_DEREF`/`STORE_DEREF`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DerefId(pub u16);
+
 /// A bytecode offset. Wraps the raw integer so offset arithmetic is explicit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Offset(pub u32);
@@ -142,6 +147,7 @@ impl CmpOp {
 pub enum Expr {
     Const(ConstId),
     Local(VarId),
+    Deref(DerefId),
     Global(NameId),
     Name(NameId),
     Attr(ValueId, NameId),
@@ -152,6 +158,8 @@ pub enum Expr {
     Call {
         func: ValueId,
         args: Vec<ValueId>,
+        /// Keyword arguments, each `(name, value)`. The name is a `Const` string.
+        kwargs: Vec<(ValueId, ValueId)>,
     },
     Tuple(Vec<ValueId>),
     List(Vec<ValueId>),
@@ -163,6 +171,7 @@ pub enum Expr {
 #[derive(Debug, Clone)]
 pub enum LValue {
     Local(VarId),
+    Deref(DerefId),
     Name(NameId),
     Global(NameId),
     Attr(ValueId, NameId),
