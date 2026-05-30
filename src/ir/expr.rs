@@ -197,6 +197,14 @@ pub enum Stmt {
     },
     /// `raise`, `raise exc`, `raise exc, value`, or `raise exc, value, tb`.
     Raise(Vec<ValueId>),
+    While {
+        cond: ValueId,
+        /// True when the loop continues while `cond` is false (`while not cond`).
+        negated: bool,
+        body: Vec<Stmt>,
+    },
+    Break,
+    Continue,
 }
 
 /// Owns every expression for one function. [`ValueId`]s index into it.

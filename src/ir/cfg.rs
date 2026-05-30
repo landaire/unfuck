@@ -47,6 +47,19 @@ pub struct Block {
     pub terminator: Terminator,
 }
 
+impl Block {
+    /// The target offsets this block can transfer control to.
+    pub fn successors(&self) -> Vec<Offset> {
+        match &self.terminator {
+            Terminator::Fallthrough(target) | Terminator::Jump(target) => vec![*target],
+            Terminator::CondBranch {
+                if_true, if_false, ..
+            } => vec![*if_true, *if_false],
+            Terminator::Return(_) | Terminator::Raise(_) => Vec::new(),
+        }
+    }
+}
+
 /// A function lowered to a control-flow graph of statement blocks.
 pub struct Cfg {
     pub blocks: Vec<Block>,
@@ -127,11 +140,9 @@ fn block_leaders(instrs: &[OffsetInstr]) -> Result<Vec<Offset>, IrError> {
         let next = instrs.get(idx + 1).map(|i| i.offset);
         match terminator_kind(mnemonic)? {
             TerminatorKind::Branch | TerminatorKind::Jump => {
-                let target = branch_target(item)?;
-                if target <= item.offset {
-                    return Err(IrError::HasControlFlow(mnemonic));
-                }
-                leaders.insert(target);
+                // Backward targets are loop back edges; the structurer recovers the
+                // loop, so they are allowed here.
+                leaders.insert(branch_target(item)?);
                 if let Some(next) = next {
                     leaders.insert(next);
                 }
@@ -230,8 +241,7 @@ fn terminator_kind(mnemonic: Mnemonic) -> Result<TerminatorKind, IrError> {
         Mnemonic::RAISE_VARARGS => TerminatorKind::Raise,
         Mnemonic::JUMP_ABSOLUTE | Mnemonic::JUMP_FORWARD => TerminatorKind::Jump,
         Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE => TerminatorKind::Branch,
-        Mnemonic::SETUP_LOOP
-        | Mnemonic::SETUP_EXCEPT
+        Mnemonic::SETUP_EXCEPT
         | Mnemonic::SETUP_FINALLY
         | Mnemonic::SETUP_WITH
         | Mnemonic::FOR_ITER

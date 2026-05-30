@@ -193,9 +193,28 @@ fn raise_statement() {
 }
 
 #[test]
-fn loops_are_rejected() {
+fn while_loop() {
+    // def f(n): while n: n = n; return n   (n as a bare truth test, body reassigns)
+    let code = Builder::new("f", 1, &["n"], &[], vec![Obj::None])
+        .emit(op(Standard::SETUP_LOOP, 16)) // 0, exit -> 19
+        .emit(op(Standard::LOAD_FAST, 0)) // 3 (header)
+        .emit(op(Standard::POP_JUMP_IF_FALSE, 18)) // 6 -> POP_BLOCK
+        .emit(op(Standard::LOAD_FAST, 0)) // 9 body
+        .emit(op(Standard::STORE_FAST, 0)) // 12
+        .emit(op(Standard::JUMP_ABSOLUTE, 3)) // 15 back edge
+        .emit(op0(Standard::POP_BLOCK)) // 18
+        .emit(op(Standard::LOAD_FAST, 0)) // 19
+        .emit(op0(Standard::RETURN_VALUE)) // 22
+        .finish();
+
+    let source = unfuck::ir::decompile_function(code).expect("decompile failed");
+    assert_eq!(source, "def f(n):\n    while n:\n        n = n\n    return n\n");
+}
+
+#[test]
+fn for_loops_are_rejected() {
     let code = Builder::new("f", 0, &[], &[], vec![Obj::None])
-        .emit(op(Standard::SETUP_LOOP, 4))
+        .emit(op(Standard::FOR_ITER, 4))
         .emit(op(Standard::LOAD_CONST, 0))
         .emit(op0(Standard::RETURN_VALUE))
         .finish();

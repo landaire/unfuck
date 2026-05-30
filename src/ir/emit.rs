@@ -106,6 +106,17 @@ impl<'a> Emitter<'a> {
                     self.line(&format!("raise {}", rendered.join(", ")));
                 }
             }
+            Stmt::While { cond, negated, body } => {
+                let rendered = if *negated {
+                    format!("while not {}:", self.expr(*cond, prec::UNARY))
+                } else {
+                    format!("while {}:", self.expr(*cond, 0))
+                };
+                self.line(&rendered);
+                self.block(body);
+            }
+            Stmt::Break => self.line("break"),
+            Stmt::Continue => self.line("continue"),
             Stmt::If { cond, then, els } => {
                 if then.is_empty() && !els.is_empty() {
                     let line = format!("if not {}:", self.expr(*cond, prec::UNARY));

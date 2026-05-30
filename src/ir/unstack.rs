@@ -93,7 +93,10 @@ impl Unstacker {
         }
 
         match mnemonic {
-            Mnemonic::NOP => {}
+            // SETUP_LOOP / POP_BLOCK manage the runtime block stack; they have no
+            // effect on the recovered statement stream. The structurer recovers the
+            // loop from the back edge, not these markers.
+            Mnemonic::NOP | Mnemonic::SETUP_LOOP | Mnemonic::POP_BLOCK => {}
             Mnemonic::LOAD_CONST => self.push(Expr::Const(ConstId(arg_u16(arg)?))),
             Mnemonic::LOAD_FAST => self.push(Expr::Local(VarId(arg_u16(arg)?))),
             Mnemonic::LOAD_DEREF => self.push(Expr::Deref(DerefId(arg_u16(arg)?))),
