@@ -59,6 +59,9 @@ fn cases() {
         "gen_squares",
         "gen_filtered",
         "gen_consumed",
+        "dict_comp",
+        "dict_comp_filtered",
+        "set_comp",
     ] {
         insta::assert_snapshot!(name, decompile(fixture, name));
     }

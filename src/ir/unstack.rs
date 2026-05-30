@@ -46,10 +46,25 @@ pub struct Unstacker {
     unpack: Option<PendingUnpack>,
     shortcircuit: Vec<ShortCircuit>,
     ternary: Option<PendingTernary>,
+    /// True when lowering a comprehension code object: its leading `BUILD_SET`/
+    /// `BUILD_MAP` is the accumulator (kept off the stack), and `SET_ADD`/`MAP_ADD`
+    /// become element statements instead of unsupported opcodes.
+    comp: bool,
+    /// Whether the comprehension accumulator has been consumed from the stream.
+    comp_acc_seen: bool,
 }
 
 impl Unstacker {
     pub fn new() -> Unstacker {
+        Unstacker::with_comp(false)
+    }
+
+    /// Builds an unstacker for a comprehension code object (see [`Unstacker::comp`]).
+    pub fn new_comp() -> Unstacker {
+        Unstacker::with_comp(true)
+    }
+
+    fn with_comp(comp: bool) -> Unstacker {
         Unstacker {
             arena: ExprArena::new(),
             stack: Vec::new(),
@@ -57,7 +72,19 @@ impl Unstacker {
             unpack: None,
             shortcircuit: Vec::new(),
             ternary: None,
+            comp,
+            comp_acc_seen: false,
         }
+    }
+
+    /// Whether this unstacker is lowering a comprehension code object.
+    pub fn is_comp(&self) -> bool {
+        self.comp
+    }
+
+    /// Whether the symbolic stack is currently empty.
+    pub fn stack_is_empty(&self) -> bool {
+        self.stack.is_empty()
     }
 
     /// Resolves any pending short-circuit or ternary whose merge point is `offset`:
@@ -263,6 +290,15 @@ impl Unstacker {
                 let items = self.pop_n(arg_u16(arg)? as usize)?;
                 self.push(Expr::List(items));
             }
+            // In a comprehension the leading empty BUILD is the accumulator: it is
+            // returned at the end but never referenced as a value, so it is folded
+            // away rather than pushed.
+            Mnemonic::BUILD_SET if self.comp && !self.comp_acc_seen => {
+                self.comp_acc_seen = true;
+            }
+            Mnemonic::BUILD_MAP if self.comp && !self.comp_acc_seen => {
+                self.comp_acc_seen = true;
+            }
             Mnemonic::BUILD_SET => {
                 let items = self.pop_n(arg_u16(arg)? as usize)?;
                 self.push(Expr::Set(items));
@@ -270,6 +306,17 @@ impl Unstacker {
             // BUILD_MAP makes an empty dict; the STORE_MAPs that follow grow it in
             // place while it stays on the stack.
             Mnemonic::BUILD_MAP => self.push(Expr::Dict(Vec::new())),
+            // The accumulator pushes of a set/dict comprehension. The element is
+            // recorded for the comprehension folder; the accumulator is implicit.
+            Mnemonic::SET_ADD if self.comp => {
+                let element = self.pop()?;
+                self.emit(Stmt::SetAdd(element));
+            }
+            Mnemonic::MAP_ADD if self.comp => {
+                let key = self.pop()?;
+                let value = self.pop()?;
+                self.emit(Stmt::DictAdd { key, value });
+            }
             Mnemonic::STORE_MAP => {
                 let key = self.pop()?;
                 let value = self.pop()?;

@@ -115,6 +115,16 @@ impl Cfg {
 
     /// Builds the graph from a decoded instruction stream.
     pub fn build(instrs: &[OffsetInstr]) -> Result<Cfg, IrError> {
+        Cfg::build_with(instrs, false)
+    }
+
+    /// Builds the graph for a comprehension code object, lowering its accumulator
+    /// and `SET_ADD`/`MAP_ADD` instructions into comprehension element statements.
+    pub fn build_comp(instrs: &[OffsetInstr]) -> Result<Cfg, IrError> {
+        Cfg::build_with(instrs, true)
+    }
+
+    fn build_with(instrs: &[OffsetInstr], comp: bool) -> Result<Cfg, IrError> {
         let ternaries = find_ternaries(instrs);
         let (tries, excluded) = recover_tries(instrs)?;
         let leaders = block_leaders(instrs, &ternaries, &tries, &excluded)?;
@@ -134,7 +144,11 @@ impl Cfg {
             }
         }
 
-        let mut unstacker = Unstacker::new();
+        let mut unstacker = if comp {
+            Unstacker::new_comp()
+        } else {
+            Unstacker::new()
+        };
 
         // Build each try's terminator up front: the exception-type expressions are
         // lowered through the shared unstacker so they enter the same arena the
@@ -317,8 +331,14 @@ fn lower_block(
             exit: branch_target(last)?,
         },
         TerminatorKind::Return => {
-            let value = unstacker.pop_value()?;
-            Terminator::Return(Some(value))
+            // A comprehension's final `RETURN_VALUE` returns its accumulator, which
+            // is folded away, so there is no value on the stack to pop.
+            if unstacker.is_comp() && unstacker.stack_is_empty() {
+                Terminator::Return(None)
+            } else {
+                let value = unstacker.pop_value()?;
+                Terminator::Return(Some(value))
+            }
         }
         TerminatorKind::Raise => {
             let argc = last.instr.arg.ok_or(IrError::MissingOperand)? as usize;

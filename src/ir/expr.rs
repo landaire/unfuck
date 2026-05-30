@@ -258,6 +258,16 @@ pub enum Stmt {
         body: Vec<Stmt>,
         handlers: Vec<ExceptHandler>,
     },
+    /// `SET_ADD`: appends an element to a set comprehension's accumulator. Only
+    /// produced when lowering a comprehension code object, where it is folded into
+    /// the comprehension element rather than emitted as a statement.
+    SetAdd(ValueId),
+    /// `MAP_ADD`: inserts `key: value` into a dict comprehension's accumulator.
+    /// Like [`Stmt::SetAdd`], only produced inside a comprehension code object.
+    DictAdd {
+        key: ValueId,
+        value: ValueId,
+    },
     Break,
     Continue,
 }

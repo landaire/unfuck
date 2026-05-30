@@ -175,6 +175,10 @@ impl<'a> Emitter<'a> {
                     self.block(&handler.body);
                 }
             }
+            // These appear only inside a comprehension code object, where the
+            // comprehension folder consumes them; reaching emission means a shape
+            // the folder did not recognise, so mark it unrecovered.
+            Stmt::SetAdd(_) | Stmt::DictAdd { .. } => self.line(UNRECOVERED),
             Stmt::Break => self.line("break"),
             Stmt::Continue => self.line("continue"),
             Stmt::If { cond, then, els } => {
@@ -359,7 +363,10 @@ impl<'a> Emitter<'a> {
             Some(Obj::Code(code)) => Arc::new(code.read().unwrap().clone()),
             _ => return None,
         };
-        if comp_code.name.to_string() != "<genexpr>" {
+        if !matches!(
+            comp_code.name.to_string().as_str(),
+            "<genexpr>" | "<setcomp>" | "<dictcomp>"
+        ) {
             return None;
         }
         let parts = comprehension_parts(comp_code).ok()?;
@@ -455,7 +462,15 @@ struct CompParts {
 /// Decompiles a comprehension code object and renders it, leaving the outermost
 /// iterable (the `.0` argument) as a hole for the caller to fill from its scope.
 fn comprehension_parts(comp_code: Arc<Code>) -> Result<CompParts, super::IrError> {
-    let structured = super::DecodedFunction::decode(comp_code)?.structure()?;
+    // A generator expression lowers normally (its `yield` needs no accumulator); a
+    // set or dict comprehension needs accumulator-aware lowering.
+    let name = comp_code.name.to_string();
+    let decoded = super::DecodedFunction::decode(comp_code)?;
+    let structured = match name.as_str() {
+        "<genexpr>" => decoded.structure()?,
+        "<setcomp>" | "<dictcomp>" => decoded.structure_comp()?,
+        _ => return Err(super::IrError::Incomplete),
+    };
     let recog =
         recognize_comprehension(&structured.arena, &structured.body).ok_or(super::IrError::Incomplete)?;
     // The first clause iterates the implicit `.0` argument; that iterable is
@@ -535,6 +550,8 @@ fn walk_comp_body(
             Expr::Yield(element) => Some((CompKind::Gen, *element, None)),
             _ => None,
         },
+        [Stmt::SetAdd(element)] => Some((CompKind::Set, *element, None)),
+        [Stmt::DictAdd { key, value }] => Some((CompKind::Dict, *value, Some(*key))),
         [Stmt::If { cond, then, els }] if els.is_empty() => {
             clauses.push(CompClause::If(*cond));
             walk_comp_body(arena, then, clauses)

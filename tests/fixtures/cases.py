@@ -112,3 +112,15 @@ def gen_filtered(items):
 
 def gen_consumed(items):
     return sum(x for x in items if x)
+
+
+def dict_comp(items):
+    return {k: k * k for k in items}
+
+
+def dict_comp_filtered(items):
+    return {k: v for k, v in items if v}
+
+
+def set_comp(items):
+    return {x for x in items if x > 0}

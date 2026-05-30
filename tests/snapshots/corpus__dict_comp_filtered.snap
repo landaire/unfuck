@@ -1,0 +1,7 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def dict_comp_filtered(items):
+    return {k: v for k, v in items if v}

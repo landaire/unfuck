@@ -90,6 +90,17 @@ impl DecodedFunction {
     /// Builds the CFG, lowers each block, and recovers control flow.
     pub fn structure(self) -> Result<StructuredFunction, IrError> {
         let cfg = Cfg::build(&self.instrs)?;
+        self.structure_with(cfg)
+    }
+
+    /// Structures a comprehension code object, lowering its accumulator and
+    /// `SET_ADD`/`MAP_ADD` instructions into comprehension element statements.
+    pub fn structure_comp(self) -> Result<StructuredFunction, IrError> {
+        let cfg = Cfg::build_comp(&self.instrs)?;
+        self.structure_with(cfg)
+    }
+
+    fn structure_with(self, cfg: Cfg) -> Result<StructuredFunction, IrError> {
         let body = structure::structure(&cfg)?;
         Ok(StructuredFunction {
             code: self.code,
