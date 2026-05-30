@@ -60,8 +60,21 @@ fn main() {
     }
 
     if target == "--dump" {
-        let dir = std::path::Path::new(&args[3]);
-        std::fs::create_dir_all(dir).expect("create dir");
+        let force = args.iter().any(|arg| arg == "--force");
+        // The output path defaults to the input with its extension changed to .py
+        // (e.g. Avatar.pyc -> Avatar.py).
+        let out_arg = args.get(3).filter(|arg| arg.as_str() != "--force");
+        let out_path = match out_arg {
+            Some(arg) => std::path::PathBuf::from(arg),
+            None => std::path::Path::new(path).with_extension("py"),
+        };
+        if out_path.exists() && !force {
+            eprintln!(
+                "warning: {} already exists; pass --force to overwrite",
+                out_path.display()
+            );
+            std::process::exit(1);
+        }
         let mut all = Vec::new();
         collect(&root, &mut all);
         let mut combined = String::new();
@@ -74,11 +87,6 @@ fn main() {
                     ok += 1;
                     combined.push_str(&source);
                     combined.push_str("\n\n");
-                    let safe: String = name
-                        .chars()
-                        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
-                        .collect();
-                    let _ = std::fs::write(dir.join(format!("{}.py", safe)), &source);
                 }
                 Err(err) => {
                     failed += 1;
@@ -86,16 +94,14 @@ fn main() {
                 }
             }
         }
-        let combined_path = dir.join("_all_decompiled.py");
-        std::fs::write(&combined_path, &combined).expect("write combined");
+        std::fs::write(&out_path, &combined).expect("write dump");
         println!(
-            "dumped {} functions ({} ok, {} failed) to {}",
+            "dumped {} code objects ({} ok, {} failed) to {}",
             all.len(),
             ok,
             failed,
-            dir.display()
+            out_path.display()
         );
-        println!("combined: {}", combined_path.display());
         return;
     }
 
