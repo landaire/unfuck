@@ -64,16 +64,23 @@ fn main() {
         collect(&root, &mut all);
         let total = all.len();
         let mut ok = 0usize;
-        let mut by_error: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut by_error: std::collections::BTreeMap<String, (usize, String)> = Default::default();
         for code in all {
+            let name = code.name.to_string();
             match unfuck::ir::decompile_function(code) {
                 Ok(_) => ok += 1,
-                Err(err) => *by_error.entry(format!("{}", err)).or_default() += 1,
+                Err(err) => {
+                    let entry = by_error.entry(format!("{}", err)).or_default();
+                    entry.0 += 1;
+                    if entry.1.is_empty() {
+                        entry.1 = name;
+                    }
+                }
             }
         }
         println!("decompiled {}/{} code objects", ok, total);
-        for (err, count) in by_error {
-            println!("  {:>4}  {}", count, err);
+        for (err, (count, example)) in by_error {
+            println!("  {:>4}  {:50}  e.g. {}", count, err, example);
         }
         return;
     }
