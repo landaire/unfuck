@@ -336,7 +336,6 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 // If so, we should split it
                 let mut split_at = BTreeSet::new();
                 for (_from, to, weight) in &edges {
-                    curr_basic_block.start_offset == 755;
                     let _weight = *weight;
                     if *to > curr_basic_block.start_offset && *to <= curr_basic_block.end_offset {
                         split_at.insert(*to);

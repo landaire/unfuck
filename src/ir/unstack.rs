@@ -49,6 +49,27 @@ impl Unstacker {
         self.stmts.push(stmt);
     }
 
+    /// Clears the symbolic stack before lowering a new basic block. The arena and
+    /// accumulated statements are retained across blocks of the same function.
+    pub fn start_block(&mut self) {
+        self.stack.clear();
+    }
+
+    /// Pops a value left on the stack, e.g. a branch condition or return value.
+    pub fn pop_value(&mut self) -> Result<ValueId, IrError> {
+        self.pop()
+    }
+
+    /// Removes and returns the statements lowered so far.
+    pub fn take_stmts(&mut self) -> Vec<Stmt> {
+        std::mem::take(&mut self.stmts)
+    }
+
+    /// Consumes the machine, yielding just the expression arena.
+    pub fn into_arena(self) -> ExprArena {
+        self.arena
+    }
+
     /// Consumes the machine, yielding the arena and the statement list.
     pub fn finish(self) -> (ExprArena, Vec<Stmt>) {
         (self.arena, self.stmts)

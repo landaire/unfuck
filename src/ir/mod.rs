@@ -1,28 +1,31 @@
 //! A raising IR for recovering Python source from deobfuscated bytecode.
 //!
-//! The pipeline lowers a [`Code`] object through a sequence of typed stages, each
-//! produced by consuming the previous one:
+//! The pipeline lowers a [`Code`] object through typed stages, each produced by
+//! consuming the previous one:
 //!
 //! ```text
-//! DecodedFunction  -> UnstackedFunction  -> (later) Ssa -> Structured -> source
+//! DecodedFunction -> StructuredFunction -> source
 //! ```
 //!
-//! Milestone 1 covers branch-free functions: decode, symbolic-stack into
-//! statements, and emit Python. Control flow returns [`IrError::HasControlFlow`]
-//! so the supported surface is explicit and grows pass by pass.
+//! [`DecodedFunction`] holds the decoded instruction stream. [`DecodedFunction::structure`]
+//! builds a control-flow graph, lowers each block by symbolic execution, and
+//! recovers nested `if`/`else` from post-dominators. [`StructuredFunction::to_source`]
+//! prints Python. Loops, exceptions, and short-circuit expressions are not yet
+//! structured and surface as [`IrError::HasControlFlow`].
 
+pub mod cfg;
 pub mod emit;
 pub mod expr;
+pub mod structure;
 pub mod unstack;
 
 use std::sync::Arc;
 
 use py27_marshal::{Code, CodeFlags};
-use pydis::opcode::py27::{Mnemonic, Standard};
-use pydis::prelude::*;
+use pydis::opcode::py27::Mnemonic;
 
+use cfg::{Cfg, OffsetInstr};
 use expr::{ExprArena, Stmt};
-use unstack::Unstacker;
 
 /// Reasons the IR pipeline can reject or fail on a code object.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,7 +34,8 @@ pub enum IrError {
     Decode,
     /// An opcode is not yet handled by the unstack pass.
     Unsupported(Mnemonic),
-    /// The function contains control flow, which Milestone 1 does not structure.
+    /// The function uses control flow that is not yet structured (loops,
+    /// exceptions, short-circuit operators, or a back edge).
     HasControlFlow(Mnemonic),
     /// An instruction that requires an operand had none.
     MissingOperand,
@@ -39,6 +43,8 @@ pub enum IrError {
     BadOperand,
     /// The symbolic stack was empty when an operand was needed.
     StackUnderflow,
+    /// The control-flow graph did not reduce to nested regions.
+    Unstructurable,
 }
 
 impl std::fmt::Display for IrError {
@@ -50,59 +56,46 @@ impl std::fmt::Display for IrError {
             IrError::MissingOperand => write!(f, "instruction operand missing"),
             IrError::BadOperand => write!(f, "instruction operand out of range"),
             IrError::StackUnderflow => write!(f, "symbolic stack underflow"),
+            IrError::Unstructurable => write!(f, "control-flow graph did not reduce to regions"),
         }
     }
 }
 
 impl std::error::Error for IrError {}
 
-/// A decoded, not-yet-lowered function: the entry stage of the pipeline.
+/// A decoded, not-yet-structured function: the entry stage of the pipeline.
 pub struct DecodedFunction {
     code: Arc<Code>,
-    instrs: Vec<Instruction<Standard>>,
+    instrs: Vec<OffsetInstr>,
 }
 
-/// A function whose body has been lowered to a flat statement list.
-pub struct UnstackedFunction {
+/// A function whose body has been recovered to a nested statement list.
+pub struct StructuredFunction {
     code: Arc<Code>,
     arena: ExprArena,
     body: Vec<Stmt>,
 }
 
 impl DecodedFunction {
-    /// Decodes a code object's bytecode into instructions.
+    /// Decodes a code object's bytecode into offset-tagged instructions.
     pub fn decode(code: Arc<Code>) -> Result<DecodedFunction, IrError> {
-        let bytecode = Arc::clone(&code.code);
-        let mut reader = std::io::Cursor::new(bytecode.as_slice());
-        let mut instrs = Vec::new();
-        while (reader.position() as usize) < bytecode.len() {
-            match decode_py27::<Standard, _>(&mut reader) {
-                Ok(instr) => instrs.push(instr),
-                Err(_) => return Err(IrError::Decode),
-            }
-        }
+        let instrs = cfg::decode(code.code.as_slice())?;
         Ok(DecodedFunction { code, instrs })
     }
 
-    /// Lowers a branch-free function body to statements via symbolic execution.
-    pub fn unstack(self) -> Result<UnstackedFunction, IrError> {
-        let mut unstacker = Unstacker::new();
-        for instr in &self.instrs {
-            if let Some(control) = control_flow_mnemonic(instr.opcode.mnemonic()) {
-                return Err(IrError::HasControlFlow(control));
-            }
-            unstacker.step(instr)?;
-        }
-        let (arena, body) = unstacker.finish();
-        Ok(UnstackedFunction {
+    /// Builds the CFG, lowers each block, and recovers control flow.
+    pub fn structure(self) -> Result<StructuredFunction, IrError> {
+        let cfg = Cfg::build(&self.instrs)?;
+        let body = structure::structure(&cfg)?;
+        Ok(StructuredFunction {
             code: self.code,
-            arena,
+            arena: cfg.arena,
             body,
         })
     }
 }
 
-impl UnstackedFunction {
+impl StructuredFunction {
     /// Renders the function as a Python `def`, including its signature.
     pub fn to_source(&self) -> String {
         let mut source = self.signature();
@@ -114,7 +107,6 @@ impl UnstackedFunction {
 
     /// Builds the `def name(args):` line from the code object's metadata.
     fn signature(&self) -> String {
-        let name = self.code.name.to_string();
         let argcount = self.code.argcount as usize;
         let mut params: Vec<String> = self
             .code
@@ -124,43 +116,27 @@ impl UnstackedFunction {
             .map(|p| p.to_string())
             .collect();
         if self.code.flags.contains(CodeFlags::VARARGS) {
-            params.push(format!("*{}", self.code.varnames.get(argcount).map_or("args".to_string(), |v| v.to_string())));
+            let name = self
+                .code
+                .varnames
+                .get(argcount)
+                .map_or_else(|| "args".to_string(), |v| v.to_string());
+            params.push(format!("*{}", name));
         }
         if self.code.flags.contains(CodeFlags::VARKEYWORDS) {
             let idx = argcount + self.code.flags.contains(CodeFlags::VARARGS) as usize;
-            params.push(format!("**{}", self.code.varnames.get(idx).map_or("kwargs".to_string(), |v| v.to_string())));
+            let name = self
+                .code
+                .varnames
+                .get(idx)
+                .map_or_else(|| "kwargs".to_string(), |v| v.to_string());
+            params.push(format!("**{}", name));
         }
-        format!("def {}({}):", name, params.join(", "))
+        format!("def {}({}):", self.code.name, params.join(", "))
     }
 }
 
-/// Decompiles a single code object to Python source. Milestone 1: branch-free
-/// bodies only.
+/// Decompiles a single code object to Python source.
 pub fn decompile_function(code: Arc<Code>) -> Result<String, IrError> {
-    Ok(DecodedFunction::decode(code)?.unstack()?.to_source())
-}
-
-/// Returns the mnemonic if the opcode introduces control flow that Milestone 1
-/// does not yet structure. `RETURN_VALUE` is allowed as a block terminator.
-fn control_flow_mnemonic(mnemonic: Mnemonic) -> Option<Mnemonic> {
-    let is_control = matches!(
-        mnemonic,
-        Mnemonic::SETUP_LOOP
-            | Mnemonic::SETUP_EXCEPT
-            | Mnemonic::SETUP_FINALLY
-            | Mnemonic::SETUP_WITH
-            | Mnemonic::FOR_ITER
-            | Mnemonic::BREAK_LOOP
-            | Mnemonic::CONTINUE_LOOP
-            | Mnemonic::END_FINALLY
-            | Mnemonic::RAISE_VARARGS
-            | Mnemonic::YIELD_VALUE
-            | Mnemonic::JUMP_FORWARD
-            | Mnemonic::JUMP_ABSOLUTE
-            | Mnemonic::POP_JUMP_IF_FALSE
-            | Mnemonic::POP_JUMP_IF_TRUE
-            | Mnemonic::JUMP_IF_FALSE_OR_POP
-            | Mnemonic::JUMP_IF_TRUE_OR_POP
-    );
-    is_control.then_some(mnemonic)
+    Ok(DecodedFunction::decode(code)?.structure()?.to_source())
 }

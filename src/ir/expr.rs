@@ -181,6 +181,11 @@ pub enum Stmt {
         values: Vec<ValueId>,
         newline: bool,
     },
+    If {
+        cond: ValueId,
+        then: Vec<Stmt>,
+        els: Vec<Stmt>,
+    },
 }
 
 /// Owns every expression for one function. [`ValueId`]s index into it.

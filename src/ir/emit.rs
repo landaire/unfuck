@@ -60,6 +60,18 @@ impl<'a> Emitter<'a> {
         self.out.push('\n');
     }
 
+    /// Renders a suite at one deeper indent level, emitting `pass` if empty.
+    fn block(&mut self, stmts: &[Stmt]) {
+        self.indent += 1;
+        if stmts.is_empty() {
+            self.line("pass");
+        }
+        for stmt in stmts {
+            self.stmt(stmt);
+        }
+        self.indent -= 1;
+    }
+
     fn stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Assign(target, value) => {
@@ -85,6 +97,21 @@ impl<'a> Emitter<'a> {
                     line.push(',');
                 }
                 self.line(line.trim_end());
+            }
+            Stmt::If { cond, then, els } => {
+                if then.is_empty() && !els.is_empty() {
+                    let line = format!("if not {}:", self.expr(*cond, prec::UNARY));
+                    self.line(&line);
+                    self.block(els);
+                } else {
+                    let line = format!("if {}:", self.expr(*cond, 0));
+                    self.line(&line);
+                    self.block(then);
+                    if !els.is_empty() {
+                        self.line("else:");
+                        self.block(els);
+                    }
+                }
             }
         }
     }
