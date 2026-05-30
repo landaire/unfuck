@@ -320,6 +320,36 @@ fn dict_literal() {
 }
 
 #[test]
+fn short_circuit_and() {
+    // def f(a, b): return a and b
+    let code = Builder::new("f", 2, &["a", "b"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::JUMP_IF_FALSE_OR_POP, "end")
+        .arg(Standard::LOAD_FAST, 1)
+        .label("end")
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(a, b):\n    return a and b\n");
+}
+
+#[test]
+fn short_circuit_chain() {
+    // def f(a, b, c): return a and b and c
+    let code = Builder::new("f", 3, &["a", "b", "c"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::JUMP_IF_FALSE_OR_POP, "end")
+        .arg(Standard::LOAD_FAST, 1)
+        .jump(Standard::JUMP_IF_FALSE_OR_POP, "end")
+        .arg(Standard::LOAD_FAST, 2)
+        .label("end")
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(a, b, c):\n    return a and b and c\n");
+}
+
+#[test]
 fn exceptions_are_rejected() {
     let code = Builder::new("f", 0, &[], &[], vec![Obj::None])
         .jump(Standard::SETUP_EXCEPT, "after")

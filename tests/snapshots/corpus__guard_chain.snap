@@ -1,0 +1,7 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def guard_chain(self):
+    return self.a and self.b > 0

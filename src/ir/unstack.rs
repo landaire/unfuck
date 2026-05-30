@@ -20,12 +20,22 @@ struct PendingUnpack {
     targets: Vec<LValue>,
 }
 
+/// A short-circuit operator awaiting its right operand. `JUMP_IF_*_OR_POP` records
+/// the left operand and the offset where the two sides merge; the merged value is
+/// built once execution reaches that offset.
+struct ShortCircuit {
+    kind: BoolKind,
+    lhs: ValueId,
+    merge: Offset,
+}
+
 /// Symbolic stack machine for one basic block.
 pub struct Unstacker {
     arena: ExprArena,
     stack: Vec<ValueId>,
     stmts: Vec<Stmt>,
     unpack: Option<PendingUnpack>,
+    shortcircuit: Vec<ShortCircuit>,
 }
 
 impl Unstacker {
@@ -35,7 +45,38 @@ impl Unstacker {
             stack: Vec::new(),
             stmts: Vec::new(),
             unpack: None,
+            shortcircuit: Vec::new(),
         }
+    }
+
+    /// Resolves any pending short-circuit whose merge point is `offset`: the right
+    /// operand is on the stack, so combine it with the recorded left operand.
+    pub fn resolve_shortcircuits(&mut self, offset: Offset) -> Result<(), IrError> {
+        while self.shortcircuit.last().map(|s| s.merge) == Some(offset) {
+            let sc = self.shortcircuit.pop().unwrap();
+            let rhs = self.pop()?;
+            let combined = self.combine_bool(sc.kind, sc.lhs, rhs);
+            self.stack.push(combined);
+        }
+        Ok(())
+    }
+
+    /// Whether all short-circuit operators in this block have been resolved.
+    pub fn shortcircuits_resolved(&self) -> bool {
+        self.shortcircuit.is_empty()
+    }
+
+    /// Combines two short-circuit operands, flattening a right side of the same
+    /// kind so `a and b and c` is one chain rather than nested pairs.
+    fn combine_bool(&mut self, kind: BoolKind, lhs: ValueId, rhs: ValueId) -> ValueId {
+        let mut operands = vec![lhs];
+        match self.arena.get(rhs) {
+            Expr::BoolOp(rhs_kind, items) if *rhs_kind == kind => {
+                operands.extend(items.iter().copied());
+            }
+            _ => operands.push(rhs),
+        }
+        self.arena.alloc(Expr::BoolOp(kind, operands))
     }
 
     fn push(&mut self, expr: Expr) {
@@ -107,6 +148,7 @@ impl Unstacker {
     pub fn start_block(&mut self) {
         self.stack.clear();
         self.unpack = None;
+        self.shortcircuit.clear();
     }
 
     /// Pops a value left on the stack, e.g. a branch condition or return value.
@@ -239,6 +281,19 @@ impl Unstacker {
                 let container = self.pop()?;
                 let value = self.pop()?;
                 self.complete_store(LValue::Subscript(container, key), value);
+            }
+            Mnemonic::JUMP_IF_FALSE_OR_POP | Mnemonic::JUMP_IF_TRUE_OR_POP => {
+                let kind = if mnemonic == Mnemonic::JUMP_IF_FALSE_OR_POP {
+                    BoolKind::And
+                } else {
+                    BoolKind::Or
+                };
+                let lhs = self.pop()?;
+                self.shortcircuit.push(ShortCircuit {
+                    kind,
+                    lhs,
+                    merge: Offset(arg_u16(arg)? as u32),
+                });
             }
             Mnemonic::UNPACK_SEQUENCE => {
                 let arity = arg_u16(arg)? as usize;

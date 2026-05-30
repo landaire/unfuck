@@ -90,6 +90,22 @@ impl UnaryOp {
     }
 }
 
+/// The short-circuit boolean operators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoolKind {
+    And,
+    Or,
+}
+
+impl BoolKind {
+    pub fn symbol(self) -> &'static str {
+        match self {
+            BoolKind::And => "and",
+            BoolKind::Or => "or",
+        }
+    }
+}
+
 /// Comparison operators, indexed by the `COMPARE_OP` argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CmpOp {
@@ -155,6 +171,9 @@ pub enum Expr {
     BinOp(BinOp, ValueId, ValueId),
     Unary(UnaryOp, ValueId),
     Compare(CmpOp, ValueId, ValueId),
+    /// A flattened short-circuit chain, e.g. `a and b and c`. Always two or more
+    /// operands of the same kind.
+    BoolOp(BoolKind, Vec<ValueId>),
     Call {
         func: ValueId,
         args: Vec<ValueId>,

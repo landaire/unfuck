@@ -1,0 +1,7 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def both(a, b):
+    return a and b

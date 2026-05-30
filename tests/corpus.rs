@@ -48,6 +48,9 @@ fn cases() {
         "count_down",
         "unpack",
         "make_dict",
+        "both",
+        "either",
+        "guard_chain",
     ] {
         insta::assert_snapshot!(name, decompile(fixture, name));
     }

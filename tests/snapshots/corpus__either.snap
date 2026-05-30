@@ -1,0 +1,7 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def either(a, b, c):
+    return a or b or c

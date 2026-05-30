@@ -11,6 +11,8 @@ use super::expr::*;
 
 /// Binding precedence levels, lowest to highest.
 mod prec {
+    pub const OR: u8 = 0;
+    pub const AND: u8 = 1;
     pub const COMPARE: u8 = 2;
     pub const BIT_OR: u8 = 3;
     pub const BIT_XOR: u8 = 4;
@@ -210,6 +212,15 @@ impl<'a> Emitter<'a> {
                 ),
                 prec::COMPARE,
             ),
+            Expr::BoolOp(kind, operands) => {
+                let level = match kind {
+                    BoolKind::And => prec::AND,
+                    BoolKind::Or => prec::OR,
+                };
+                let rendered: Vec<String> =
+                    operands.iter().map(|o| self.expr(*o, level + 1)).collect();
+                (rendered.join(&format!(" {} ", kind.symbol())), level)
+            }
             Expr::Call { func, args, kwargs, star, kwstar } => {
                 let mut rendered: Vec<String> = args.iter().map(|a| self.expr(*a, 0)).collect();
                 for (key, value) in kwargs {

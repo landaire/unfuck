@@ -51,3 +51,15 @@ def unpack(p):
 
 def make_dict(a, b):
     return {'x': a, 'y': b}
+
+
+def both(a, b):
+    return a and b
+
+
+def either(a, b, c):
+    return a or b or c
+
+
+def guard_chain(self):
+    return self.a and self.b > 0

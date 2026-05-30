@@ -215,7 +215,14 @@ fn lower_block(
         _ => body.len() - 1,
     };
     for item in &body[start.min(feed_end)..feed_end] {
+        unstacker.resolve_shortcircuits(item.offset)?;
         unstacker.step(&item.instr)?;
+    }
+    // Resolve any short-circuit that merges at the terminator before the terminator
+    // consumes its operands. One that merges outside this block is unsupported.
+    unstacker.resolve_shortcircuits(last.offset)?;
+    if !unstacker.shortcircuits_resolved() {
+        return Err(IrError::Unsupported(Mnemonic::JUMP_IF_FALSE_OR_POP));
     }
 
     let terminator = match kind {
@@ -308,9 +315,9 @@ fn terminator_kind(mnemonic: Mnemonic) -> Result<TerminatorKind, IrError> {
         | Mnemonic::BREAK_LOOP
         | Mnemonic::CONTINUE_LOOP
         | Mnemonic::END_FINALLY
-        | Mnemonic::YIELD_VALUE
-        | Mnemonic::JUMP_IF_FALSE_OR_POP
-        | Mnemonic::JUMP_IF_TRUE_OR_POP => return Err(IrError::HasControlFlow(mnemonic)),
+        | Mnemonic::YIELD_VALUE => return Err(IrError::HasControlFlow(mnemonic)),
+        // JUMP_IF_*_OR_POP is a short-circuit operator handled inside a block by the
+        // unstacker, not a control-flow terminator.
         _ => TerminatorKind::None,
     })
 }
