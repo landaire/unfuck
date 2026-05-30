@@ -337,6 +337,19 @@ impl<'a> Emitter<'a> {
             // here; mark it so the function is rejected rather than mis-emitted.
             Expr::MakeFunction(_) => (UNRECOVERED.to_string(), prec::ATOM),
             Expr::Yield(value) => (format!("yield {}", self.expr(*value, prec::TERNARY)), prec::TERNARY),
+            Expr::ListComp { element, target, iter, conds } => {
+                let mut text = format!(
+                    "[{} for {} in {}",
+                    self.expr(*element, 0),
+                    self.lvalue(target),
+                    self.expr(*iter, 0)
+                );
+                for cond in conds {
+                    text.push_str(&format!(" if {}", self.expr(*cond, prec::OR)));
+                }
+                text.push(']');
+                (text, prec::ATOM)
+            }
         }
     }
 

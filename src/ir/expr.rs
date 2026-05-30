@@ -203,6 +203,15 @@ pub enum Expr {
     /// `yield value`. `YIELD_VALUE` pushes the value the generator receives, which
     /// a statement-level yield then pops.
     Yield(ValueId),
+    /// An inline list comprehension `[element for target in iter if cond ...]`.
+    /// Python 2.7 builds these in place rather than in a nested code object, so the
+    /// whole `BUILD_LIST`/`FOR_ITER`/`LIST_APPEND` region is recovered as one value.
+    ListComp {
+        element: ValueId,
+        target: LValue,
+        iter: ValueId,
+        conds: Vec<ValueId>,
+    },
 }
 
 /// The target of an assignment.

@@ -62,6 +62,10 @@ fn cases() {
         "dict_comp",
         "dict_comp_filtered",
         "set_comp",
+        "list_comp",
+        "list_comp_filtered",
+        "list_comp_stored",
+        "empty_list_arg",
     ] {
         insta::assert_snapshot!(name, decompile(fixture, name));
     }

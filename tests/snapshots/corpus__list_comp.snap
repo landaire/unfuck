@@ -1,0 +1,7 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def list_comp(items):
+    return [x * 2 for x in items]

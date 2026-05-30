@@ -127,17 +127,23 @@ impl Cfg {
     fn build_with(instrs: &[OffsetInstr], comp: bool) -> Result<Cfg, IrError> {
         let ternaries = find_ternaries(instrs);
         let (tries, excluded) = recover_tries(instrs)?;
-        let leaders = block_leaders(instrs, &ternaries, &tries, &excluded)?;
+        // Inline list comprehensions are folded whole; their interior instructions
+        // stay inside one block and never become block leaders or for-loops.
+        let (list_comps, list_interior) = find_list_comps(instrs);
+        let leaders = block_leaders(instrs, &ternaries, &tries, &excluded, &list_interior)?;
         let mut by_offset = HashMap::new();
         for (idx, leader) in leaders.iter().enumerate() {
             by_offset.insert(*leader, BlockId(idx as u32));
         }
 
         // The instruction after a FOR_ITER begins the loop body with the loop
-        // target's store; map that body leader back to its header offset.
+        // target's store; map that body leader back to its header offset. A list
+        // comprehension's FOR_ITER is folded inline, so it is skipped here.
         let mut for_body_header: HashMap<Offset, Offset> = HashMap::new();
         for (idx, item) in instrs.iter().enumerate() {
-            if item.instr.opcode.mnemonic() == Mnemonic::FOR_ITER {
+            if item.instr.opcode.mnemonic() == Mnemonic::FOR_ITER
+                && !list_interior.contains(&item.offset)
+            {
                 if let Some(next) = instrs.get(idx + 1) {
                     for_body_header.insert(next.offset, item.offset);
                 }
@@ -177,6 +183,7 @@ impl Cfg {
                 for_header,
                 &mut for_targets,
                 &try_terminators,
+                &list_comps,
             )?;
             blocks.push(block);
         }
@@ -218,6 +225,7 @@ fn block_leaders(
     ternaries: &HashSet<Offset>,
     tries: &[TryShape],
     excluded: &HashSet<Offset>,
+    list_interior: &HashSet<Offset>,
 ) -> Result<Vec<Offset>, IrError> {
     let mut leaders = BTreeSet::new();
     if let Some(first) = instrs.first() {
@@ -237,9 +245,12 @@ fn block_leaders(
         let mnemonic = item.instr.opcode.mnemonic();
         let next = instrs.get(idx + 1).map(|i| i.offset);
         // A ternary's jumps stay inside their block; do not split there. Handler
-        // dispatch instructions are recovered into the try terminator and never
-        // form blocks, so they do not split either.
-        if ternaries.contains(&item.offset) || excluded.contains(&item.offset) {
+        // dispatch instructions and list-comprehension interiors are folded inline
+        // and never form blocks, so they do not split either.
+        if ternaries.contains(&item.offset)
+            || excluded.contains(&item.offset)
+            || list_interior.contains(&item.offset)
+        {
             continue;
         }
         match terminator_kind(mnemonic)? {
@@ -261,9 +272,9 @@ fn block_leaders(
             TerminatorKind::None => {}
         }
     }
-    // A handler-dispatch offset can be reached as a jump's fallthrough; it must not
-    // start a block, since lowering drops every excluded instruction.
-    leaders.retain(|offset| !excluded.contains(offset));
+    // A handler-dispatch offset, or an instruction inside a folded list
+    // comprehension, must not start a block.
+    leaders.retain(|offset| !excluded.contains(offset) && !list_interior.contains(offset));
     Ok(leaders.into_iter().collect())
 }
 
@@ -276,6 +287,7 @@ fn lower_block(
     for_header: Option<BlockId>,
     for_targets: &mut HashMap<BlockId, LValue>,
     try_terminators: &HashMap<Offset, Terminator>,
+    list_comps: &HashMap<Offset, Offset>,
 ) -> Result<Block, IrError> {
     unstacker.start_block();
 
@@ -307,9 +319,24 @@ fn lower_block(
         TerminatorKind::None => body.len(),
         _ => body.len() - 1,
     };
-    for item in &body[start.min(feed_end)..feed_end] {
+    let feed = &body[start.min(feed_end)..feed_end];
+    let mut i = 0;
+    while i < feed.len() {
+        let item = feed[i];
+        // An inline list comprehension is folded as one expression; skip over its
+        // whole region once parsed.
+        if let Some(&comp_end) = list_comps.get(&item.offset) {
+            let span = feed[i..]
+                .iter()
+                .position(|it| it.offset >= comp_end)
+                .map_or(feed.len(), |pos| i + pos);
+            unstacker.parse_list_comp(&feed[i..span])?;
+            i = span;
+            continue;
+        }
         unstacker.resolve_pending(item.offset)?;
         unstacker.step(&item.instr, item.offset)?;
+        i += 1;
     }
     // Resolve any short-circuit or ternary that merges at the terminator before the
     // terminator consumes its operands. One that merges outside this block is
@@ -714,6 +741,112 @@ fn build_try_terminators(
         );
     }
     Ok(terminators)
+}
+
+/// Finds inline list comprehensions and the instruction offsets inside them.
+/// Each entry maps the `BUILD_LIST 0` offset to the comprehension's end (the
+/// `FOR_ITER` exit, where the built list is consumed). Interior offsets, excluding
+/// the `BUILD_LIST` itself, must not start blocks so the whole region folds inline.
+fn find_list_comps(instrs: &[OffsetInstr]) -> (HashMap<Offset, Offset>, HashSet<Offset>) {
+    let index: HashMap<Offset, usize> = instrs
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| (item.offset, idx))
+        .collect();
+    let mut comps = HashMap::new();
+    let mut interior = HashSet::new();
+    for (idx, item) in instrs.iter().enumerate() {
+        if item.instr.opcode.mnemonic() != Mnemonic::BUILD_LIST || item.instr.arg != Some(0) {
+            continue;
+        }
+        if let Some(end_idx) = recognize_list_comp(instrs, &index, idx) {
+            comps.insert(item.offset, instrs[end_idx].offset);
+            for inner in &instrs[idx + 1..end_idx] {
+                interior.insert(inner.offset);
+            }
+        }
+    }
+    (comps, interior)
+}
+
+/// Validates that the `BUILD_LIST 0` at `build_idx` begins a single-`for` list
+/// comprehension and returns the index of its end (the `FOR_ITER` exit). Anything
+/// else (a list literal, a nested or filtered shape the folder cannot parse)
+/// returns `None`, leaving the `LIST_APPEND` unsupported so the function is
+/// rejected rather than mis-recovered.
+fn recognize_list_comp(
+    instrs: &[OffsetInstr],
+    index: &HashMap<Offset, usize>,
+    build_idx: usize,
+) -> Option<usize> {
+    // The iterable must lead straight into GET_ITER then FOR_ITER.
+    let mut for_idx = build_idx + 1;
+    loop {
+        let mnemonic = instrs.get(for_idx)?.instr.opcode.mnemonic();
+        if mnemonic == Mnemonic::FOR_ITER {
+            break;
+        }
+        if disqualifies_list_comp(mnemonic) {
+            return None;
+        }
+        for_idx += 1;
+    }
+    if instrs.get(for_idx - 1)?.instr.opcode.mnemonic() != Mnemonic::GET_ITER {
+        return None;
+    }
+    let for_iter = &instrs[for_idx];
+    let loop_top = for_iter.offset;
+    let end = branch_target(for_iter).ok()?;
+    let end_idx = *index.get(&end)?;
+    if end_idx <= for_idx {
+        return None;
+    }
+    // The loop closes with a back edge to FOR_ITER, and appends exactly once with
+    // no nested loop of its own.
+    let back = &instrs[end_idx - 1];
+    if back.instr.opcode.mnemonic() != Mnemonic::JUMP_ABSOLUTE
+        || branch_target(back).ok()? != loop_top
+    {
+        return None;
+    }
+    let mut appends = 0;
+    for inner in &instrs[for_idx + 1..end_idx] {
+        match inner.instr.opcode.mnemonic() {
+            Mnemonic::LIST_APPEND => appends += 1,
+            Mnemonic::FOR_ITER => return None,
+            _ => {}
+        }
+    }
+    if appends != 1 {
+        return None;
+    }
+    Some(end_idx)
+}
+
+/// Whether an opcode between `BUILD_LIST 0` and the comprehension's `FOR_ITER`
+/// rules out a list comprehension (so the build is an ordinary list literal).
+fn disqualifies_list_comp(mnemonic: Mnemonic) -> bool {
+    let name = format!("{:?}", mnemonic);
+    name.starts_with("STORE_")
+        || name.starts_with("DELETE_")
+        || name.starts_with("JUMP")
+        || name.starts_with("POP_JUMP")
+        || name.starts_with("SETUP_")
+        || name.starts_with("PRINT_")
+        || name.starts_with("IMPORT_")
+        || matches!(
+            mnemonic,
+            Mnemonic::RETURN_VALUE
+                | Mnemonic::YIELD_VALUE
+                | Mnemonic::POP_TOP
+                | Mnemonic::POP_BLOCK
+                | Mnemonic::BREAK_LOOP
+                | Mnemonic::CONTINUE_LOOP
+                | Mnemonic::END_FINALLY
+                | Mnemonic::LIST_APPEND
+                | Mnemonic::SET_ADD
+                | Mnemonic::MAP_ADD
+        )
 }
 
 /// Computes the absolute target offset of a branch instruction.

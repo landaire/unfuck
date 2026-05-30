@@ -9,6 +9,7 @@
 use pydis::opcode::py27::{Mnemonic, Standard};
 use pydis::prelude::*;
 
+use super::cfg::OffsetInstr;
 use super::expr::*;
 use super::IrError;
 
@@ -234,6 +235,58 @@ impl Unstacker {
         (self.arena, self.stmts)
     }
 
+    /// Folds an inline list comprehension region into a single [`Expr::ListComp`].
+    /// `region` runs from the `BUILD_LIST 0` accumulator through the loop's back
+    /// edge: `BUILD_LIST 0; <iter>; GET_ITER; FOR_ITER exit; STORE target;
+    /// [<cond>; POP_JUMP_IF_FALSE top]*; <element>; LIST_APPEND; JUMP_ABSOLUTE top`.
+    /// Only this single-`for` shape with straight-line sub-expressions is accepted;
+    /// anything else returns an error so the function is rejected rather than
+    /// mis-recovered.
+    pub fn parse_list_comp(&mut self, region: &[&OffsetInstr]) -> Result<(), IrError> {
+        let mnemonic = |i: usize| region.get(i).map(|item| item.instr.opcode.mnemonic());
+        if mnemonic(0) != Some(Mnemonic::BUILD_LIST) {
+            return Err(IrError::Unsupported(Mnemonic::BUILD_LIST));
+        }
+        // The iterable expression, ending in GET_ITER (a no-op for the stack)
+        // before FOR_ITER consumes the iterator.
+        let mut i = 1;
+        while mnemonic(i) != Some(Mnemonic::FOR_ITER) {
+            let item = region.get(i).ok_or(IrError::Decode)?;
+            reject_comp_control(item)?;
+            self.step(&item.instr, item.offset)?;
+            i += 1;
+        }
+        let for_iter = region[i];
+        let loop_top = for_iter.offset;
+        let iter = self.pop()?;
+        i += 1;
+        // The loop target is the store immediately after FOR_ITER.
+        let target = comp_target(&region.get(i).ok_or(IrError::Decode)?.instr)?;
+        i += 1;
+        // Filters and the element, up to LIST_APPEND.
+        let mut conds = Vec::new();
+        while mnemonic(i) != Some(Mnemonic::LIST_APPEND) {
+            let item = region.get(i).ok_or(IrError::Decode)?;
+            if item.instr.opcode.mnemonic() == Mnemonic::POP_JUMP_IF_FALSE {
+                // A filter jumps back to the loop top; a forward jump would be
+                // branching inside the element, which this shape does not handle.
+                let dest = Offset(item.instr.arg.ok_or(IrError::MissingOperand)? as u32);
+                if dest != loop_top {
+                    return Err(IrError::Unsupported(Mnemonic::POP_JUMP_IF_FALSE));
+                }
+                conds.push(self.pop()?);
+            } else {
+                reject_comp_control(item)?;
+                self.step(&item.instr, item.offset)?;
+            }
+            i += 1;
+        }
+        // LIST_APPEND leaves the element on top of the stack.
+        let element = self.pop()?;
+        self.push(Expr::ListComp { element, target, iter, conds });
+        Ok(())
+    }
+
     /// Folds one instruction into the symbolic state. `offset` is the instruction's
     /// byte offset, needed to resolve a relative `JUMP_FORWARD` target.
     pub fn step(&mut self, instr: &Instruction<Standard>, offset: Offset) -> Result<(), IrError> {
@@ -450,6 +503,47 @@ impl Unstacker {
 
 fn arg_u16(arg: Option<u16>) -> Result<u16, IrError> {
     arg.ok_or(IrError::MissingOperand)
+}
+
+/// Rejects any control-flow opcode inside a list comprehension's sub-expressions,
+/// so only the straight-line single-`for` shape is folded.
+fn reject_comp_control(item: &OffsetInstr) -> Result<(), IrError> {
+    let mnemonic = item.instr.opcode.mnemonic();
+    if matches!(
+        mnemonic,
+        Mnemonic::JUMP_FORWARD
+            | Mnemonic::JUMP_ABSOLUTE
+            | Mnemonic::POP_JUMP_IF_TRUE
+            | Mnemonic::POP_JUMP_IF_FALSE
+            | Mnemonic::JUMP_IF_FALSE_OR_POP
+            | Mnemonic::JUMP_IF_TRUE_OR_POP
+            | Mnemonic::FOR_ITER
+            | Mnemonic::SETUP_LOOP
+            | Mnemonic::SETUP_EXCEPT
+            | Mnemonic::SETUP_FINALLY
+            | Mnemonic::SETUP_WITH
+            | Mnemonic::BREAK_LOOP
+            | Mnemonic::CONTINUE_LOOP
+            | Mnemonic::YIELD_VALUE
+            | Mnemonic::RETURN_VALUE
+            | Mnemonic::LIST_APPEND
+    ) {
+        return Err(IrError::Unsupported(mnemonic));
+    }
+    Ok(())
+}
+
+/// Resolves a list comprehension's loop target store to an [`LValue`]. Tuple
+/// targets (an `UNPACK_SEQUENCE`) are not folded and reach the error path.
+fn comp_target(instr: &Instruction<Standard>) -> Result<LValue, IrError> {
+    let arg = instr.arg.ok_or(IrError::MissingOperand)?;
+    Ok(match instr.opcode.mnemonic() {
+        Mnemonic::STORE_FAST => LValue::Local(VarId(arg)),
+        Mnemonic::STORE_NAME => LValue::Name(NameId(arg)),
+        Mnemonic::STORE_GLOBAL => LValue::Global(NameId(arg)),
+        Mnemonic::STORE_DEREF => LValue::Deref(DerefId(arg)),
+        other => return Err(IrError::Unsupported(other)),
+    })
 }
 
 fn binary_op(mnemonic: Mnemonic) -> Option<BinOp> {

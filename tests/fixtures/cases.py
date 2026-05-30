@@ -124,3 +124,20 @@ def dict_comp_filtered(items):
 
 def set_comp(items):
     return {x for x in items if x > 0}
+
+
+def list_comp(items):
+    return [x * 2 for x in items]
+
+
+def list_comp_filtered(items):
+    return [x for x in items if x > 0]
+
+
+def list_comp_stored(items):
+    r = [x for x in items]
+    return r
+
+
+def empty_list_arg(f):
+    return f([])
