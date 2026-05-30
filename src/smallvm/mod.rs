@@ -166,7 +166,47 @@ pub(crate) const PYTHON27_COMPARE_OPS: [&str; 12] = [
 /// Executes an instruction, altering the input state and returning an error
 /// when the instruction cannot be correctly emulated. For example, some complex
 /// instructions are not currently supported at this time.
-pub fn execute_instruction<O: Opcode<Mnemonic = py27::Mnemonic>, F, T>(
+/// State threaded through the small VM as it interprets a code object: the
+/// operand stack, locals, names, globals, the set of loaded names, and the
+/// caller's access-tracking token. Bundling it lets callers run an instruction
+/// with [`VmFrame::execute`] instead of nine positional arguments.
+pub struct VmFrame<'a, T> {
+    pub code: Arc<Code>,
+    pub stack: &'a mut VmStack<T>,
+    pub vars: &'a mut VmVars<T>,
+    pub names: &'a mut VmNames<T>,
+    pub globals: &'a mut VmNames<T>,
+    pub names_loaded: LoadedNames,
+    pub access_tracking: T,
+}
+
+impl<T: Clone + Copy> VmFrame<'_, T> {
+    /// Interprets one instruction against this frame. `function_callback` resolves
+    /// the result of a `CALL_FUNCTION` the VM cannot evaluate on its own.
+    pub fn execute<O, F>(
+        &mut self,
+        instr: &Instruction<O>,
+        function_callback: F,
+    ) -> Result<(), Error<O>>
+    where
+        O: Opcode<Mnemonic = py27::Mnemonic>,
+        F: FnMut(VmVar, Vec<VmVar>, std::collections::HashMap<Option<ObjHashable>, VmVar>) -> VmVar,
+    {
+        execute_instruction(
+            instr,
+            Arc::clone(&self.code),
+            self.stack,
+            self.vars,
+            self.names,
+            self.globals,
+            Arc::clone(&self.names_loaded),
+            function_callback,
+            self.access_tracking,
+        )
+    }
+}
+
+pub(crate) fn execute_instruction<O: Opcode<Mnemonic = py27::Mnemonic>, F, T>(
     instr: &Instruction<O>,
     code: Arc<Code>,
     stack: &mut VmStack<T>,
