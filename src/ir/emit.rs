@@ -96,6 +96,74 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Emits a `class name(bases):` by decompiling its body code object, dropping
+    /// the `__module__ = __name__` boilerplate and the trailing `return locals()`,
+    /// and indenting the result under the current block.
+    fn class_def(&mut self, name: ValueId, bases: ValueId, code: ConstId) {
+        let Some(header) = self.class_header(name, bases) else {
+            self.line(UNRECOVERED);
+            return;
+        };
+        let body_code = match self.code.consts.get(code.0 as usize) {
+            Some(Obj::Code(nested)) => Arc::new(nested.read().unwrap().clone()),
+            _ => {
+                self.line(UNRECOVERED);
+                return;
+            }
+        };
+        match class_body_source(body_code) {
+            Ok(body) => {
+                self.line(&header);
+                // The body is rendered at one indent level; `line` adds the current
+                // indent on top, nesting it under the class.
+                for text in body.trim_end_matches('\n').split('\n') {
+                    self.line(text);
+                }
+            }
+            Err(_) => self.line(UNRECOVERED),
+        }
+    }
+
+    /// Builds the `class name(bases):` header, or `None` if the name is not a
+    /// constant string.
+    fn class_header(&self, name: ValueId, bases: ValueId) -> Option<String> {
+        let Expr::Const(name_const) = self.arena.get(name) else {
+            return None;
+        };
+        let name = sanitize_identifier(&self.const_string(*name_const)?);
+        // Non-empty base lists are built with BUILD_TUPLE; an empty one is the
+        // empty-tuple constant the compiler loads for `class C:` / `class C():`.
+        let bases = match self.arena.get(bases) {
+            Expr::Tuple(items) => items
+                .iter()
+                .map(|item| self.expr(*item, 0))
+                .collect::<Vec<_>>()
+                .join(", "),
+            Expr::Const(c) => match self.code.consts.get(c.0 as usize) {
+                Some(Obj::Tuple(items)) => {
+                    items.read().unwrap().iter().map(render_obj).collect::<Vec<_>>().join(", ")
+                }
+                _ => return None,
+            },
+            _ => return None,
+        };
+        Some(if bases.is_empty() {
+            format!("class {}:", name)
+        } else {
+            format!("class {}({}):", name, bases)
+        })
+    }
+
+    /// The value of a string constant, if it is one.
+    fn const_string(&self, c: ConstId) -> Option<String> {
+        match self.code.consts.get(c.0 as usize) {
+            Some(Obj::String(s)) => {
+                Some(String::from_utf8_lossy(s.read().unwrap().as_slice()).into_owned())
+            }
+            _ => None,
+        }
+    }
+
     /// Renders a suite at one deeper indent level, emitting `pass` if empty.
     fn block(&mut self, stmts: &[Stmt]) {
         self.indent += 1;
@@ -138,6 +206,7 @@ impl<'a> Emitter<'a> {
                 self.line(line.trim_end());
             }
             Stmt::FunctionDef { target, code } => self.function_def(target, *code),
+            Stmt::ClassDef { name, bases, code, .. } => self.class_def(*name, *bases, *code),
             Stmt::Raise(args) => {
                 let rendered: Vec<String> = args.iter().map(|a| self.expr(*a, 0)).collect();
                 if rendered.is_empty() {
@@ -345,6 +414,9 @@ impl<'a> Emitter<'a> {
             // statement; one reaching here is an import shape the unstacker did not
             // fully match (e.g. `import a.b as c`), so reject the function.
             Expr::Import(_) | Expr::ImportFrom(_) => (UNRECOVERED.to_string(), prec::ATOM),
+            // The class namespace and class object are consumed by their store; one
+            // reaching here is a class shape that was not fully matched.
+            Expr::Locals | Expr::BuildClass { .. } => (UNRECOVERED.to_string(), prec::ATOM),
             Expr::ListComp { element, target, iter, conds } => {
                 let mut text = format!(
                     "[{} for {} in {}",
@@ -529,6 +601,33 @@ struct CompParts {
     kind: CompKind,
     head: String,
     tail: String,
+}
+
+/// Decompiles a class body code object into its rendered suite, dropping the
+/// `__module__ = __name__` boilerplate and the trailing `return locals()`.
+fn class_body_source(body_code: Arc<Code>) -> Result<String, super::IrError> {
+    let structured = super::DecodedFunction::decode(body_code)?.structure()?;
+    let mut stmts: Vec<Stmt> = structured.body.clone();
+    if matches!(stmts.last(), Some(Stmt::Return(_))) {
+        stmts.pop();
+    }
+    stmts.retain(|stmt| !is_class_boilerplate(&structured.code, stmt));
+    Ok(Emitter::new(&structured.code, &structured.arena).render_body(&stmts))
+}
+
+/// Whether a class-body statement is compiler-inserted boilerplate (`__module__`
+/// or `__qualname__` binding) rather than source the class actually declared.
+fn is_class_boilerplate(code: &Code, stmt: &Stmt) -> bool {
+    let (LValue::Name(name) | LValue::Global(name)) = (match stmt {
+        Stmt::Assign(target, _) => target,
+        _ => return false,
+    }) else {
+        return false;
+    };
+    matches!(
+        code.names.get(name.0 as usize).map(|n| n.to_string()).as_deref(),
+        Some("__module__") | Some("__qualname__")
+    )
 }
 
 /// Decompiles a comprehension code object and renders it, leaving the outermost

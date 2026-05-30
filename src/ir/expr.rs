@@ -217,6 +217,16 @@ pub enum Expr {
     Import(NameId),
     /// A name pulled from an imported module by `IMPORT_FROM`, awaiting its store.
     ImportFrom(NameId),
+    /// The class namespace dict produced by `LOAD_LOCALS` at the end of a class
+    /// body. Consumed by the body's `RETURN_VALUE`; never emitted directly.
+    Locals,
+    /// A class object built by `BUILD_CLASS` from its name, base tuple, and body
+    /// code object. Becomes a `class` statement when stored.
+    BuildClass {
+        name: ValueId,
+        bases: ValueId,
+        code: ConstId,
+    },
 }
 
 /// The target of an assignment.
@@ -253,6 +263,15 @@ pub enum Stmt {
     /// code constant `code` and bound to `target`.
     FunctionDef {
         target: LValue,
+        code: ConstId,
+    },
+    /// A class definition: `class name(bases): ...`, with the body decompiled from
+    /// the code constant `code`. `name` is the class-name constant and `bases` the
+    /// base-class tuple, both in the enclosing scope's arena.
+    ClassDef {
+        target: LValue,
+        name: ValueId,
+        bases: ValueId,
         code: ConstId,
     },
     While {

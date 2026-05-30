@@ -167,6 +167,11 @@ impl Unstacker {
             self.emit(Stmt::FunctionDef { target, code });
             return;
         }
+        if let Expr::BuildClass { name, bases, code } = self.arena.get(value) {
+            let (name, bases, code) = (*name, *bases, *code);
+            self.emit(Stmt::ClassDef { target, name, bases, code });
+            return;
+        }
         // `import module` binds the module object; `from module import name` binds
         // each name pulled by IMPORT_FROM into the pending from-import.
         if let Expr::Import(module) = self.arena.get(value) {
@@ -518,6 +523,31 @@ impl Unstacker {
             Mnemonic::YIELD_VALUE => {
                 let value = self.pop()?;
                 self.push(Expr::Yield(value));
+            }
+            // The namespace a class body returns; placed so the body's RETURN_VALUE
+            // has a value to pop and the class recogniser can drop it.
+            Mnemonic::LOAD_LOCALS => self.push(Expr::Locals),
+            // BUILD_CLASS pops the namespace (the called class body), the base
+            // tuple, and the name constant, and builds the class.
+            Mnemonic::BUILD_CLASS => {
+                let namespace = self.pop()?;
+                let bases = self.pop()?;
+                let name = self.pop()?;
+                let code = match self.arena.get(namespace) {
+                    Expr::Call { func, args, kwargs, star, kwstar }
+                        if args.is_empty()
+                            && kwargs.is_empty()
+                            && star.is_none()
+                            && kwstar.is_none() =>
+                    {
+                        match self.arena.get(*func) {
+                            Expr::MakeFunction(code) => *code,
+                            _ => return Err(IrError::Unsupported(mnemonic)),
+                        }
+                    }
+                    _ => return Err(IrError::Unsupported(mnemonic)),
+                };
+                self.push(Expr::BuildClass { name, bases, code });
             }
             Mnemonic::IMPORT_NAME => {
                 // Pops the from-list and relative-import level; the import form is

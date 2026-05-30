@@ -148,3 +148,21 @@ def do_imports():
     import sys as system
     from functools import partial, reduce as r
     return (os.path, system, partial, r)
+
+
+def make_class():
+    class Point(object):
+        dimensions = 2
+        origin = None
+
+        def norm(self):
+            return self.x + self.y
+
+    return Point
+
+
+def make_empty():
+    class Empty:
+        pass
+
+    return Empty

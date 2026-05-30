@@ -1,0 +1,9 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def make_empty():
+    class Empty:
+        pass
+    return Empty

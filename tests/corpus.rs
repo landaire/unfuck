@@ -67,6 +67,8 @@ fn cases() {
         "list_comp_stored",
         "empty_list_arg",
         "do_imports",
+        "make_class",
+        "make_empty",
     ] {
         insta::assert_snapshot!(name, decompile(fixture, name));
     }
