@@ -20,6 +20,8 @@ use strings::CodeObjString;
 pub mod code_graph;
 /// Deobfuscation module
 pub mod deob;
+/// Raising IR: recovers Python source from deobfuscated bytecode
+pub mod ir;
 /// Errors
 pub mod error;
 /// Provides code for partially executing a code object and identifying const conditions

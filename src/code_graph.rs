@@ -1939,7 +1939,7 @@ pub(crate) mod tests {
 
             let _files_processed = 0;
             while let Some(py27_marshal::Obj::Code(obj_mutex)) = code_objects.pop() {
-                let obj = obj_mutex.lock().unwrap();
+                let obj = obj_mutex.read().unwrap();
                 output.push(obj.code.as_ref().clone());
 
                 for c in obj
@@ -2229,7 +2229,7 @@ pub(crate) mod tests {
 
         let mut files_processed = 0;
         while let Some(py27_marshal::Obj::Code(obj_mutex)) = code_objects.pop() {
-            let obj = obj_mutex.lock().unwrap();
+            let obj = obj_mutex.read().unwrap();
             let code_arc = Arc::new(obj.clone());
             let mut code_graph = CodeGraph::<TargetOpcode>::from_code(
                 Arc::clone(&code_arc),

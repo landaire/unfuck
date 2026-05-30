@@ -44,6 +44,10 @@ num_cpus = "1.13.0"
 crossbeam = "0.8"
 rayon = "1.5"
 
+[dev-dependencies]
+py27-marshal = { version = "0.4" }
+num-bigint = "0.4"
+
 [features]
 reduced_functionality = []
 

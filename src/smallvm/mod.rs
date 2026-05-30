@@ -859,14 +859,14 @@ pub(crate) mod tests {
     #[macro_export]
     macro_rules! Long {
         ($value:expr) => {
-            py27_marshal::Obj::Long(Arc::new(Mutex::new(BigInt::from($value))))
+            py27_marshal::Obj::Long(Arc::new(RwLock::new(BigInt::from($value))))
         };
     }
 
     #[macro_export]
     macro_rules! String {
         ($value:expr) => {
-            py27_marshal::Obj::String(Arc::new(Mutex::new(bstr::BString::from($value))))
+            py27_marshal::Obj::String(Arc::new(RwLock::new(bstr::BString::from($value))))
         };
     }
 
@@ -2110,7 +2110,7 @@ pub(crate) mod tests {
 
         // Simulate: push a string, then call FOR_ITER twice to get first two bytes
         // We push the string directly onto the stack since GET_ITER would replace it with None
-        let s = Obj::String(Arc::new(Mutex::new(BString::from("ABC"))));
+        let s = Obj::String(Arc::new(RwLock::new(BString::from("ABC"))));
         stack.push((Some(s), InstructionTracker::new()));
 
         let instrs = [Instr!(TargetOpcode::FOR_ITER, 0)];
@@ -2185,7 +2185,7 @@ pub(crate) mod tests {
         ];
 
         use std::sync::Mutex;
-        let captured_args: Arc<Mutex<Vec<VmVar>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_args: Arc<Mutex<Vec<VmVar>>> = Arc::new(RwLock::new(Vec::new()));
         let captured_args_clone = Arc::clone(&captured_args);
 
         run_instrs_with_callback(
@@ -2355,7 +2355,7 @@ mod arithmetic_none_tests {
         let (mut stack, mut vars, mut names, mut globals, names_loaded) = setup_vm_vars();
         let code = default_code_obj();
 
-        let tuple = Obj::Tuple(Arc::new(Mutex::new(vec![Long!(1)])));
+        let tuple = Obj::Tuple(Arc::new(RwLock::new(vec![Long!(1)])));
         stack.push((Some(tuple), InstructionTracker::new()));
         stack.push((Some(Long!(2)), InstructionTracker::new()));
 
@@ -2520,7 +2520,7 @@ mod fix_regression_tests {
         let code = default_code_obj();
 
         let needle = String!("banana");
-        let haystack = Obj::Tuple(Arc::new(Mutex::new(vec![
+        let haystack = Obj::Tuple(Arc::new(RwLock::new(vec![
             String!("apple"),
             String!("banana"),
             String!("cherry"),
@@ -2556,7 +2556,7 @@ mod fix_regression_tests {
         let code = default_code_obj();
 
         let needle = String!("mango");
-        let haystack = Obj::Tuple(Arc::new(Mutex::new(vec![
+        let haystack = Obj::Tuple(Arc::new(RwLock::new(vec![
             String!("apple"),
             String!("banana"),
         ])));
@@ -2592,8 +2592,8 @@ mod fix_regression_tests {
         let (mut stack, mut vars, mut names, mut globals, names_loaded) = setup_vm_vars();
         let code = default_code_obj();
 
-        let left = Obj::Tuple(Arc::new(Mutex::new(vec![Long!(2), Long!(3)])));
-        let right = Obj::Tuple(Arc::new(Mutex::new(vec![Long!(2), Long!(3)])));
+        let left = Obj::Tuple(Arc::new(RwLock::new(vec![Long!(2), Long!(3)])));
+        let right = Obj::Tuple(Arc::new(RwLock::new(vec![Long!(2), Long!(3)])));
 
         stack.push((Some(left), InstructionTracker::new()));
         stack.push((Some(right), InstructionTracker::new()));
@@ -2624,8 +2624,8 @@ mod fix_regression_tests {
         let (mut stack, mut vars, mut names, mut globals, names_loaded) = setup_vm_vars();
         let code = default_code_obj();
 
-        let left = Obj::Tuple(Arc::new(Mutex::new(vec![Long!(3), Long!(1)])));
-        let right = Obj::Tuple(Arc::new(Mutex::new(vec![Long!(2), Long!(9)])));
+        let left = Obj::Tuple(Arc::new(RwLock::new(vec![Long!(3), Long!(1)])));
+        let right = Obj::Tuple(Arc::new(RwLock::new(vec![Long!(2), Long!(9)])));
 
         stack.push((Some(left), InstructionTracker::new()));
         stack.push((Some(right), InstructionTracker::new()));
@@ -2656,8 +2656,8 @@ mod fix_regression_tests {
         let (mut stack, mut vars, mut names, mut globals, names_loaded) = setup_vm_vars();
         let code = default_code_obj();
 
-        let left = Obj::Tuple(Arc::new(Mutex::new(vec![Long!(1), Long!(5)])));
-        let right = Obj::Tuple(Arc::new(Mutex::new(vec![Long!(2), Long!(0)])));
+        let left = Obj::Tuple(Arc::new(RwLock::new(vec![Long!(1), Long!(5)])));
+        let right = Obj::Tuple(Arc::new(RwLock::new(vec![Long!(2), Long!(0)])));
 
         stack.push((Some(left), InstructionTracker::new()));
         stack.push((Some(right), InstructionTracker::new()));
@@ -2688,8 +2688,8 @@ mod fix_regression_tests {
         let (mut stack, mut vars, mut names, mut globals, names_loaded) = setup_vm_vars();
         let code = default_code_obj();
 
-        let left = Obj::Tuple(Arc::new(Mutex::new(vec![Long!(1), Long!(2)])));
-        let right = Obj::Tuple(Arc::new(Mutex::new(vec![Long!(1), Long!(2), Long!(3)])));
+        let left = Obj::Tuple(Arc::new(RwLock::new(vec![Long!(1), Long!(2)])));
+        let right = Obj::Tuple(Arc::new(RwLock::new(vec![Long!(1), Long!(2), Long!(3)])));
 
         stack.push((Some(left), InstructionTracker::new()));
         stack.push((Some(right), InstructionTracker::new()));
