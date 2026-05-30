@@ -34,6 +34,9 @@ pub enum Terminator {
     },
     /// Returns `value` (or `None` for a bare return).
     Return(Option<ValueId>),
+    /// Raises an exception. Carries 0..=3 arguments (type, value, traceback).
+    /// Control leaves the function (no normal successor in Milestone 3).
+    Raise(Vec<ValueId>),
 }
 
 /// A basic block: straight-line statements plus a terminator.
@@ -133,7 +136,7 @@ fn block_leaders(instrs: &[OffsetInstr]) -> Result<Vec<Offset>, IrError> {
                     leaders.insert(next);
                 }
             }
-            TerminatorKind::Return => {
+            TerminatorKind::Return | TerminatorKind::Raise => {
                 if let Some(next) = next {
                     leaders.insert(next);
                 }
@@ -172,6 +175,18 @@ fn lower_block(
             let value = unstacker.pop_value()?;
             Terminator::Return(Some(value))
         }
+        TerminatorKind::Raise => {
+            let argc = last.instr.arg.ok_or(IrError::MissingOperand)? as usize;
+            if argc > 3 {
+                return Err(IrError::BadOperand);
+            }
+            let mut args = Vec::with_capacity(argc);
+            for _ in 0..argc {
+                args.push(unstacker.pop_value()?);
+            }
+            args.reverse();
+            Terminator::Raise(args)
+        }
         TerminatorKind::Branch => {
             let cond = unstacker.pop_value()?;
             let target = branch_target(last)?;
@@ -204,6 +219,7 @@ enum TerminatorKind {
     Jump,
     Branch,
     Return,
+    Raise,
 }
 
 /// Classifies an opcode's effect on control flow, rejecting constructs Milestone
@@ -211,6 +227,7 @@ enum TerminatorKind {
 fn terminator_kind(mnemonic: Mnemonic) -> Result<TerminatorKind, IrError> {
     Ok(match mnemonic {
         Mnemonic::RETURN_VALUE => TerminatorKind::Return,
+        Mnemonic::RAISE_VARARGS => TerminatorKind::Raise,
         Mnemonic::JUMP_ABSOLUTE | Mnemonic::JUMP_FORWARD => TerminatorKind::Jump,
         Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE => TerminatorKind::Branch,
         Mnemonic::SETUP_LOOP
@@ -221,7 +238,6 @@ fn terminator_kind(mnemonic: Mnemonic) -> Result<TerminatorKind, IrError> {
         | Mnemonic::BREAK_LOOP
         | Mnemonic::CONTINUE_LOOP
         | Mnemonic::END_FINALLY
-        | Mnemonic::RAISE_VARARGS
         | Mnemonic::YIELD_VALUE
         | Mnemonic::JUMP_IF_FALSE_OR_POP
         | Mnemonic::JUMP_IF_TRUE_OR_POP => return Err(IrError::HasControlFlow(mnemonic)),

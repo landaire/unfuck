@@ -57,6 +57,10 @@ impl Structurer<'_> {
                     out.push(Stmt::Return(value.clone()));
                     cursor = None;
                 }
+                Terminator::Raise(args) => {
+                    out.push(Stmt::Raise(args.clone()));
+                    cursor = None;
+                }
                 Terminator::Jump(target) | Terminator::Fallthrough(target) => {
                     cursor = Some(self.cfg.target(*target)?);
                 }
@@ -113,7 +117,7 @@ impl PostDominators {
         for (idx, block) in cfg.blocks.iter().enumerate() {
             let from = block_nodes[idx];
             match &block.terminator {
-                Terminator::Return(_) => {
+                Terminator::Return(_) | Terminator::Raise(_) => {
                     graph.add_edge(from, exit, ());
                 }
                 Terminator::Jump(target) | Terminator::Fallthrough(target) => {

@@ -160,6 +160,18 @@ fn if_else() {
 }
 
 #[test]
+fn raise_statement() {
+    // def f(): raise Boom
+    let code = Builder::new("f", 0, &[], &["Boom"], vec![Obj::None])
+        .emit(op(Standard::LOAD_GLOBAL, 0))
+        .emit(op(Standard::RAISE_VARARGS, 1))
+        .finish();
+
+    let source = unfuck::ir::decompile_function(code).expect("decompile failed");
+    assert_eq!(source, "def f():\n    raise Boom\n");
+}
+
+#[test]
 fn loops_are_rejected() {
     let code = Builder::new("f", 0, &[], &[], vec![Obj::None])
         .emit(op(Standard::SETUP_LOOP, 4))

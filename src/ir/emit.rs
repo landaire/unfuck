@@ -98,6 +98,14 @@ impl<'a> Emitter<'a> {
                 }
                 self.line(line.trim_end());
             }
+            Stmt::Raise(args) => {
+                let rendered: Vec<String> = args.iter().map(|a| self.expr(*a, 0)).collect();
+                if rendered.is_empty() {
+                    self.line("raise");
+                } else {
+                    self.line(&format!("raise {}", rendered.join(", ")));
+                }
+            }
             Stmt::If { cond, then, els } => {
                 if then.is_empty() && !els.is_empty() {
                     let line = format!("if not {}:", self.expr(*cond, prec::UNARY));

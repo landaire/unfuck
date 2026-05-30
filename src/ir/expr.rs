@@ -186,6 +186,8 @@ pub enum Stmt {
         then: Vec<Stmt>,
         els: Vec<Stmt>,
     },
+    /// `raise`, `raise exc`, `raise exc, value`, or `raise exc, value, tb`.
+    Raise(Vec<ValueId>),
 }
 
 /// Owns every expression for one function. [`ValueId`]s index into it.
