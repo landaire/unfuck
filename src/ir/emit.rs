@@ -51,15 +51,36 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// Renders a body and returns the accumulated source.
+    /// Renders a body and returns the accumulated source, prefixed with the
+    /// function's docstring when it has one.
     pub fn render_body(mut self, stmts: &[Stmt]) -> String {
-        if stmts.is_empty() {
+        let docstring = self.docstring();
+        if let Some(doc) = &docstring {
+            self.line(doc);
+        }
+        if stmts.is_empty() && docstring.is_none() {
             self.line("pass");
         }
         for stmt in stmts {
             self.stmt(stmt);
         }
         self.out
+    }
+
+    /// The function's docstring literal, if any. A docstring is `co_consts[0]` when
+    /// it is a string, but only for real functions (CO_OPTIMIZED): class and module
+    /// bodies store `__doc__` explicitly, and comprehensions reuse slot 0 for an
+    /// ordinary constant, so neither follows the convention.
+    fn docstring(&self) -> Option<String> {
+        if !self.code.flags.contains(CodeFlags::OPTIMIZED)
+            || self.code.name.to_string().starts_with('<')
+        {
+            return None;
+        }
+        match self.code.consts.first() {
+            Some(Obj::String(s)) => Some(docstring_literal(s.read().unwrap().as_slice())),
+            _ => None,
+        }
     }
 
     fn line(&mut self, text: &str) {
@@ -792,6 +813,22 @@ fn render_float(f: f64) -> String {
         format!("{}.0", int)
     } else {
         format!("{}", f)
+    }
+}
+
+/// Renders a docstring. A triple-quoted literal is used when the bytes are plain
+/// ASCII text with no embedded triple quote or trailing quote/backslash, so
+/// multi-line docstrings stay readable; otherwise the fully escaped single-quoted
+/// form keeps non-ASCII bytes valid in a Python 2 source file.
+fn docstring_literal(bytes: &[u8]) -> String {
+    let printable = bytes
+        .iter()
+        .all(|&b| matches!(b, b'\n' | b'\t' | 0x20..=0x7e));
+    let text = String::from_utf8_lossy(bytes);
+    if printable && !text.contains("\"\"\"") && !text.ends_with('"') && !text.ends_with('\\') {
+        format!("\"\"\"{}\"\"\"", text)
+    } else {
+        python_bytes_literal(bytes)
     }
 }
 

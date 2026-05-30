@@ -59,6 +59,46 @@ fn main() {
         return;
     }
 
+    if target == "--dump" {
+        let dir = std::path::Path::new(&args[3]);
+        std::fs::create_dir_all(dir).expect("create dir");
+        let mut all = Vec::new();
+        collect(&root, &mut all);
+        let mut combined = String::new();
+        let mut ok = 0usize;
+        let mut failed = 0usize;
+        for code in &all {
+            let name = code.name.to_string();
+            match unfuck::ir::decompile_function(code.clone()) {
+                Ok(source) => {
+                    ok += 1;
+                    combined.push_str(&source);
+                    combined.push_str("\n\n");
+                    let safe: String = name
+                        .chars()
+                        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+                        .collect();
+                    let _ = std::fs::write(dir.join(format!("{}.py", safe)), &source);
+                }
+                Err(err) => {
+                    failed += 1;
+                    combined.push_str(&format!("# {}: {}\n\n", name, err));
+                }
+            }
+        }
+        let combined_path = dir.join("_all_decompiled.py");
+        std::fs::write(&combined_path, &combined).expect("write combined");
+        println!(
+            "dumped {} functions ({} ok, {} failed) to {}",
+            all.len(),
+            ok,
+            failed,
+            dir.display()
+        );
+        println!("combined: {}", combined_path.display());
+        return;
+    }
+
     if target == "--stats" {
         let mut all = Vec::new();
         collect(&root, &mut all);
