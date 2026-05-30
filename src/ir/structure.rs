@@ -15,7 +15,7 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::Reversed;
 
 use super::cfg::{BlockId, Cfg, Terminator};
-use super::expr::Stmt;
+use super::expr::{ExceptHandler, Stmt};
 use super::IrError;
 
 /// Guards against runaway recursion if the graph violates the reducible, well
@@ -129,6 +129,21 @@ impl Structurer<'_> {
                         then,
                         els,
                     });
+                    cursor = self.point_block(follow);
+                }
+                Terminator::Try { body, handlers, end } => {
+                    let follow = Point::Block(self.cfg.target(*end)?);
+                    let try_body = self.region(self.cfg.target(*body)?, follow, depth + 1)?;
+                    let mut arms = Vec::with_capacity(handlers.len());
+                    for handler in handlers {
+                        let arm_body = self.region(self.cfg.target(handler.body)?, follow, depth + 1)?;
+                        arms.push(ExceptHandler {
+                            exc_type: handler.exc_type,
+                            name: handler.name.clone(),
+                            body: arm_body,
+                        });
+                    }
+                    out.push(Stmt::Try { body: try_body, handlers: arms });
                     cursor = self.point_block(follow);
                 }
                 // A ForIter block is always a loop header and is handled by the loop

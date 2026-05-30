@@ -54,6 +54,8 @@ fn cases() {
         "outer",
         "pairs",
         "choose",
+        "try_bare",
+        "try_typed",
     ] {
         insta::assert_snapshot!(name, decompile(fixture, name));
     }

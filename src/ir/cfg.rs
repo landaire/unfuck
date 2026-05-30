@@ -41,6 +41,25 @@ pub enum Terminator {
     /// jumps to `exit` when the iterator is exhausted. The iterator and loop
     /// target are recovered by the structurer, not stored here.
     ForIter { body: Offset, exit: Offset },
+    /// `SETUP_EXCEPT`: a `try`/`except` region. `body` is the protected suite;
+    /// each handler is one `except` clause. Both the body and every handler
+    /// converge at `end` (the merge after the whole construct). The handler
+    /// dispatch instructions are recovered into [`HandlerArm`]s and do not appear
+    /// as blocks.
+    Try {
+        body: Offset,
+        handlers: Vec<HandlerArm>,
+        end: Offset,
+    },
+}
+
+/// One recovered `except` clause: the matched type, the optional `as name`
+/// binding, and the offset where the clause body begins.
+#[derive(Debug, Clone)]
+pub struct HandlerArm {
+    pub exc_type: Option<ValueId>,
+    pub name: Option<LValue>,
+    pub body: Offset,
 }
 
 /// A basic block: straight-line statements plus a terminator.
@@ -63,6 +82,11 @@ impl Block {
                 if_true, if_false, ..
             } => vec![*if_true, *if_false],
             Terminator::ForIter { body, exit } => vec![*body, *exit],
+            Terminator::Try { body, handlers, .. } => {
+                let mut targets = vec![*body];
+                targets.extend(handlers.iter().map(|arm| arm.body));
+                targets
+            }
             Terminator::Return(_) | Terminator::Raise(_) => Vec::new(),
         }
     }
@@ -92,7 +116,8 @@ impl Cfg {
     /// Builds the graph from a decoded instruction stream.
     pub fn build(instrs: &[OffsetInstr]) -> Result<Cfg, IrError> {
         let ternaries = find_ternaries(instrs);
-        let leaders = block_leaders(instrs, &ternaries)?;
+        let (tries, excluded) = recover_tries(instrs)?;
+        let leaders = block_leaders(instrs, &ternaries, &tries, &excluded)?;
         let mut by_offset = HashMap::new();
         for (idx, leader) in leaders.iter().enumerate() {
             by_offset.insert(*leader, BlockId(idx as u32));
@@ -110,19 +135,35 @@ impl Cfg {
         }
 
         let mut unstacker = Unstacker::new();
+
+        // Build each try's terminator up front: the exception-type expressions are
+        // lowered through the shared unstacker so they enter the same arena the
+        // block bodies use.
+        let try_terminators = build_try_terminators(&mut unstacker, instrs, &tries)?;
+
         let mut blocks = Vec::with_capacity(leaders.len());
         let mut for_targets = HashMap::new();
 
         for (idx, &leader) in leaders.iter().enumerate() {
             let end = leaders.get(idx + 1).copied().unwrap_or(Offset(u32::MAX));
+            // The handler dispatch and binding instructions are recovered into the
+            // try terminator; drop them so they never lower as ordinary statements.
             let body: Vec<&OffsetInstr> = instrs
                 .iter()
-                .filter(|i| i.offset >= leader && i.offset < end)
+                .filter(|i| i.offset >= leader && i.offset < end && !excluded.contains(&i.offset))
                 .collect();
             let for_header = for_body_header
                 .get(&leader)
                 .and_then(|header| by_offset.get(header).copied());
-            let block = lower_block(&mut unstacker, leader, end, &body, for_header, &mut for_targets)?;
+            let block = lower_block(
+                &mut unstacker,
+                leader,
+                end,
+                &body,
+                for_header,
+                &mut for_targets,
+                &try_terminators,
+            )?;
             blocks.push(block);
         }
 
@@ -161,16 +202,30 @@ pub fn decode(code: &[u8]) -> Result<Vec<OffsetInstr>, IrError> {
 fn block_leaders(
     instrs: &[OffsetInstr],
     ternaries: &HashSet<Offset>,
+    tries: &[TryShape],
+    excluded: &HashSet<Offset>,
 ) -> Result<Vec<Offset>, IrError> {
     let mut leaders = BTreeSet::new();
     if let Some(first) = instrs.first() {
         leaders.insert(first.offset);
     }
+    // A try's body and every handler clause begin a block; the dispatch between
+    // them is excluded, so these leaders are added explicitly rather than falling
+    // out of the terminator scan.
+    for shape in tries {
+        leaders.insert(shape.body_entry);
+        leaders.insert(shape.end);
+        for clause in &shape.clauses {
+            leaders.insert(clause.body_entry);
+        }
+    }
     for (idx, item) in instrs.iter().enumerate() {
         let mnemonic = item.instr.opcode.mnemonic();
         let next = instrs.get(idx + 1).map(|i| i.offset);
-        // A ternary's jumps stay inside their block; do not split there.
-        if ternaries.contains(&item.offset) {
+        // A ternary's jumps stay inside their block; do not split there. Handler
+        // dispatch instructions are recovered into the try terminator and never
+        // form blocks, so they do not split either.
+        if ternaries.contains(&item.offset) || excluded.contains(&item.offset) {
             continue;
         }
         match terminator_kind(mnemonic)? {
@@ -182,7 +237,9 @@ fn block_leaders(
                     leaders.insert(next);
                 }
             }
-            TerminatorKind::Return | TerminatorKind::Raise => {
+            // SETUP_EXCEPT only falls through to its protected body; its handler is
+            // reached by the recovered terminator, not a layout edge.
+            TerminatorKind::Try | TerminatorKind::Return | TerminatorKind::Raise => {
                 if let Some(next) = next {
                     leaders.insert(next);
                 }
@@ -190,6 +247,9 @@ fn block_leaders(
             TerminatorKind::None => {}
         }
     }
+    // A handler-dispatch offset can be reached as a jump's fallthrough; it must not
+    // start a block, since lowering drops every excluded instruction.
+    leaders.retain(|offset| !excluded.contains(offset));
     Ok(leaders.into_iter().collect())
 }
 
@@ -201,6 +261,7 @@ fn lower_block(
     body: &[&OffsetInstr],
     for_header: Option<BlockId>,
     for_targets: &mut HashMap<BlockId, LValue>,
+    try_terminators: &HashMap<Offset, Terminator>,
 ) -> Result<Block, IrError> {
     unstacker.start_block();
 
@@ -246,6 +307,10 @@ fn lower_block(
 
     let terminator = match kind {
         TerminatorKind::None => Terminator::Fallthrough(end),
+        TerminatorKind::Try => try_terminators
+            .get(&last.offset)
+            .cloned()
+            .ok_or(IrError::Unstructurable)?,
         TerminatorKind::Jump => Terminator::Jump(branch_target(last)?),
         TerminatorKind::ForIter => Terminator::ForIter {
             body: end,
@@ -317,6 +382,7 @@ enum TerminatorKind {
     ForIter,
     Return,
     Raise,
+    Try,
 }
 
 /// Classifies an opcode's effect on control flow, rejecting constructs the
@@ -328,8 +394,8 @@ fn terminator_kind(mnemonic: Mnemonic) -> Result<TerminatorKind, IrError> {
         Mnemonic::JUMP_ABSOLUTE | Mnemonic::JUMP_FORWARD => TerminatorKind::Jump,
         Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE => TerminatorKind::Branch,
         Mnemonic::FOR_ITER => TerminatorKind::ForIter,
-        Mnemonic::SETUP_EXCEPT
-        | Mnemonic::SETUP_FINALLY
+        Mnemonic::SETUP_EXCEPT => TerminatorKind::Try,
+        Mnemonic::SETUP_FINALLY
         | Mnemonic::SETUP_WITH
         | Mnemonic::BREAK_LOOP
         | Mnemonic::CONTINUE_LOOP
@@ -425,6 +491,212 @@ fn is_statement_or_control(mnemonic: Mnemonic) -> bool {
         )
 }
 
+/// A recovered `try`/`except` region over the raw instruction stream.
+struct TryShape {
+    /// Offset of the `SETUP_EXCEPT` (the block whose terminator becomes `Try`).
+    setup: Offset,
+    /// First instruction of the protected body.
+    body_entry: Offset,
+    /// Merge point reached after the body and every handler.
+    end: Offset,
+    clauses: Vec<ClauseShape>,
+}
+
+/// One recovered `except` clause over the raw instruction stream.
+struct ClauseShape {
+    /// Index range `[start, end)` of the instructions that load the matched
+    /// exception type, or `None` for a bare `except:`.
+    type_load: Option<(usize, usize)>,
+    name: Option<LValue>,
+    /// First instruction of the clause body (after the dispatch and binding).
+    body_entry: Offset,
+}
+
+/// Recovers every `try`/`except` region and the set of handler-dispatch
+/// instruction offsets to drop from blocks. Any `SETUP_EXCEPT` whose surrounding
+/// bytecode does not match the regular CPython 2.7 shape rejects the function so
+/// it is never decompiled to wrong source.
+fn recover_tries(instrs: &[OffsetInstr]) -> Result<(Vec<TryShape>, HashSet<Offset>), IrError> {
+    let index: HashMap<Offset, usize> = instrs
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| (item.offset, idx))
+        .collect();
+    let mut shapes = Vec::new();
+    let mut excluded = HashSet::new();
+    for (idx, item) in instrs.iter().enumerate() {
+        if item.instr.opcode.mnemonic() != Mnemonic::SETUP_EXCEPT {
+            continue;
+        }
+        let shape = recover_try(instrs, &index, idx, &mut excluded)?;
+        shapes.push(shape);
+    }
+    Ok((shapes, excluded))
+}
+
+/// Returns the mnemonic at an instruction index, or `Unstructurable` past the end.
+fn mnemonic_at(instrs: &[OffsetInstr], idx: usize) -> Result<Mnemonic, IrError> {
+    instrs
+        .get(idx)
+        .map(|item| item.instr.opcode.mnemonic())
+        .ok_or(IrError::Unstructurable)
+}
+
+/// Recovers a single `try`/`except` rooted at the `SETUP_EXCEPT` at `setup_idx`.
+fn recover_try(
+    instrs: &[OffsetInstr],
+    index: &HashMap<Offset, usize>,
+    setup_idx: usize,
+    excluded: &mut HashSet<Offset>,
+) -> Result<TryShape, IrError> {
+    let setup = &instrs[setup_idx];
+    let handler_off = branch_target(setup)?;
+    let body_entry = instrs.get(setup_idx + 1).ok_or(IrError::Unstructurable)?.offset;
+    let handler_idx = *index.get(&handler_off).ok_or(IrError::BadOperand)?;
+    // The protected body exits through `POP_BLOCK; JUMP_FORWARD end` immediately
+    // before the handler.
+    if handler_idx < 2 {
+        return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT));
+    }
+    let jump = &instrs[handler_idx - 1];
+    let end = match jump.instr.opcode.mnemonic() {
+        Mnemonic::JUMP_FORWARD | Mnemonic::JUMP_ABSOLUTE => branch_target(jump)?,
+        _ => return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT)),
+    };
+    if mnemonic_at(instrs, handler_idx - 2)? != Mnemonic::POP_BLOCK {
+        return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT));
+    }
+
+    let mut clauses = Vec::new();
+    let mut clause_idx = handler_idx;
+    loop {
+        match mnemonic_at(instrs, clause_idx)? {
+            // Bare `except:`: discard the exception triple, then run the body. A
+            // bare clause matches everything, so it is always the last clause.
+            Mnemonic::POP_TOP => {
+                if mnemonic_at(instrs, clause_idx + 1)? != Mnemonic::POP_TOP
+                    || mnemonic_at(instrs, clause_idx + 2)? != Mnemonic::POP_TOP
+                {
+                    return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT));
+                }
+                let body = instrs.get(clause_idx + 3).ok_or(IrError::Unstructurable)?.offset;
+                exclude_range(instrs, clause_idx, clause_idx + 3, excluded);
+                clauses.push(ClauseShape { type_load: None, name: None, body_entry: body });
+                break;
+            }
+            // Typed `except T [as name]:`: match the duplicated exception type,
+            // and on a match bind the value before the body.
+            Mnemonic::DUP_TOP => {
+                let mut compare = clause_idx + 1;
+                while mnemonic_at(instrs, compare)? != Mnemonic::COMPARE_OP {
+                    compare += 1;
+                }
+                // COMPARE_OP operand 10 is the exception-match comparison.
+                if instrs[compare].instr.arg != Some(10) || compare == clause_idx + 1 {
+                    return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT));
+                }
+                let type_load = (clause_idx + 1, compare);
+                if mnemonic_at(instrs, compare + 1)? != Mnemonic::POP_JUMP_IF_FALSE {
+                    return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT));
+                }
+                let next_off = branch_target(&instrs[compare + 1])?;
+                // Matched branch: pop the type, bind or discard the value, pop the
+                // traceback.
+                let bind = compare + 2;
+                if mnemonic_at(instrs, bind)? != Mnemonic::POP_TOP {
+                    return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT));
+                }
+                let name = match mnemonic_at(instrs, bind + 1)? {
+                    Mnemonic::POP_TOP => None,
+                    Mnemonic::STORE_FAST
+                    | Mnemonic::STORE_NAME
+                    | Mnemonic::STORE_GLOBAL
+                    | Mnemonic::STORE_DEREF => Some(store_target(&instrs[bind + 1].instr)?),
+                    _ => return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT)),
+                };
+                if mnemonic_at(instrs, bind + 2)? != Mnemonic::POP_TOP {
+                    return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT));
+                }
+                let body = instrs.get(bind + 3).ok_or(IrError::Unstructurable)?.offset;
+                exclude_range(instrs, clause_idx, bind + 3, excluded);
+                clauses.push(ClauseShape { type_load: Some(type_load), name, body_entry: body });
+
+                let next_idx = *index.get(&next_off).ok_or(IrError::BadOperand)?;
+                // An unmatched typed chain re-raises through END_FINALLY; that is
+                // the absence of a catch-all, not another clause.
+                if mnemonic_at(instrs, next_idx)? == Mnemonic::END_FINALLY {
+                    break;
+                }
+                clause_idx = next_idx;
+            }
+            _ => return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT)),
+        }
+    }
+
+    // The compiler closes a handler chain with an END_FINALLY that re-raises an
+    // unmatched exception. A bare `except:` leaves it unreachable rather than
+    // removing it. END_FINALLY has no source form, so drop every one in the
+    // handler span.
+    let end_idx = *index.get(&end).ok_or(IrError::BadOperand)?;
+    for item in &instrs[handler_idx..end_idx] {
+        if item.instr.opcode.mnemonic() == Mnemonic::END_FINALLY {
+            excluded.insert(item.offset);
+        }
+    }
+
+    Ok(TryShape { setup: setup.offset, body_entry, end, clauses })
+}
+
+/// Marks the instruction offsets in `[start, end)` as handler dispatch to drop.
+fn exclude_range(instrs: &[OffsetInstr], start: usize, end: usize, excluded: &mut HashSet<Offset>) {
+    for item in &instrs[start..end] {
+        excluded.insert(item.offset);
+    }
+}
+
+/// Lowers each try's exception-type expressions through the shared unstacker and
+/// assembles the `Try` terminator keyed by its `SETUP_EXCEPT` offset.
+fn build_try_terminators(
+    unstacker: &mut Unstacker,
+    instrs: &[OffsetInstr],
+    tries: &[TryShape],
+) -> Result<HashMap<Offset, Terminator>, IrError> {
+    let mut terminators = HashMap::new();
+    for shape in tries {
+        let mut handlers = Vec::with_capacity(shape.clauses.len());
+        for clause in &shape.clauses {
+            let exc_type = match clause.type_load {
+                Some((start, end)) => {
+                    unstacker.start_block();
+                    for item in &instrs[start..end] {
+                        unstacker.step(&item.instr, item.offset)?;
+                    }
+                    let value = unstacker.pop_value()?;
+                    // The type loads are pure, but discard any stray statements so
+                    // they never leak into the first real block.
+                    let _ = unstacker.take_stmts();
+                    Some(value)
+                }
+                None => None,
+            };
+            handlers.push(HandlerArm {
+                exc_type,
+                name: clause.name.clone(),
+                body: clause.body_entry,
+            });
+        }
+        terminators.insert(
+            shape.setup,
+            Terminator::Try {
+                body: shape.body_entry,
+                handlers,
+                end: shape.end,
+            },
+        );
+    }
+    Ok(terminators)
+}
+
 /// Computes the absolute target offset of a branch instruction.
 fn branch_target(item: &OffsetInstr) -> Result<Offset, IrError> {
     let arg = item.instr.arg.ok_or(IrError::MissingOperand)? as u32;
@@ -432,7 +704,7 @@ fn branch_target(item: &OffsetInstr) -> Result<Offset, IrError> {
         Mnemonic::JUMP_ABSOLUTE | Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE => {
             Offset(arg)
         }
-        Mnemonic::JUMP_FORWARD | Mnemonic::FOR_ITER => {
+        Mnemonic::JUMP_FORWARD | Mnemonic::FOR_ITER | Mnemonic::SETUP_EXCEPT => {
             Offset(item.offset.0 + item.instr.len() as u32 + arg)
         }
         other => return Err(IrError::HasControlFlow(other)),

@@ -83,3 +83,20 @@ def pairs(items):
 def choose(c, a, b):
     x = a if c else b
     return x
+
+
+def try_bare(data):
+    try:
+        load(data)
+    except:
+        log('failed')
+    return None
+
+
+def try_typed(data):
+    result = None
+    try:
+        result = load(data)
+    except Exception as e:
+        log('failed', str(e))
+    return result

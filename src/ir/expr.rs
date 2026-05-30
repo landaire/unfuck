@@ -249,8 +249,24 @@ pub enum Stmt {
         iter: ValueId,
         body: Vec<Stmt>,
     },
+    /// `try: ... except [type [as name]]: ...`. The handlers are emitted in source
+    /// order; a handler with no `exc_type` is a bare `except:`.
+    Try {
+        body: Vec<Stmt>,
+        handlers: Vec<ExceptHandler>,
+    },
     Break,
     Continue,
+}
+
+/// One `except` clause of a [`Stmt::Try`].
+#[derive(Debug, Clone)]
+pub struct ExceptHandler {
+    /// The matched exception type, or `None` for a bare `except:`.
+    pub exc_type: Option<ValueId>,
+    /// The `as name` binding, if the clause names the caught exception.
+    pub name: Option<LValue>,
+    pub body: Vec<Stmt>,
 }
 
 /// Owns every expression for one function. [`ValueId`]s index into it.

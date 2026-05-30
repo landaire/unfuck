@@ -369,7 +369,155 @@ fn ternary() {
 }
 
 #[test]
-fn exceptions_are_rejected() {
+fn bare_except() {
+    // def f(): try: g() except: h()
+    let code = Builder::new("f", 0, &[], &["g", "h"], vec![Obj::None])
+        .jump(Standard::SETUP_EXCEPT, "handler")
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_BLOCK)
+        .jump(Standard::JUMP_FORWARD, "end")
+        .label("handler")
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_FORWARD, "end")
+        .label("end")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f():\n    try:\n        g()\n    except:\n        h()\n    return None\n"
+    );
+}
+
+#[test]
+fn typed_except_as_name() {
+    // def f(): try: x = g() except Exception as e: log(e)
+    let code = Builder::new("f", 0, &["x", "e"], &["g", "Exception", "log"], vec![Obj::None])
+        .jump(Standard::SETUP_EXCEPT, "handler")
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .arg(Standard::STORE_FAST, 0)
+        .op(Standard::POP_BLOCK)
+        .jump(Standard::JUMP_FORWARD, "end")
+        .label("handler")
+        .op(Standard::DUP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::COMPARE_OP, 10)
+        .jump(Standard::POP_JUMP_IF_FALSE, "reraise")
+        .op(Standard::POP_TOP)
+        .arg(Standard::STORE_FAST, 1)
+        .op(Standard::POP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 2)
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_FORWARD, "end")
+        .label("reraise")
+        .op(Standard::END_FINALLY)
+        .label("end")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f():\n    try:\n        x = g()\n    except Exception as e:\n        log(e)\n    return None\n"
+    );
+}
+
+#[test]
+fn multi_clause_except() {
+    // def f(): try: x = g() except A: h1() except B as e: h2(e)
+    let code = Builder::new("f", 0, &["x", "e"], &["g", "A", "h1", "B", "h2"], vec![Obj::None])
+        .jump(Standard::SETUP_EXCEPT, "handler")
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .arg(Standard::STORE_FAST, 0)
+        .op(Standard::POP_BLOCK)
+        .jump(Standard::JUMP_FORWARD, "end")
+        .label("handler")
+        .op(Standard::DUP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::COMPARE_OP, 10)
+        .jump(Standard::POP_JUMP_IF_FALSE, "clause2")
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 2)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_FORWARD, "end")
+        .label("clause2")
+        .op(Standard::DUP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 3)
+        .arg(Standard::COMPARE_OP, 10)
+        .jump(Standard::POP_JUMP_IF_FALSE, "reraise")
+        .op(Standard::POP_TOP)
+        .arg(Standard::STORE_FAST, 1)
+        .op(Standard::POP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 4)
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_FORWARD, "end")
+        .label("reraise")
+        .op(Standard::END_FINALLY)
+        .label("end")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f():\n    try:\n        x = g()\n    except A:\n        h1()\n    \
+         except B as e:\n        h2(e)\n    return None\n"
+    );
+}
+
+#[test]
+fn except_with_branch_in_handler() {
+    // A handler body that itself branches must structure as a nested if.
+    // def f(x): try: g() except: (if x: h())
+    let code = Builder::new("f", 1, &["x"], &["g", "h"], vec![Obj::None])
+        .jump(Standard::SETUP_EXCEPT, "handler")
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_BLOCK)
+        .jump(Standard::JUMP_FORWARD, "end")
+        .label("handler")
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::POP_JUMP_IF_FALSE, "end")
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_FORWARD, "end")
+        .label("end")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(x):\n    try:\n        g()\n    except:\n        if x:\n            h()\n    return None\n"
+    );
+}
+
+#[test]
+fn malformed_except_is_rejected() {
+    // A SETUP_EXCEPT without the POP_BLOCK; JUMP_FORWARD body exit is not the
+    // shape the recoverer accepts, so the function is rejected, not mis-emitted.
     let code = Builder::new("f", 0, &[], &[], vec![Obj::None])
         .jump(Standard::SETUP_EXCEPT, "after")
         .arg(Standard::LOAD_CONST, 0)

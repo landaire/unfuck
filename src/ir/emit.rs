@@ -157,6 +157,21 @@ impl<'a> Emitter<'a> {
                 self.line(&rendered);
                 self.block(body);
             }
+            Stmt::Try { body, handlers } => {
+                self.line("try:");
+                self.block(body);
+                for handler in handlers {
+                    let header = match (&handler.exc_type, &handler.name) {
+                        (None, _) => "except:".to_string(),
+                        (Some(exc), None) => format!("except {}:", self.expr(*exc, 0)),
+                        (Some(exc), Some(name)) => {
+                            format!("except {} as {}:", self.expr(*exc, 0), self.lvalue(name))
+                        }
+                    };
+                    self.line(&header);
+                    self.block(&handler.body);
+                }
+            }
             Stmt::Break => self.line("break"),
             Stmt::Continue => self.line("continue"),
             Stmt::If { cond, then, els } => {
