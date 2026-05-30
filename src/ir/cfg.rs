@@ -399,8 +399,7 @@ fn terminator_kind(mnemonic: Mnemonic) -> Result<TerminatorKind, IrError> {
         | Mnemonic::SETUP_WITH
         | Mnemonic::BREAK_LOOP
         | Mnemonic::CONTINUE_LOOP
-        | Mnemonic::END_FINALLY
-        | Mnemonic::YIELD_VALUE => return Err(IrError::HasControlFlow(mnemonic)),
+        | Mnemonic::END_FINALLY => return Err(IrError::HasControlFlow(mnemonic)),
         // JUMP_IF_*_OR_POP is a short-circuit operator handled inside a block by the
         // unstacker, not a control-flow terminator.
         _ => TerminatorKind::None,

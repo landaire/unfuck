@@ -200,6 +200,9 @@ pub enum Expr {
     /// A function object built from a nested code constant by `MAKE_FUNCTION`.
     /// Becomes a `def` when stored to a name.
     MakeFunction(ConstId),
+    /// `yield value`. `YIELD_VALUE` pushes the value the generator receives, which
+    /// a statement-level yield then pops.
+    Yield(ValueId),
 }
 
 /// The target of an assignment.

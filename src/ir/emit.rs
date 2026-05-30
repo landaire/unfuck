@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use num_traits::ToPrimitive;
-use py27_marshal::{Code, Obj};
+use py27_marshal::{Code, CodeFlags, Obj};
 
 use super::expr::*;
 
@@ -119,11 +119,14 @@ impl<'a> Emitter<'a> {
                 self.line(&line);
             }
             Stmt::Return(value) => match value {
-                Some(value) => {
+                // A generator may only `return` without a value; the trailing
+                // `LOAD_CONST None; RETURN_VALUE` every function ends with is the
+                // implicit fall-off-the-end, so render it bare.
+                Some(value) if !self.code.flags.contains(CodeFlags::GENERATOR) => {
                     let line = format!("return {}", self.expr(*value, 0));
                     self.line(&line);
                 }
-                None => self.line("return"),
+                _ => self.line("return"),
             },
             Stmt::Print { values, newline } => {
                 let mut line = String::from("print ");
@@ -281,6 +284,9 @@ impl<'a> Emitter<'a> {
                 (rendered.join(&format!(" {} ", kind.symbol())), level)
             }
             Expr::Call { func, args, kwargs, star, kwstar } => {
+                if let Some(comp) = self.comprehension_call(*func, args, kwargs, *star, *kwstar) {
+                    return (comp, prec::ATOM);
+                }
                 let mut rendered: Vec<String> = args.iter().map(|a| self.expr(*a, 0)).collect();
                 for (key, value) in kwargs {
                     rendered.push(format!("{}={}", self.kwarg_name(*key), self.expr(*value, 0)));
@@ -326,7 +332,44 @@ impl<'a> Emitter<'a> {
             // A function used inline (a lambda or a decorated def) is not recovered
             // here; mark it so the function is rejected rather than mis-emitted.
             Expr::MakeFunction(_) => (UNRECOVERED.to_string(), prec::ATOM),
+            Expr::Yield(value) => (format!("yield {}", self.expr(*value, prec::TERNARY)), prec::TERNARY),
         }
+    }
+
+    /// Renders a call of the form `(<comp code>)(<iter>)` as an inline
+    /// comprehension. CPython 2.7 compiles a generator/set/dict comprehension to a
+    /// nested code object invoked with the outer iterable; this re-inlines it.
+    /// Returns `None` when the call is not a recognised comprehension, so the
+    /// caller renders an ordinary call.
+    fn comprehension_call(
+        &self,
+        func: ValueId,
+        args: &[ValueId],
+        kwargs: &[(ValueId, ValueId)],
+        star: Option<ValueId>,
+        kwstar: Option<ValueId>,
+    ) -> Option<String> {
+        if args.len() != 1 || !kwargs.is_empty() || star.is_some() || kwstar.is_some() {
+            return None;
+        }
+        let Expr::MakeFunction(const_id) = self.arena.get(func) else {
+            return None;
+        };
+        let comp_code = match self.code.consts.get(const_id.0 as usize) {
+            Some(Obj::Code(code)) => Arc::new(code.read().unwrap().clone()),
+            _ => return None,
+        };
+        if comp_code.name.to_string() != "<genexpr>" {
+            return None;
+        }
+        let parts = comprehension_parts(comp_code).ok()?;
+        let iter = self.expr(args[0], 0);
+        let body = format!("{}{}{}", parts.head, iter, parts.tail);
+        Some(match parts.kind {
+            CompKind::Gen => format!("({})", body),
+            CompKind::List => format!("[{}]", body),
+            CompKind::Set | CompKind::Dict => format!("{{{}}}", body),
+        })
     }
 
     fn varname(&self, var: VarId) -> String {
@@ -375,6 +418,129 @@ impl<'a> Emitter<'a> {
             Some(obj) => render_obj(obj),
             None => format!("const{}", c.0),
         }
+    }
+}
+
+/// Which comprehension a recovered nested code object represents.
+enum CompKind {
+    Gen,
+    List,
+    Set,
+    Dict,
+}
+
+/// One clause of a comprehension: a `for` over an iterable or an `if` filter.
+enum CompClause {
+    For { target: LValue, iter: ValueId },
+    If(ValueId),
+}
+
+/// A recovered comprehension over the nested code object's own arena.
+struct RecognizedComp {
+    kind: CompKind,
+    element: ValueId,
+    /// The key expression for a dict comprehension; `None` otherwise.
+    key: Option<ValueId>,
+    clauses: Vec<CompClause>,
+}
+
+/// Rendered comprehension text split around the outermost iterable, which lives
+/// in the caller's scope: the full source is `head + <outer iter> + tail`.
+struct CompParts {
+    kind: CompKind,
+    head: String,
+    tail: String,
+}
+
+/// Decompiles a comprehension code object and renders it, leaving the outermost
+/// iterable (the `.0` argument) as a hole for the caller to fill from its scope.
+fn comprehension_parts(comp_code: Arc<Code>) -> Result<CompParts, super::IrError> {
+    let structured = super::DecodedFunction::decode(comp_code)?.structure()?;
+    let recog =
+        recognize_comprehension(&structured.arena, &structured.body).ok_or(super::IrError::Incomplete)?;
+    // The first clause iterates the implicit `.0` argument; that iterable is
+    // supplied by the caller, so it is omitted from the rendered text.
+    let CompClause::For { target, iter } = &recog.clauses[0] else {
+        return Err(super::IrError::Incomplete);
+    };
+    if !matches!(structured.arena.get(*iter), Expr::Local(VarId(0))) {
+        return Err(super::IrError::Incomplete);
+    }
+    let emitter = Emitter::new(&structured.code, &structured.arena);
+    let element = match recog.key {
+        Some(key) => format!("{}: {}", emitter.expr(key, 0), emitter.expr(recog.element, 0)),
+        None => emitter.expr(recog.element, 0),
+    };
+    let head = format!("{} for {} in ", element, emitter.lvalue(target));
+    let mut tail = String::new();
+    for clause in &recog.clauses[1..] {
+        match clause {
+            CompClause::For { target, iter } => tail.push_str(&format!(
+                " for {} in {}",
+                emitter.lvalue(target),
+                emitter.expr(*iter, 0)
+            )),
+            // A comprehension `if` takes an `or_test`, so a ternary or lambda
+            // condition must parenthesise; render at `or` precedence.
+            CompClause::If(cond) => tail.push_str(&format!(" if {}", emitter.expr(*cond, prec::OR))),
+        }
+    }
+    Ok(CompParts { kind: recog.kind, head, tail })
+}
+
+/// Matches the structured body of a comprehension code object: a (possibly
+/// nested) `for` whose innermost body produces one element. Returns `None` for
+/// any shape that is not a plain comprehension.
+fn recognize_comprehension(arena: &ExprArena, body: &[Stmt]) -> Option<RecognizedComp> {
+    // The body ends in the comprehension's implicit `return None`.
+    let body = match body.last() {
+        Some(Stmt::Return(_)) => &body[..body.len() - 1],
+        _ => body,
+    };
+    let [outer @ Stmt::For { .. }] = body else {
+        return None;
+    };
+    let mut clauses = Vec::new();
+    let (kind, element, key) = walk_comp_for(arena, outer, &mut clauses)?;
+    Some(RecognizedComp { kind, element, key, clauses })
+}
+
+/// Descends one `for` clause, recording it, then continues into its body.
+fn walk_comp_for(
+    arena: &ExprArena,
+    stmt: &Stmt,
+    clauses: &mut Vec<CompClause>,
+) -> Option<(CompKind, ValueId, Option<ValueId>)> {
+    let Stmt::For { target, iter, body } = stmt else {
+        return None;
+    };
+    clauses.push(CompClause::For { target: target.clone(), iter: *iter });
+    walk_comp_body(arena, body, clauses)
+}
+
+/// Descends a comprehension clause body: an `if` filter, a nested `for`, or the
+/// terminal element-producing statement. The back edge's trailing `continue` is
+/// dropped.
+fn walk_comp_body(
+    arena: &ExprArena,
+    body: &[Stmt],
+    clauses: &mut Vec<CompClause>,
+) -> Option<(CompKind, ValueId, Option<ValueId>)> {
+    let body = match body.last() {
+        Some(Stmt::Continue) => &body[..body.len() - 1],
+        _ => body,
+    };
+    match body {
+        [Stmt::Expr(value)] => match arena.get(*value) {
+            Expr::Yield(element) => Some((CompKind::Gen, *element, None)),
+            _ => None,
+        },
+        [Stmt::If { cond, then, els }] if els.is_empty() => {
+            clauses.push(CompClause::If(*cond));
+            walk_comp_body(arena, then, clauses)
+        }
+        [for_stmt @ Stmt::For { .. }] => walk_comp_for(arena, for_stmt, clauses),
+        _ => None,
     }
 }
 

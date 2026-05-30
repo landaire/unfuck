@@ -56,6 +56,9 @@ fn cases() {
         "choose",
         "try_bare",
         "try_typed",
+        "gen_squares",
+        "gen_filtered",
+        "gen_consumed",
     ] {
         insta::assert_snapshot!(name, decompile(fixture, name));
     }

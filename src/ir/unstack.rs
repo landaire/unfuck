@@ -383,6 +383,10 @@ impl Unstacker {
                     self.push(Expr::UnpackSlot);
                 }
             }
+            Mnemonic::YIELD_VALUE => {
+                let value = self.pop()?;
+                self.push(Expr::Yield(value));
+            }
             Mnemonic::POP_TOP => {
                 let value = self.pop()?;
                 self.emit(Stmt::Expr(value));

@@ -100,3 +100,15 @@ def try_typed(data):
     except Exception as e:
         log('failed', str(e))
     return result
+
+
+def gen_squares(items):
+    return (x * x for x in items)
+
+
+def gen_filtered(items):
+    return (x for x in items if x > 0)
+
+
+def gen_consumed(items):
+    return sum(x for x in items if x)
