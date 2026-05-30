@@ -160,6 +160,10 @@ pub enum Expr {
         args: Vec<ValueId>,
         /// Keyword arguments, each `(name, value)`. The name is a `Const` string.
         kwargs: Vec<(ValueId, ValueId)>,
+        /// `*args` splat, if present.
+        star: Option<ValueId>,
+        /// `**kwargs` splat, if present.
+        kwstar: Option<ValueId>,
     },
     Tuple(Vec<ValueId>),
     List(Vec<ValueId>),

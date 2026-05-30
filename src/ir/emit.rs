@@ -210,10 +210,16 @@ impl<'a> Emitter<'a> {
                 ),
                 prec::COMPARE,
             ),
-            Expr::Call { func, args, kwargs } => {
+            Expr::Call { func, args, kwargs, star, kwstar } => {
                 let mut rendered: Vec<String> = args.iter().map(|a| self.expr(*a, 0)).collect();
                 for (key, value) in kwargs {
                     rendered.push(format!("{}={}", self.kwarg_name(*key), self.expr(*value, 0)));
+                }
+                if let Some(star) = star {
+                    rendered.push(format!("*{}", self.expr(*star, prec::UNARY)));
+                }
+                if let Some(kwstar) = kwstar {
+                    rendered.push(format!("**{}", self.expr(*kwstar, prec::UNARY)));
                 }
                 (
                     format!("{}({})", self.expr(*func, prec::ATOM), rendered.join(", ")),

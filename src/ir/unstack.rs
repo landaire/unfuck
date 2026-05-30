@@ -75,6 +75,34 @@ impl Unstacker {
         self.stmts.push(stmt);
     }
 
+    /// Builds a call expression. The operand byte encodes positional and keyword
+    /// counts; `has_star`/`has_kwstar` add `*args`/`**kwargs`. Popped top to
+    /// bottom: `**kwargs`, `*args`, keyword `(key, value)` pairs, positionals,
+    /// then the callee.
+    fn call(&mut self, raw: u16, has_star: bool, has_kwstar: bool) -> Result<(), IrError> {
+        let positional = (raw & 0xff) as usize;
+        let keyword = (raw >> 8) as usize;
+        let kwstar = if has_kwstar { Some(self.pop()?) } else { None };
+        let star = if has_star { Some(self.pop()?) } else { None };
+        let mut kwargs = Vec::with_capacity(keyword);
+        for _ in 0..keyword {
+            let value = self.pop()?;
+            let key = self.pop()?;
+            kwargs.push((key, value));
+        }
+        kwargs.reverse();
+        let args = self.pop_n(positional)?;
+        let func = self.pop()?;
+        self.push(Expr::Call {
+            func,
+            args,
+            kwargs,
+            star,
+            kwstar,
+        });
+        Ok(())
+    }
+
     /// Clears the symbolic stack before lowering a new basic block. The arena and
     /// accumulated statements are retained across blocks of the same function.
     pub fn start_block(&mut self) {
@@ -150,23 +178,10 @@ impl Unstacker {
                 let lhs = self.pop()?;
                 self.push(Expr::Compare(op, lhs, rhs));
             }
-            Mnemonic::CALL_FUNCTION => {
-                let raw = arg_u16(arg)?;
-                let positional = (raw & 0xff) as usize;
-                let keyword = (raw >> 8) as usize;
-                // The stack holds func, positionals, then (key, value) pairs with
-                // the last pair on top. Pop the pairs first, then the positionals.
-                let mut kwargs = Vec::with_capacity(keyword);
-                for _ in 0..keyword {
-                    let value = self.pop()?;
-                    let key = self.pop()?;
-                    kwargs.push((key, value));
-                }
-                kwargs.reverse();
-                let args = self.pop_n(positional)?;
-                let func = self.pop()?;
-                self.push(Expr::Call { func, args, kwargs });
-            }
+            Mnemonic::CALL_FUNCTION => self.call(arg_u16(arg)?, false, false)?,
+            Mnemonic::CALL_FUNCTION_VAR => self.call(arg_u16(arg)?, true, false)?,
+            Mnemonic::CALL_FUNCTION_KW => self.call(arg_u16(arg)?, false, true)?,
+            Mnemonic::CALL_FUNCTION_VAR_KW => self.call(arg_u16(arg)?, true, true)?,
             Mnemonic::BUILD_TUPLE => {
                 let items = self.pop_n(arg_u16(arg)? as usize)?;
                 self.push(Expr::Tuple(items));
