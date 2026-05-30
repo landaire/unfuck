@@ -71,3 +71,10 @@ def outer(x):
         return y + 1
 
     return inner(x)
+
+
+def pairs(items):
+    total = 0
+    for k, v in items:
+        total = total + v
+    return total

@@ -19,8 +19,10 @@ use super::expr::Stmt;
 use super::IrError;
 
 /// Guards against runaway recursion if the graph violates the reducible, well
-/// nested assumptions the structurer relies on.
-const MAX_DEPTH: usize = 4096;
+/// nested assumptions the structurer relies on. Kept well below the point a deep
+/// recursion would overflow the stack; real code never nests this far, so hitting
+/// it means the graph is one the structurer cannot reduce, and it is rejected.
+const MAX_DEPTH: usize = 256;
 
 /// A point control reaches: either a block or the function exit.
 #[derive(Clone, Copy, PartialEq, Eq)]

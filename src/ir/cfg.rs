@@ -200,14 +200,24 @@ fn lower_block(
     let mnemonic = last.instr.opcode.mnemonic();
     let kind = terminator_kind(mnemonic)?;
 
-    // A for-loop body begins with the store of the loop target. Record it and skip
-    // it so the remaining body unstacks with a balanced stack (the body refers to
-    // the target through ordinary loads).
+    // A for-loop body begins with the loop target: a single store, or
+    // `UNPACK_SEQUENCE` followed by one store per element for a tuple target.
+    // Record it and skip it so the remaining body unstacks with a balanced stack.
     let mut start = 0;
     if let Some(header) = for_header {
         let first = body.first().ok_or(IrError::Decode)?;
-        for_targets.insert(header, store_target(&first.instr)?);
-        start = 1;
+        if first.instr.opcode.mnemonic() == Mnemonic::UNPACK_SEQUENCE {
+            let arity = first.instr.arg.ok_or(IrError::MissingOperand)? as usize;
+            let mut targets = Vec::with_capacity(arity);
+            for item in body.get(1..1 + arity).ok_or(IrError::Decode)? {
+                targets.push(store_target(&item.instr)?);
+            }
+            for_targets.insert(header, LValue::Tuple(targets));
+            start = 1 + arity;
+        } else {
+            for_targets.insert(header, store_target(&first.instr)?);
+            start = 1;
+        }
     }
 
     let feed_end = match kind {
