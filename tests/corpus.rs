@@ -53,6 +53,7 @@ fn cases() {
         "guard_chain",
         "outer",
         "pairs",
+        "choose",
     ] {
         insta::assert_snapshot!(name, decompile(fixture, name));
     }

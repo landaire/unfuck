@@ -29,6 +29,15 @@ struct ShortCircuit {
     merge: Offset,
 }
 
+/// A ternary `then if cond else otherwise` under construction. The diamond's
+/// `POP_JUMP_IF_FALSE` records `cond`; its `JUMP_FORWARD` records `then` and the
+/// merge offset; the `otherwise` operand is on the stack at the merge.
+struct PendingTernary {
+    cond: ValueId,
+    then: Option<ValueId>,
+    merge: Offset,
+}
+
 /// Symbolic stack machine for one basic block.
 pub struct Unstacker {
     arena: ExprArena,
@@ -36,6 +45,7 @@ pub struct Unstacker {
     stmts: Vec<Stmt>,
     unpack: Option<PendingUnpack>,
     shortcircuit: Vec<ShortCircuit>,
+    ternary: Option<PendingTernary>,
 }
 
 impl Unstacker {
@@ -46,24 +56,39 @@ impl Unstacker {
             stmts: Vec::new(),
             unpack: None,
             shortcircuit: Vec::new(),
+            ternary: None,
         }
     }
 
-    /// Resolves any pending short-circuit whose merge point is `offset`: the right
-    /// operand is on the stack, so combine it with the recorded left operand.
-    pub fn resolve_shortcircuits(&mut self, offset: Offset) -> Result<(), IrError> {
-        while self.shortcircuit.last().map(|s| s.merge) == Some(offset) {
-            let sc = self.shortcircuit.pop().unwrap();
-            let rhs = self.pop()?;
-            let combined = self.combine_bool(sc.kind, sc.lhs, rhs);
-            self.stack.push(combined);
+    /// Resolves any pending short-circuit or ternary whose merge point is `offset`:
+    /// the remaining operand is on the stack, so combine it with what was recorded.
+    pub fn resolve_pending(&mut self, offset: Offset) -> Result<(), IrError> {
+        loop {
+            if self.shortcircuit.last().map(|s| s.merge) == Some(offset) {
+                let sc = self.shortcircuit.pop().unwrap();
+                let rhs = self.pop()?;
+                let combined = self.combine_bool(sc.kind, sc.lhs, rhs);
+                self.stack.push(combined);
+                continue;
+            }
+            if self.ternary.as_ref().is_some_and(|t| t.merge == offset && t.then.is_some()) {
+                let pending = self.ternary.take().unwrap();
+                let otherwise = self.pop()?;
+                let ternary = self.arena.alloc(Expr::Ternary {
+                    cond: pending.cond,
+                    then: pending.then.unwrap(),
+                    otherwise,
+                });
+                self.stack.push(ternary);
+                continue;
+            }
+            return Ok(());
         }
-        Ok(())
     }
 
-    /// Whether all short-circuit operators in this block have been resolved.
-    pub fn shortcircuits_resolved(&self) -> bool {
-        self.shortcircuit.is_empty()
+    /// Whether all short-circuit and ternary operators in this block resolved.
+    pub fn pending_resolved(&self) -> bool {
+        self.shortcircuit.is_empty() && self.ternary.is_none()
     }
 
     /// Combines two short-circuit operands, flattening a right side of the same
@@ -154,6 +179,7 @@ impl Unstacker {
         self.stack.clear();
         self.unpack = None;
         self.shortcircuit.clear();
+        self.ternary = None;
     }
 
     /// Pops a value left on the stack, e.g. a branch condition or return value.
@@ -181,8 +207,9 @@ impl Unstacker {
         (self.arena, self.stmts)
     }
 
-    /// Folds one instruction into the symbolic state.
-    pub fn step(&mut self, instr: &Instruction<Standard>) -> Result<(), IrError> {
+    /// Folds one instruction into the symbolic state. `offset` is the instruction's
+    /// byte offset, needed to resolve a relative `JUMP_FORWARD` target.
+    pub fn step(&mut self, instr: &Instruction<Standard>, offset: Offset) -> Result<(), IrError> {
         let arg = instr.arg;
         let mnemonic = instr.opcode.mnemonic();
 
@@ -298,6 +325,31 @@ impl Unstacker {
                     Expr::Const(const_id) => {
                         let const_id = *const_id;
                         self.push(Expr::MakeFunction(const_id));
+                    }
+                    _ => return Err(IrError::Unsupported(mnemonic)),
+                }
+            }
+            // POP_JUMP_IF_FALSE and JUMP_FORWARD reach the unstacker only as the two
+            // jumps of a ternary diamond the pre-pass identified; otherwise they are
+            // block terminators and never fed here.
+            Mnemonic::POP_JUMP_IF_FALSE => {
+                if self.ternary.is_some() {
+                    return Err(IrError::Unsupported(mnemonic));
+                }
+                let cond = self.pop()?;
+                self.ternary = Some(PendingTernary {
+                    cond,
+                    then: None,
+                    merge: Offset(0),
+                });
+            }
+            Mnemonic::JUMP_FORWARD => {
+                let then = self.pop()?;
+                let merge = Offset(offset.0 + instr.len() as u32 + arg_u16(arg)? as u32);
+                match self.ternary.as_mut() {
+                    Some(pending) if pending.then.is_none() => {
+                        pending.then = Some(then);
+                        pending.merge = merge;
                     }
                     _ => return Err(IrError::Unsupported(mnemonic)),
                 }

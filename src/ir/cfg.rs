@@ -6,7 +6,7 @@
 //! recovered from back edges by the structurer; exception and short-circuit setup
 //! are still rejected so the supported surface stays explicit.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use pydis::opcode::py27::{Mnemonic, Standard};
 use pydis::prelude::*;
@@ -91,7 +91,8 @@ impl Cfg {
 
     /// Builds the graph from a decoded instruction stream.
     pub fn build(instrs: &[OffsetInstr]) -> Result<Cfg, IrError> {
-        let leaders = block_leaders(instrs)?;
+        let ternaries = find_ternaries(instrs);
+        let leaders = block_leaders(instrs, &ternaries)?;
         let mut by_offset = HashMap::new();
         for (idx, leader) in leaders.iter().enumerate() {
             by_offset.insert(*leader, BlockId(idx as u32));
@@ -157,7 +158,10 @@ pub fn decode(code: &[u8]) -> Result<Vec<OffsetInstr>, IrError> {
 
 /// Computes the set of block-leader offsets: offset 0, every branch target, and
 /// the instruction following every branch or return.
-fn block_leaders(instrs: &[OffsetInstr]) -> Result<Vec<Offset>, IrError> {
+fn block_leaders(
+    instrs: &[OffsetInstr],
+    ternaries: &HashSet<Offset>,
+) -> Result<Vec<Offset>, IrError> {
     let mut leaders = BTreeSet::new();
     if let Some(first) = instrs.first() {
         leaders.insert(first.offset);
@@ -165,6 +169,10 @@ fn block_leaders(instrs: &[OffsetInstr]) -> Result<Vec<Offset>, IrError> {
     for (idx, item) in instrs.iter().enumerate() {
         let mnemonic = item.instr.opcode.mnemonic();
         let next = instrs.get(idx + 1).map(|i| i.offset);
+        // A ternary's jumps stay inside their block; do not split there.
+        if ternaries.contains(&item.offset) {
+            continue;
+        }
         match terminator_kind(mnemonic)? {
             TerminatorKind::Branch | TerminatorKind::Jump | TerminatorKind::ForIter => {
                 // Backward targets are loop back edges; the structurer recovers the
@@ -225,13 +233,14 @@ fn lower_block(
         _ => body.len() - 1,
     };
     for item in &body[start.min(feed_end)..feed_end] {
-        unstacker.resolve_shortcircuits(item.offset)?;
-        unstacker.step(&item.instr)?;
+        unstacker.resolve_pending(item.offset)?;
+        unstacker.step(&item.instr, item.offset)?;
     }
-    // Resolve any short-circuit that merges at the terminator before the terminator
-    // consumes its operands. One that merges outside this block is unsupported.
-    unstacker.resolve_shortcircuits(last.offset)?;
-    if !unstacker.shortcircuits_resolved() {
+    // Resolve any short-circuit or ternary that merges at the terminator before the
+    // terminator consumes its operands. One that merges outside this block is
+    // unsupported.
+    unstacker.resolve_pending(last.offset)?;
+    if !unstacker.pending_resolved() {
         return Err(IrError::Unsupported(Mnemonic::JUMP_IF_FALSE_OR_POP));
     }
 
@@ -330,6 +339,90 @@ fn terminator_kind(mnemonic: Mnemonic) -> Result<TerminatorKind, IrError> {
         // unstacker, not a control-flow terminator.
         _ => TerminatorKind::None,
     })
+}
+
+/// Identifies the jump offsets of ternary (`then if cond else otherwise`) diamonds
+/// so they can be kept inside one block and rebuilt as an expression. A ternary is
+/// a `POP_JUMP_IF_FALSE` whose else target is immediately preceded by a
+/// `JUMP_FORWARD` to a later merge, with both arms made only of value-producing
+/// opcodes. Anything more complex (statements, nested branches) fails the check and
+/// is left to structure as an ordinary `if`.
+fn find_ternaries(instrs: &[OffsetInstr]) -> HashSet<Offset> {
+    let index: HashMap<Offset, usize> = instrs
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| (item.offset, idx))
+        .collect();
+    let mut ternaries = HashSet::new();
+    for item in instrs {
+        if item.instr.opcode.mnemonic() != Mnemonic::POP_JUMP_IF_FALSE {
+            continue;
+        }
+        let Ok(else_target) = branch_target(item) else {
+            continue;
+        };
+        let Some(&else_idx) = index.get(&else_target) else {
+            continue;
+        };
+        if else_idx == 0 {
+            continue;
+        }
+        let jump = &instrs[else_idx - 1];
+        if jump.instr.opcode.mnemonic() != Mnemonic::JUMP_FORWARD {
+            continue;
+        }
+        let Ok(merge) = branch_target(jump) else {
+            continue;
+        };
+        if merge <= else_target {
+            continue;
+        }
+        let then_start = Offset(item.offset.0 + item.instr.len() as u32);
+        if pure_expression(instrs, then_start, jump.offset)
+            && pure_expression(instrs, else_target, merge)
+        {
+            ternaries.insert(item.offset);
+            ternaries.insert(jump.offset);
+        }
+    }
+    ternaries
+}
+
+/// Whether every instruction in `[start, end)` only produces a value (no stores,
+/// control flow, or other statement effects).
+fn pure_expression(instrs: &[OffsetInstr], start: Offset, end: Offset) -> bool {
+    instrs
+        .iter()
+        .filter(|item| item.offset >= start && item.offset < end)
+        .all(|item| !is_statement_or_control(item.instr.opcode.mnemonic()))
+}
+
+/// Whether a mnemonic has a statement-level or control-flow effect, as opposed to
+/// just pushing a value.
+fn is_statement_or_control(mnemonic: Mnemonic) -> bool {
+    let name = format!("{:?}", mnemonic);
+    name.starts_with("STORE_")
+        || name.starts_with("DELETE_")
+        || name.starts_with("PRINT_")
+        || name.starts_with("IMPORT_")
+        || name.starts_with("SETUP_")
+        || name.starts_with("JUMP")
+        || name.starts_with("POP_JUMP")
+        || name.starts_with("FOR_")
+        || name.starts_with("MAKE_")
+        || matches!(
+            mnemonic,
+            Mnemonic::POP_TOP
+                | Mnemonic::RETURN_VALUE
+                | Mnemonic::RAISE_VARARGS
+                | Mnemonic::YIELD_VALUE
+                | Mnemonic::END_FINALLY
+                | Mnemonic::EXEC_STMT
+                | Mnemonic::BREAK_LOOP
+                | Mnemonic::CONTINUE_LOOP
+                | Mnemonic::POP_BLOCK
+                | Mnemonic::LOAD_LOCALS
+        )
 }
 
 /// Computes the absolute target offset of a branch instruction.

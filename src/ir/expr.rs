@@ -174,6 +174,12 @@ pub enum Expr {
     /// A flattened short-circuit chain, e.g. `a and b and c`. Always two or more
     /// operands of the same kind.
     BoolOp(BoolKind, Vec<ValueId>),
+    /// A conditional expression: `then if cond else otherwise`.
+    Ternary {
+        cond: ValueId,
+        then: ValueId,
+        otherwise: ValueId,
+    },
     Call {
         func: ValueId,
         args: Vec<ValueId>,

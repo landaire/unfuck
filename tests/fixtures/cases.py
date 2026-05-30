@@ -78,3 +78,8 @@ def pairs(items):
     for k, v in items:
         total = total + v
     return total
+
+
+def choose(c, a, b):
+    x = a if c else b
+    return x

@@ -350,6 +350,25 @@ fn short_circuit_chain() {
 }
 
 #[test]
+fn ternary() {
+    // def f(c, a, b): x = a if c else b; return x
+    let code = Builder::new("f", 3, &["c", "a", "b", "x"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::POP_JUMP_IF_FALSE, "else_")
+        .arg(Standard::LOAD_FAST, 1)
+        .jump(Standard::JUMP_FORWARD, "merge")
+        .label("else_")
+        .arg(Standard::LOAD_FAST, 2)
+        .label("merge")
+        .arg(Standard::STORE_FAST, 3)
+        .arg(Standard::LOAD_FAST, 3)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(c, a, b):\n    x = a if c else b\n    return x\n");
+}
+
+#[test]
 fn exceptions_are_rejected() {
     let code = Builder::new("f", 0, &[], &[], vec![Obj::None])
         .jump(Standard::SETUP_EXCEPT, "after")

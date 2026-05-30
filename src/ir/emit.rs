@@ -18,18 +18,19 @@ pub(crate) const UNRECOVERED: &str = "__unrecovered__";
 
 /// Binding precedence levels, lowest to highest.
 mod prec {
-    pub const OR: u8 = 0;
-    pub const AND: u8 = 1;
-    pub const COMPARE: u8 = 2;
-    pub const BIT_OR: u8 = 3;
-    pub const BIT_XOR: u8 = 4;
-    pub const BIT_AND: u8 = 5;
-    pub const SHIFT: u8 = 6;
-    pub const ADD: u8 = 7;
-    pub const MUL: u8 = 8;
-    pub const UNARY: u8 = 9;
-    pub const POWER: u8 = 10;
-    pub const ATOM: u8 = 12;
+    pub const TERNARY: u8 = 0;
+    pub const OR: u8 = 1;
+    pub const AND: u8 = 2;
+    pub const COMPARE: u8 = 3;
+    pub const BIT_OR: u8 = 4;
+    pub const BIT_XOR: u8 = 5;
+    pub const BIT_AND: u8 = 6;
+    pub const SHIFT: u8 = 7;
+    pub const ADD: u8 = 8;
+    pub const MUL: u8 = 9;
+    pub const UNARY: u8 = 10;
+    pub const POWER: u8 = 11;
+    pub const ATOM: u8 = 13;
 }
 
 /// Renders statements and expressions for one function body.
@@ -245,6 +246,15 @@ impl<'a> Emitter<'a> {
                     self.expr(*rhs, prec::COMPARE + 1)
                 ),
                 prec::COMPARE,
+            ),
+            Expr::Ternary { cond, then, otherwise } => (
+                format!(
+                    "{} if {} else {}",
+                    self.expr(*then, prec::OR),
+                    self.expr(*cond, prec::OR),
+                    self.expr(*otherwise, prec::TERNARY)
+                ),
+                prec::TERNARY,
             ),
             Expr::BoolOp(kind, operands) => {
                 let level = match kind {
