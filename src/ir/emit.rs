@@ -175,6 +175,10 @@ impl<'a> Emitter<'a> {
                     self.block(&handler.body);
                 }
             }
+            Stmt::Import { module, target } => self.line(&self.import_line(*module, target)),
+            Stmt::FromImport { module, names, star } => {
+                self.line(&self.from_import_line(*module, names, *star))
+            }
             // These appear only inside a comprehension code object, where the
             // comprehension folder consumes them; reaching emission means a shape
             // the folder did not recognise, so mark it unrecovered.
@@ -337,6 +341,10 @@ impl<'a> Emitter<'a> {
             // here; mark it so the function is rejected rather than mis-emitted.
             Expr::MakeFunction(_) => (UNRECOVERED.to_string(), prec::ATOM),
             Expr::Yield(value) => (format!("yield {}", self.expr(*value, prec::TERNARY)), prec::TERNARY),
+            // Import values are consumed by the store or POP_TOP that completes the
+            // statement; one reaching here is an import shape the unstacker did not
+            // fully match (e.g. `import a.b as c`), so reject the function.
+            Expr::Import(_) | Expr::ImportFrom(_) => (UNRECOVERED.to_string(), prec::ATOM),
             Expr::ListComp { element, target, iter, conds } => {
                 let mut text = format!(
                     "[{} for {} in {}",
@@ -396,6 +404,57 @@ impl<'a> Emitter<'a> {
         match self.code.varnames.get(var.0 as usize) {
             Some(name) => sanitize_identifier(&name.to_string()),
             None => format!("var{}", var.0),
+        }
+    }
+
+    /// The raw `co_names` entry, without identifier sanitization. Module paths and
+    /// imported attribute names are real Python identifiers (often dotted), so they
+    /// must keep their dots rather than be mangled like deobfuscated locals.
+    fn raw_name(&self, name: NameId) -> Option<String> {
+        self.code.names.get(name.0 as usize).map(|n| n.to_string())
+    }
+
+    /// Renders an `import module [as target]` statement. No `as` clause is emitted
+    /// when the bound name matches the module's top-level component.
+    fn import_line(&self, module: NameId, target: &LValue) -> String {
+        let Some(module) = self.raw_name(module) else {
+            return UNRECOVERED.to_string();
+        };
+        let head = module.split('.').next().unwrap_or(&module);
+        match self.import_binding(target) {
+            Some(bind) if bind == head => format!("import {}", module),
+            Some(bind) => format!("import {} as {}", module, sanitize_identifier(&bind)),
+            None => UNRECOVERED.to_string(),
+        }
+    }
+
+    /// Renders a `from module import ...` statement (or `from module import *`).
+    fn from_import_line(&self, module: NameId, names: &[(NameId, LValue)], star: bool) -> String {
+        let Some(module) = self.raw_name(module) else {
+            return UNRECOVERED.to_string();
+        };
+        if star {
+            return format!("from {} import *", module);
+        }
+        let parts: Vec<String> = names
+            .iter()
+            .map(|(src, target)| match (self.raw_name(*src), self.import_binding(target)) {
+                (Some(src), Some(bind)) if src == bind => src,
+                (Some(src), Some(bind)) => format!("{} as {}", src, sanitize_identifier(&bind)),
+                _ => UNRECOVERED.to_string(),
+            })
+            .collect();
+        format!("from {} import {}", module, parts.join(", "))
+    }
+
+    /// The raw bound name of a simple import target (`STORE_NAME`/`STORE_FAST`).
+    fn import_binding(&self, target: &LValue) -> Option<String> {
+        match target {
+            LValue::Name(name) | LValue::Global(name) => {
+                self.code.names.get(name.0 as usize).map(|n| n.to_string())
+            }
+            LValue::Local(var) => self.code.varnames.get(var.0 as usize).map(|n| n.to_string()),
+            _ => None,
         }
     }
 

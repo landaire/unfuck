@@ -212,6 +212,11 @@ pub enum Expr {
         iter: ValueId,
         conds: Vec<ValueId>,
     },
+    /// The module object produced by `IMPORT_NAME`. Consumed by a following store
+    /// (an `import` statement) or by `IMPORT_FROM`/`IMPORT_STAR`.
+    Import(NameId),
+    /// A name pulled from an imported module by `IMPORT_FROM`, awaiting its store.
+    ImportFrom(NameId),
 }
 
 /// The target of an assignment.
@@ -266,6 +271,19 @@ pub enum Stmt {
     Try {
         body: Vec<Stmt>,
         handlers: Vec<ExceptHandler>,
+    },
+    /// `import module [as target]`. `target` is the bound name; when it matches the
+    /// module's top component no `as` clause is emitted.
+    Import {
+        module: NameId,
+        target: LValue,
+    },
+    /// `from module import name [as target], ...`, or `from module import *` when
+    /// `star` is set (and `names` is empty).
+    FromImport {
+        module: NameId,
+        names: Vec<(NameId, LValue)>,
+        star: bool,
     },
     /// `SET_ADD`: appends an element to a set comprehension's accumulator. Only
     /// produced when lowering a comprehension code object, where it is folded into

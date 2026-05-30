@@ -141,3 +141,10 @@ def list_comp_stored(items):
 
 def empty_list_arg(f):
     return f([])
+
+
+def do_imports():
+    import os.path
+    import sys as system
+    from functools import partial, reduce as r
+    return (os.path, system, partial, r)

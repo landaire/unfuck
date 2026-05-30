@@ -39,6 +39,14 @@ struct PendingTernary {
     merge: Offset,
 }
 
+/// A `from module import ...` under construction. `IMPORT_NAME` leaves the module
+/// on the stack; each `IMPORT_FROM`/store pair adds a name, and the trailing
+/// `POP_TOP` of the module completes it.
+struct PendingFrom {
+    module: NameId,
+    names: Vec<(NameId, LValue)>,
+}
+
 /// Symbolic stack machine for one basic block.
 pub struct Unstacker {
     arena: ExprArena,
@@ -47,6 +55,7 @@ pub struct Unstacker {
     unpack: Option<PendingUnpack>,
     shortcircuit: Vec<ShortCircuit>,
     ternary: Option<PendingTernary>,
+    from_import: Option<PendingFrom>,
     /// True when lowering a comprehension code object: its leading `BUILD_SET`/
     /// `BUILD_MAP` is the accumulator (kept off the stack), and `SET_ADD`/`MAP_ADD`
     /// become element statements instead of unsupported opcodes.
@@ -73,6 +82,7 @@ impl Unstacker {
             unpack: None,
             shortcircuit: Vec::new(),
             ternary: None,
+            from_import: None,
             comp,
             comp_acc_seen: false,
         }
@@ -86,6 +96,13 @@ impl Unstacker {
     /// Whether the symbolic stack is currently empty.
     pub fn stack_is_empty(&self) -> bool {
         self.stack.is_empty()
+    }
+
+    /// Whether the top of the stack is an [`Expr::Import`] module object.
+    fn tops_import(&self) -> bool {
+        self.stack
+            .last()
+            .is_some_and(|top| matches!(self.arena.get(*top), Expr::Import(_)))
     }
 
     /// Resolves any pending short-circuit or ternary whose merge point is `offset`:
@@ -150,6 +167,20 @@ impl Unstacker {
             self.emit(Stmt::FunctionDef { target, code });
             return;
         }
+        // `import module` binds the module object; `from module import name` binds
+        // each name pulled by IMPORT_FROM into the pending from-import.
+        if let Expr::Import(module) = self.arena.get(value) {
+            let module = *module;
+            self.emit(Stmt::Import { module, target });
+            return;
+        }
+        if let Expr::ImportFrom(name) = self.arena.get(value) {
+            let name = *name;
+            if let Some(pending) = self.from_import.as_mut() {
+                pending.names.push((name, target));
+            }
+            return;
+        }
         if self.unpack.is_some() && matches!(self.arena.get(value), Expr::UnpackSlot) {
             let pending = self.unpack.as_mut().unwrap();
             pending.targets.push(target);
@@ -208,6 +239,7 @@ impl Unstacker {
         self.unpack = None;
         self.shortcircuit.clear();
         self.ternary = None;
+        self.from_import = None;
     }
 
     /// Pops a value left on the stack, e.g. a branch condition or return value.
@@ -486,6 +518,41 @@ impl Unstacker {
             Mnemonic::YIELD_VALUE => {
                 let value = self.pop()?;
                 self.push(Expr::Yield(value));
+            }
+            Mnemonic::IMPORT_NAME => {
+                // Pops the from-list and relative-import level; the import form is
+                // determined by the opcodes that follow, not these operands.
+                let _fromlist = self.pop()?;
+                let _level = self.pop()?;
+                self.push(Expr::Import(NameId(arg_u16(arg)?)));
+            }
+            Mnemonic::IMPORT_FROM => {
+                let module = match self.arena.get(*self.stack.last().ok_or(IrError::StackUnderflow)?) {
+                    Expr::Import(module) => *module,
+                    _ => return Err(IrError::Unsupported(mnemonic)),
+                };
+                self.from_import
+                    .get_or_insert_with(|| PendingFrom { module, names: Vec::new() });
+                self.push(Expr::ImportFrom(NameId(arg_u16(arg)?)));
+            }
+            Mnemonic::IMPORT_STAR => {
+                let top = self.pop()?;
+                let module = match self.arena.get(top) {
+                    Expr::Import(module) => *module,
+                    _ => return Err(IrError::Unsupported(mnemonic)),
+                };
+                self.emit(Stmt::FromImport { module, names: Vec::new(), star: true });
+            }
+            // The trailing POP_TOP of a `from module import ...` discards the module
+            // and completes the statement; otherwise it is an expression statement.
+            Mnemonic::POP_TOP if self.from_import.is_some() && self.tops_import() => {
+                self.pop()?;
+                let pending = self.from_import.take().unwrap();
+                self.emit(Stmt::FromImport {
+                    module: pending.module,
+                    names: pending.names,
+                    star: false,
+                });
             }
             Mnemonic::POP_TOP => {
                 let value = self.pop()?;
