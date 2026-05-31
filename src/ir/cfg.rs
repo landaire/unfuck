@@ -157,8 +157,15 @@ impl Cfg {
             .map(|(merge, (start, end))| (merge, instrs[start..end].iter().collect()))
             .collect();
         // Inline list comprehensions are folded whole; their interior instructions
-        // stay inside one block and never become block leaders or for-loops.
-        let (list_comps, list_interior) = find_list_comps(instrs);
+        // stay inside one block and never become block leaders or for-loops. A
+        // comprehension used as a ternary then-arm also marks its condition as a
+        // ternary diamond, and records the merge where the unstacker completes it.
+        let (list_comps, list_interior, comp_ternaries) = find_list_comps(instrs);
+        let mut comp_then_merges: HashMap<Offset, Offset> = HashMap::new();
+        for (build, (cond, merge)) in &comp_ternaries {
+            ternaries.insert(*cond);
+            comp_then_merges.insert(*build, *merge);
+        }
         let breaks = break_targets(instrs);
         let leaders = block_leaders(instrs, &ternaries, &tries, &excluded, &list_interior, &breaks)?;
         let mut by_offset = HashMap::new();
@@ -217,6 +224,7 @@ impl Cfg {
                 &list_comps,
                 &breaks,
                 &else_feeds,
+                &comp_then_merges,
             )
             // A block that does not lower (an unsupported opcode, a stack error) is
             // kept as a poison dead-end rather than failing the whole function, so
@@ -347,6 +355,7 @@ fn lower_block(
     list_comps: &HashMap<Offset, Offset>,
     breaks: &HashMap<Offset, Offset>,
     else_feeds: &HashMap<Offset, Vec<&OffsetInstr>>,
+    comp_then_merges: &HashMap<Offset, Offset>,
 ) -> Result<Block, IrError> {
     unstacker.start_block();
 
@@ -390,6 +399,11 @@ fn lower_block(
                 .position(|it| it.offset >= comp_end)
                 .map_or(feed.len(), |pos| i + pos);
             unstacker.parse_list_comp(&feed[i..span])?;
+            // When the comprehension is a ternary then-arm, its value becomes the
+            // pending diamond's then, completed at the FOR_ITER exit (the merge).
+            if let Some(&merge) = comp_then_merges.get(&item.offset) {
+                unstacker.set_comp_ternary_then(merge)?;
+            }
             i = span;
             continue;
         }
@@ -958,7 +972,15 @@ fn build_try_terminators(
 /// Each entry maps the `BUILD_LIST 0` offset to the comprehension's end (the
 /// `FOR_ITER` exit, where the built list is consumed). Interior offsets, excluding
 /// the `BUILD_LIST` itself, must not start blocks so the whole region folds inline.
-fn find_list_comps(instrs: &[OffsetInstr]) -> (HashMap<Offset, Offset>, HashSet<Offset>) {
+/// Detects inline list comprehensions. Returns the comprehension regions
+/// (`BUILD_LIST` offset -> end offset), the interior offsets to keep out of block
+/// formation, and, for any comprehension used as a ternary then-arm, a map from its
+/// `BUILD_LIST` offset to `(cond offset, merge offset)`: the preceding
+/// `POP_JUMP_IF_FALSE` to mark as a ternary diamond and the `FOR_ITER` exit where the
+/// comprehension value and the else arm converge.
+fn find_list_comps(
+    instrs: &[OffsetInstr],
+) -> (HashMap<Offset, Offset>, HashSet<Offset>, HashMap<Offset, (Offset, Offset)>) {
     let index: HashMap<Offset, usize> = instrs
         .iter()
         .enumerate()
@@ -966,30 +988,47 @@ fn find_list_comps(instrs: &[OffsetInstr]) -> (HashMap<Offset, Offset>, HashSet<
         .collect();
     let mut comps = HashMap::new();
     let mut interior = HashSet::new();
+    let mut comp_ternaries = HashMap::new();
     for (idx, item) in instrs.iter().enumerate() {
         if item.instr.opcode.mnemonic() != Mnemonic::BUILD_LIST || item.instr.arg != Some(0) {
             continue;
         }
-        if let Some(end_idx) = recognize_list_comp(instrs, &index, idx) {
+        if let Some((end_idx, for_exit_idx)) = recognize_list_comp(instrs, &index, idx) {
             comps.insert(item.offset, instrs[end_idx].offset);
             for inner in &instrs[idx + 1..end_idx] {
                 interior.insert(inner.offset);
             }
+            // A comprehension whose loop exit lies past its end is a ternary then-arm:
+            // the else arm sits between. Recognise the diamond when a POP_JUMP_IF_FALSE
+            // immediately before the build branches to the comprehension's end (the
+            // else arm), with the FOR_ITER exit as the shared merge.
+            if end_idx != for_exit_idx && idx > 0 {
+                let cond = &instrs[idx - 1];
+                if cond.instr.opcode.mnemonic() == Mnemonic::POP_JUMP_IF_FALSE
+                    && branch_target(cond).ok() == Some(instrs[end_idx].offset)
+                {
+                    comp_ternaries
+                        .insert(item.offset, (cond.offset, instrs[for_exit_idx].offset));
+                }
+            }
         }
     }
-    (comps, interior)
+    (comps, interior, comp_ternaries)
 }
 
 /// Validates that the `BUILD_LIST 0` at `build_idx` begins a single-`for` list
-/// comprehension and returns the index of its end (the `FOR_ITER` exit). Anything
-/// else (a list literal, a nested or filtered shape the folder cannot parse)
-/// returns `None`, leaving the `LIST_APPEND` unsupported so the function is
-/// rejected rather than mis-recovered.
+/// comprehension. Returns `(comp_end_idx, for_exit_idx)`: the index just past the
+/// loop's back edge (where the folded comprehension ends), and the index of the
+/// `FOR_ITER` exit (where the comprehension's result is used). These differ only
+/// when the comprehension is the then-arm of a ternary -- the else arm sits between
+/// the back edge and the exit. Anything else (a list literal, a nested or filtered
+/// shape the folder cannot parse) returns `None`, leaving the `LIST_APPEND`
+/// unsupported so the function is rejected rather than mis-recovered.
 fn recognize_list_comp(
     instrs: &[OffsetInstr],
     index: &HashMap<Offset, usize>,
     build_idx: usize,
-) -> Option<usize> {
+) -> Option<(usize, usize)> {
     // The iterable must lead straight into GET_ITER then FOR_ITER.
     let mut for_idx = build_idx + 1;
     loop {
@@ -1007,31 +1046,34 @@ fn recognize_list_comp(
     }
     let for_iter = &instrs[for_idx];
     let loop_top = for_iter.offset;
-    let end = branch_target(for_iter).ok()?;
-    let end_idx = *index.get(&end)?;
-    if end_idx <= for_idx {
+    let for_exit_idx = *index.get(&branch_target(for_iter).ok()?)?;
+    if for_exit_idx <= for_idx {
         return None;
     }
-    // The loop closes with a back edge to FOR_ITER, and appends exactly once with
-    // no nested loop of its own.
-    let back = &instrs[end_idx - 1];
-    if back.instr.opcode.mnemonic() != Mnemonic::JUMP_ABSOLUTE
-        || branch_target(back).ok()? != loop_top
-    {
-        return None;
-    }
-    let mut appends = 0;
-    for inner in &instrs[for_idx + 1..end_idx] {
-        match inner.instr.opcode.mnemonic() {
-            Mnemonic::LIST_APPEND => appends += 1,
-            Mnemonic::FOR_ITER => return None,
-            _ => {}
+    // Find the back edge that closes the loop body: a JUMP_ABSOLUTE to the FOR_ITER.
+    // It is at the FOR_ITER exit for a plain comprehension, or earlier (with the
+    // ternary else arm following) for a comprehension used as a ternary then-arm.
+    let mut back_idx = None;
+    for i in (for_idx + 1)..for_exit_idx {
+        let mnemonic = instrs[i].instr.opcode.mnemonic();
+        if mnemonic == Mnemonic::FOR_ITER {
+            return None;
+        }
+        if mnemonic == Mnemonic::JUMP_ABSOLUTE && branch_target(&instrs[i]).ok() == Some(loop_top) {
+            back_idx = Some(i);
+            break;
         }
     }
+    let back_idx = back_idx?;
+    // Exactly one append in the loop body and no nested loop of its own.
+    let appends = instrs[for_idx + 1..=back_idx]
+        .iter()
+        .filter(|item| item.instr.opcode.mnemonic() == Mnemonic::LIST_APPEND)
+        .count();
     if appends != 1 {
         return None;
     }
-    Some(end_idx)
+    Some((back_idx + 1, for_exit_idx))
 }
 
 /// Whether an opcode between `BUILD_LIST 0` and the comprehension's `FOR_ITER`

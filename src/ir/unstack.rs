@@ -163,6 +163,22 @@ impl Unstacker {
         self.shortcircuit.is_empty() && self.ternary.is_none()
     }
 
+    /// Records the just-folded comprehension as the pending ternary's then operand,
+    /// to be completed at `merge` (the comprehension's FOR_ITER exit). Used when a
+    /// list comprehension is the then-arm of a ternary: the comprehension takes the
+    /// place of the `JUMP_FORWARD` that records `then` for an ordinary ternary.
+    pub fn set_comp_ternary_then(&mut self, merge: Offset) -> Result<(), IrError> {
+        let then = self.pop()?;
+        match self.ternary.as_mut() {
+            Some(pending) if pending.then.is_none() => {
+                pending.then = Some(then);
+                pending.merge = merge;
+                Ok(())
+            }
+            _ => Err(IrError::Unsupported(Mnemonic::FOR_ITER)),
+        }
+    }
+
     /// Folds every pending short-circuit into the value on top of the stack, used at
     /// a `RETURN` whose short-circuits never reached their merge. `return X and Y`
     /// where an arm is itself a chained comparison returns its value directly from
