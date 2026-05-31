@@ -402,9 +402,11 @@ fn opaque_predicate_prunes_unlowerable_junk() {
 }
 
 #[test]
-fn swap_is_rejected() {
-    // A ROT_TWO swap (`a, b = b, a`) is not an augmented assignment; recovering it
-    // as sequential stores would be wrong, so it is rejected rather than emitted.
+fn swap_is_recovered() {
+    // A ROT_TWO swap (`a, b = b, a`) is a two-element parallel assignment: the
+    // compiler loads both values then rotates so the stores take them in order.
+    // Recovered as one tuple assignment (never split into sequential stores, which
+    // would mis-order an aliasing swap).
     let code = Builder::new("f", 2, &["a", "b"], &[], vec![Obj::None])
         .arg(Standard::LOAD_FAST, 1)
         .arg(Standard::LOAD_FAST, 0)
@@ -415,10 +417,8 @@ fn swap_is_rejected() {
         .op(Standard::RETURN_VALUE)
         .finish();
 
-    assert!(matches!(
-        unfuck::ir::decompile_function(code),
-        Err(unfuck::ir::IrError::Unsupported(_))
-    ));
+    let source = unfuck::ir::decompile_function(code).expect("swap recovers");
+    assert!(source.contains("a, b = (b, a)"), "got: {}", source);
 }
 
 #[test]

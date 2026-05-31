@@ -572,16 +572,31 @@ impl Unstacker {
                 let dup = self.stack[self.stack.len() - n..].to_vec();
                 self.stack.extend(dup);
             }
-            // ROT_TWO/ROT_THREE only reach a supported construct in two shapes: an
-            // augmented assignment (the rotated top is the INPLACE result) and a
-            // chained comparison (the top two are the same DUP_TOP'd value). Any
-            // other rotation is a simultaneous assignment, which is not recovered.
+            // ROT_TWO reaches the unstacker as an augmented assignment (the rotated
+            // top is the INPLACE result) or as a two-element parallel assignment
+            // (`t1, t2 = v1, v2`, which the compiler emits as `LOAD v1; LOAD v2;
+            // ROT_TWO; STORE t1; STORE t2` rather than build/unpack a 2-tuple). A
+            // chained comparison's `ROT_TWO; POP_TOP` cleanup never reaches here -- it
+            // is excluded by find_chained_comparisons.
             Mnemonic::ROT_TWO => {
                 let len = self.stack.len();
-                if len < 2 || !self.tos_is_inplace() {
+                if len < 2 {
                     return Err(IrError::Unsupported(mnemonic));
                 }
-                self.stack.swap(len - 1, len - 2);
+                if self.tos_is_inplace() {
+                    self.stack.swap(len - 1, len - 2);
+                } else {
+                    // The two values are on the stack; the rotation reverses them so
+                    // the following stores take them in source order. Recover the
+                    // parallel assignment as a single tuple assignment (never split
+                    // into two stores, which would mis-order an aliasing swap).
+                    let second = self.pop()?;
+                    let first = self.pop()?;
+                    let rhs = self.arena.alloc(Expr::Tuple(vec![first, second]));
+                    self.unpack = Some(PendingUnpack { rhs, arity: 2, targets: Vec::new() });
+                    self.push(Expr::UnpackSlot);
+                    self.push(Expr::UnpackSlot);
+                }
             }
             Mnemonic::ROT_THREE => {
                 let len = self.stack.len();
