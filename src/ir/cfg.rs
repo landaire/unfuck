@@ -275,6 +275,20 @@ pub fn decode(code: &[u8]) -> Result<Vec<OffsetInstr>, IrError> {
     Ok(instrs)
 }
 
+/// Replaces the obfuscator's no-op `JUMP_FORWARD 0` instructions with `NOP`s. A
+/// forward jump of zero lands on the very next instruction, so it does nothing but
+/// fragment a basic block and break the straight-line pattern matching the list
+/// comprehension and ternary recognizers rely on. Real 2.7 bytecode never emits a
+/// zero forward jump, so this is unambiguous and offset-preserving.
+pub fn strip_noop_jumps(instrs: &mut [OffsetInstr]) {
+    for item in instrs {
+        if item.instr.opcode.mnemonic() == Mnemonic::JUMP_FORWARD && item.instr.arg == Some(0) {
+            item.instr.opcode = Standard::NOP;
+            item.instr.arg = None;
+        }
+    }
+}
+
 /// Neutralizes the obfuscator's opaque-predicate stack injections.
 ///
 /// The obfuscator splices a block of the shape `LOAD_CONST <5-int tuple ending in
@@ -1266,7 +1280,16 @@ fn recognize_list_comp(
         }
         for_idx += 1;
     }
-    if instrs.get(for_idx - 1)?.instr.opcode.mnemonic() != Mnemonic::GET_ITER {
+    // GET_ITER is the last real instruction before FOR_ITER; NOPs left by the no-op
+    // jump removal may sit between them.
+    let mut giter_idx = for_idx;
+    loop {
+        giter_idx = giter_idx.checked_sub(1).filter(|i| *i > build_idx)?;
+        if instrs[giter_idx].instr.opcode.mnemonic() != Mnemonic::NOP {
+            break;
+        }
+    }
+    if instrs[giter_idx].instr.opcode.mnemonic() != Mnemonic::GET_ITER {
         return None;
     }
     let for_iter = &instrs[for_idx];

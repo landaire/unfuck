@@ -85,11 +85,16 @@ impl DecodedFunction {
     /// Decodes a code object's bytecode into offset-tagged instructions.
     pub fn decode(code: Arc<Code>) -> Result<DecodedFunction, IrError> {
         let mut instrs = cfg::decode(code.code.as_slice())?;
-        // Neutralize the obfuscator's opaque-predicate stack injections before the
-        // CFG is built, so the buried operands of imports/class/function defs are
-        // exposed to the unstacker. The strip is a heuristic, so a caller can disable
-        // it (see `decompile_function_with_defaults`'s fallback).
+        // Both cleanups are semantics-preserving but reshape the CFG, which a few
+        // structuring patterns are sensitive to. They run under the same flag as the
+        // opaque strip so the no-strip fallback in `decompile_function_with_defaults`
+        // decompiles the untouched bytecode when a cleanup trips the structurer.
         if STRIP_OPAQUE.with(|flag| flag.get()) {
+            // Drop the obfuscator's no-op forward jumps, which only fragment the
+            // instruction stream and break straight-line pattern matching.
+            cfg::strip_noop_jumps(&mut instrs);
+            // Neutralize the obfuscator's opaque-predicate stack injections so the
+            // buried operands of imports/class/function defs reach the unstacker.
             cfg::strip_opaque_predicates(&mut instrs, &code);
         }
         Ok(DecodedFunction { code, instrs })
