@@ -16,6 +16,7 @@
 pub mod cfg;
 pub mod emit;
 pub mod expr;
+pub mod simplify;
 pub mod structure;
 pub mod unstack;
 
@@ -100,7 +101,10 @@ impl DecodedFunction {
         self.structure_with(cfg)
     }
 
-    fn structure_with(self, cfg: Cfg) -> Result<StructuredFunction, IrError> {
+    fn structure_with(self, mut cfg: Cfg) -> Result<StructuredFunction, IrError> {
+        // Fold opaque-predicate branches before structuring so the junk they guard
+        // becomes unreachable and is never emitted.
+        simplify::simplify(&mut cfg, &self.code);
         let body = structure::structure(&cfg)?;
         Ok(StructuredFunction {
             code: self.code,

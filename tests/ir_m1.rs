@@ -321,6 +321,41 @@ fn aug_assign_name() {
 }
 
 #[test]
+fn opaque_predicate_true_drops_dead_branch() {
+    // if <const 7>: return a  else: return b  -- the predicate is always true, so
+    // the dead `return b` is folded away.
+    let code = Builder::new("f", 2, &["a", "b"], &[], vec![Obj::None, long(7)])
+        .arg(Standard::LOAD_CONST, 1)
+        .jump(Standard::POP_JUMP_IF_FALSE, "dead")
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::RETURN_VALUE)
+        .label("dead")
+        .arg(Standard::LOAD_FAST, 1)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(a, b):\n    return a\n");
+}
+
+#[test]
+fn opaque_predicate_arithmetic_false_drops_branch() {
+    // if 3 & 0: return a  else: return b  -- 3 & 0 == 0 is always false.
+    let code = Builder::new("f", 2, &["a", "b"], &[], vec![Obj::None, long(3), long(0)])
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::LOAD_CONST, 2)
+        .op(Standard::BINARY_AND)
+        .jump(Standard::POP_JUMP_IF_FALSE, "real")
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::RETURN_VALUE)
+        .label("real")
+        .arg(Standard::LOAD_FAST, 1)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(a, b):\n    return b\n");
+}
+
+#[test]
 fn swap_is_rejected() {
     // A ROT_TWO swap (`a, b = b, a`) is not an augmented assignment; recovering it
     // as sequential stores would be wrong, so it is rejected rather than emitted.
