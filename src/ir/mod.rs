@@ -190,10 +190,9 @@ impl StructuredFunction {
     /// rendered in the enclosing scope. Returns `None` for any other body, so the
     /// caller can fall back to rejecting the construct.
     fn lambda_source(&self, defaults: &[String]) -> Option<String> {
-        let [Stmt::Return(Some(value))] = self.body.as_slice() else {
-            return None;
-        };
-        let body = emit::Emitter::new(&self.code, &self.arena).expr_text(*value);
+        // A lambda body is a single expression, but the compiler lowers a ternary in
+        // it to `if c: return a else: return b`; accept that shape as well.
+        let body = emit::Emitter::new(&self.code, &self.arena).body_as_expr(&self.body, 0)?;
         let params = self.params(defaults).join(", ");
         Some(if params.is_empty() {
             format!("lambda: {}", body)

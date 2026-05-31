@@ -57,6 +57,25 @@ impl<'a> Emitter<'a> {
         self.expr(id, 0)
     }
 
+    /// Renders a function body that reduces to a single expression -- a `return e`,
+    /// or an `if`/`else` whose arms each reduce the same way -- as one expression,
+    /// rendered at `parent` precedence. The compiler lowers a lambda's ternary to
+    /// `if c: return a else: return b`, so this lets such a lambda still emit as
+    /// `a if c else b`. Returns `None` for any body that is not a return/ternary tree.
+    pub(crate) fn body_as_expr(&self, body: &[Stmt], parent: u8) -> Option<String> {
+        match body {
+            [Stmt::Return(Some(value))] => Some(self.expr(*value, parent)),
+            [Stmt::If { cond, then, els }] if !then.is_empty() && !els.is_empty() => {
+                let then_text = self.body_as_expr(then, prec::OR)?;
+                let else_text = self.body_as_expr(els, prec::TERNARY)?;
+                let text =
+                    format!("{} if {} else {}", then_text, self.expr(*cond, prec::OR), else_text);
+                Some(if prec::TERNARY < parent { format!("({})", text) } else { text })
+            }
+            _ => None,
+        }
+    }
+
     /// Renders a body and returns the accumulated source, prefixed with the
     /// function's docstring when it has one.
     pub fn render_body(mut self, stmts: &[Stmt]) -> String {
