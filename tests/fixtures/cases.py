@@ -362,3 +362,7 @@ def print_to_file(f, a, b):
 
 def list_comp_tuple(items):
     return [a + func(c) for a, b, c in items if b]
+
+
+def not_operand(a, b, c):
+    return a % (not b), not a == b, -(a + c), not (b and c)

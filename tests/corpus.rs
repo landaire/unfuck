@@ -102,6 +102,7 @@ fn cases() {
         "sort_with_key",
         "run_exec",
         "print_to_file",
+        "not_operand",
     ] {
         insta::assert_snapshot!(name, decompile(fixture, name));
     }

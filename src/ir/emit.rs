@@ -21,16 +21,20 @@ mod prec {
     pub const TERNARY: u8 = 0;
     pub const OR: u8 = 1;
     pub const AND: u8 = 2;
-    pub const COMPARE: u8 = 3;
-    pub const BIT_OR: u8 = 4;
-    pub const BIT_XOR: u8 = 5;
-    pub const BIT_AND: u8 = 6;
-    pub const SHIFT: u8 = 7;
-    pub const ADD: u8 = 8;
-    pub const MUL: u8 = 9;
-    pub const UNARY: u8 = 10;
-    pub const POWER: u8 = 11;
-    pub const ATOM: u8 = 13;
+    // Boolean `not` binds looser than comparison and arithmetic but tighter than
+    // `and`/`or` (Python: or < and < not < comparison), unlike the arithmetic
+    // unaries `-`/`+`/`~` which bind at UNARY.
+    pub const NOT: u8 = 3;
+    pub const COMPARE: u8 = 4;
+    pub const BIT_OR: u8 = 5;
+    pub const BIT_XOR: u8 = 6;
+    pub const BIT_AND: u8 = 7;
+    pub const SHIFT: u8 = 8;
+    pub const ADD: u8 = 9;
+    pub const MUL: u8 = 10;
+    pub const UNARY: u8 = 11;
+    pub const POWER: u8 = 12;
+    pub const ATOM: u8 = 14;
 }
 
 /// Renders statements and expressions for one function body.
@@ -584,10 +588,14 @@ impl<'a> Emitter<'a> {
                     p,
                 )
             }
-            Expr::Unary(op, operand) => (
-                format!("{}{}", op.symbol(), self.expr(*operand, prec::UNARY)),
-                prec::UNARY,
-            ),
+            Expr::Unary(op, operand) => {
+                // `not` binds far looser than the arithmetic unaries, so report and
+                // render it at NOT: `x % not y` then parenthesises to `x % (not y)`
+                // (a Python 2.7 SyntaxError otherwise), while `not a == b` and
+                // `not not x` stay paren-free.
+                let level = if *op == UnaryOp::Not { prec::NOT } else { prec::UNARY };
+                (format!("{}{}", op.symbol(), self.expr(*operand, level)), level)
+            }
             Expr::Compare(op, lhs, rhs) => (
                 format!(
                     "{} {} {}",
