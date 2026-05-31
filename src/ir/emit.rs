@@ -384,8 +384,15 @@ impl<'a> Emitter<'a> {
                 }
                 _ => self.line("return"),
             },
-            Stmt::Print { values, newline } => {
-                let mut line = String::from("print ");
+            Stmt::Print { values, newline, stream } => {
+                let mut line = String::from("print");
+                if let Some(stream) = stream {
+                    line.push_str(&format!(" >>{}", self.expr(*stream, prec::ATOM)));
+                    if !values.is_empty() {
+                        line.push(',');
+                    }
+                }
+                line.push(' ');
                 let rendered: Vec<String> = values.iter().map(|v| self.expr(*v, 0)).collect();
                 line.push_str(&rendered.join(", "));
                 if !newline {

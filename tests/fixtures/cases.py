@@ -352,3 +352,9 @@ def nested_unpack(pairs):
     (a, b), c = pairs
     d, (e, f) = pairs
     return a + b + c + d + e + f
+
+
+def print_to_file(f, a, b):
+    print >>f, a, b
+    print >>f, a,
+    print >>f

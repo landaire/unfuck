@@ -1,0 +1,10 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def print_to_file(f, a, b):
+    print >>f, a, b
+    print >>f, a,
+    print >>f
+    return None

@@ -76,6 +76,16 @@ pub struct Unstacker {
     /// Operands of a `print` statement under construction. `PRINT_ITEM` appends one;
     /// `PRINT_NEWLINE` (or the next non-print instruction) flushes them.
     print_values: Vec<ValueId>,
+    /// A `print >>stream, ...` statement under construction (PRINT_*_TO). Kept
+    /// separate from `print_values` so the DUP_TOP/ROT_TWO between its operands does
+    /// not trigger the stdout-print trailing-comma flush.
+    print_to: Option<PrintTo>,
+}
+
+/// A `print >>stream, ...` under construction (see [`Unstacker::print_to`]).
+struct PrintTo {
+    stream: ValueId,
+    values: Vec<ValueId>,
 }
 
 impl Unstacker {
@@ -101,6 +111,7 @@ impl Unstacker {
             comp,
             comp_acc_seen: false,
             print_values: Vec::new(),
+            print_to: None,
         }
     }
 
@@ -110,7 +121,7 @@ impl Unstacker {
     pub fn flush_print(&mut self) {
         if !self.print_values.is_empty() {
             let values = std::mem::take(&mut self.print_values);
-            self.emit(Stmt::Print { values, newline: false });
+            self.emit(Stmt::Print { values, newline: false, stream: None });
         }
     }
 
@@ -157,6 +168,15 @@ impl Unstacker {
         self.stack
             .last()
             .is_some_and(|top| matches!(self.arena.get(*top), Expr::UnpackSlot))
+    }
+
+    /// Whether a `print >>stream` is pending and its base stream is on top, i.e. a
+    /// suppressed-newline `print >>f, a,` is being terminated by a `POP_TOP`.
+    fn print_to_at_top(&self) -> bool {
+        matches!(
+            (self.print_to.as_ref(), self.stack.last()),
+            (Some(pt), Some(top)) if *top == pt.stream
+        )
     }
 
     /// Resolves any pending short-circuit or ternary whose merge point is `offset`:
@@ -438,6 +458,7 @@ impl Unstacker {
         self.ternary = None;
         self.from_import = None;
         self.print_values.clear();
+        self.print_to = None;
     }
 
     /// Pops a value left on the stack, e.g. a branch condition or return value.
@@ -655,6 +676,12 @@ impl Unstacker {
                     // The second rotation of a three-element parallel assignment that
                     // ROT_THREE already set up; the slots are interchangeable.
                 } else if self.tos_is_inplace() {
+                    self.stack.swap(len - 1, len - 2);
+                } else if len >= 3 && self.stack[len - 2] == self.stack[len - 3] {
+                    // The `print >>f, x` dance: DUP_TOP left two copies of the stream
+                    // below the value (`[stream, stream, value]`). Swap so the
+                    // following PRINT_ITEM_TO pops the stream then the value, leaving
+                    // the base stream for the next item or the terminating flush.
                     self.stack.swap(len - 1, len - 2);
                 } else {
                     // The two values are on the stack; the rotation reverses them so
@@ -901,7 +928,29 @@ impl Unstacker {
             }
             Mnemonic::PRINT_NEWLINE => {
                 let values = std::mem::take(&mut self.print_values);
-                self.emit(Stmt::Print { values, newline: true });
+                self.emit(Stmt::Print { values, newline: true, stream: None });
+            }
+            // `print >>f, a, b`: each operand is `DUP_TOP; LOAD v; ROT_TWO;
+            // PRINT_ITEM_TO`, which pops the dup'd stream and the value and leaves the
+            // base stream on the stack; the trailing PRINT_NEWLINE_TO (or a POP_TOP for
+            // a suppressed newline) pops that base stream and flushes. Tracked
+            // separately from the stdout `print_values` so the DUP/ROT between items
+            // does not trip the trailing-comma flush.
+            Mnemonic::PRINT_ITEM_TO => {
+                let stream = self.pop()?;
+                let value = self.pop()?;
+                self.print_to
+                    .get_or_insert_with(|| PrintTo { stream, values: Vec::new() })
+                    .values
+                    .push(value);
+            }
+            Mnemonic::PRINT_NEWLINE_TO => {
+                let top = self.pop()?;
+                let (stream, values) = match self.print_to.take() {
+                    Some(pt) => (pt.stream, pt.values),
+                    None => (top, Vec::new()),
+                };
+                self.emit(Stmt::Print { values, newline: true, stream: Some(stream) });
             }
             // The namespace a class body returns; placed so the body's RETURN_VALUE
             // has a value to pop and the class recogniser can drop it.
@@ -971,6 +1020,17 @@ impl Unstacker {
                     module: pending.module,
                     names: pending.names,
                     star: false,
+                });
+            }
+            // A `print >>f, a,` with a suppressed newline ends in POP_TOP of the base
+            // stream instead of PRINT_NEWLINE_TO; flush the pending statement.
+            Mnemonic::POP_TOP if self.print_to_at_top() => {
+                self.pop()?;
+                let pt = self.print_to.take().unwrap();
+                self.emit(Stmt::Print {
+                    values: pt.values,
+                    newline: false,
+                    stream: Some(pt.stream),
                 });
             }
             Mnemonic::POP_TOP => {

@@ -275,6 +275,9 @@ pub enum Stmt {
     Print {
         values: Vec<ValueId>,
         newline: bool,
+        /// The target file of `print >>stream, ...` (PRINT_*_TO); `None` for the
+        /// plain `print` to stdout.
+        stream: Option<ValueId>,
     },
     /// `exec code`, `exec code in globals`, or `exec code in globals, locals`.
     /// `globals` is the `None` constant for the bare `exec code` form.

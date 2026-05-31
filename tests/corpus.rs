@@ -100,6 +100,7 @@ fn cases() {
         "import_dotted_as",
         "sort_with_key",
         "run_exec",
+        "print_to_file",
     ] {
         insta::assert_snapshot!(name, decompile(fixture, name));
     }
