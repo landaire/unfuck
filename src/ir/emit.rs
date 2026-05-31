@@ -618,12 +618,9 @@ impl<'a> Emitter<'a> {
             Some(Obj::Code(code)) => Arc::new(code.read().unwrap().clone()),
             _ => return None,
         };
-        if !matches!(
-            comp_code.name.to_string().as_str(),
-            "<genexpr>" | "<setcomp>" | "<dictcomp>"
-        ) {
-            return None;
-        }
+        // comprehension_parts validates the `.0` comprehension signature, so an
+        // ordinary nested-function call returns None and renders normally. The
+        // obfuscator's numeric rename of the comprehension co_name is irrelevant.
         let parts = comprehension_parts(comp_code).ok()?;
         let iter = self.expr(args[0], 0);
         let body = format!("{}{}{}", parts.head, iter, parts.tail);
@@ -827,14 +824,21 @@ fn is_class_boilerplate(code: &Code, stmt: &Stmt) -> bool {
 /// Decompiles a comprehension code object and renders it, leaving the outermost
 /// iterable (the `.0` argument) as a hole for the caller to fill from its scope.
 fn comprehension_parts(comp_code: Arc<Code>) -> Result<CompParts, super::IrError> {
-    // A generator expression lowers normally (its `yield` needs no accumulator); a
-    // set or dict comprehension needs accumulator-aware lowering.
-    let name = comp_code.name.to_string();
+    // A comprehension code object takes its iterable as the implicit `.0` argument;
+    // require that signature so an ordinary nested call is not mistaken for one. The
+    // obfuscator rewrites the `<genexpr>`/`<setcomp>`/`<dictcomp>` co_name to a
+    // numeric one, so the kind is taken from structure, not the name: a generator
+    // expression lowers normally (its `yield` needs no accumulator), while a set or
+    // dict comprehension needs accumulator-aware lowering.
+    if comp_code.varnames.first().map(|v| v.to_string()).as_deref() != Some(".0") {
+        return Err(super::IrError::Incomplete);
+    }
+    let is_generator = comp_code.flags.contains(CodeFlags::GENERATOR);
     let decoded = super::DecodedFunction::decode(comp_code)?;
-    let structured = match name.as_str() {
-        "<genexpr>" => decoded.structure()?,
-        "<setcomp>" | "<dictcomp>" => decoded.structure_comp()?,
-        _ => return Err(super::IrError::Incomplete),
+    let structured = if is_generator {
+        decoded.structure()?
+    } else {
+        decoded.structure_comp()?
     };
     let recog =
         recognize_comprehension(&structured.arena, &structured.body).ok_or(super::IrError::Incomplete)?;
