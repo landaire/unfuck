@@ -1,0 +1,9 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def nested_unpack(pairs):
+    (a, b), c = pairs
+    d, (e, f) = pairs
+    return a + b + c + d + e + f

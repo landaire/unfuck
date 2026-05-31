@@ -510,7 +510,15 @@ impl<'a> Emitter<'a> {
                 format!("{}[{}]", self.expr(*container, prec::ATOM), self.expr(*key, 0))
             }
             LValue::Tuple(items) => {
-                let rendered: Vec<String> = items.iter().map(|i| self.lvalue(i)).collect();
+                let rendered: Vec<String> = items
+                    .iter()
+                    .map(|i| match i {
+                        // A nested tuple target needs parentheses: `(a, b), c = ...`
+                        // unpacks two items, not the three of `a, b, c = ...`.
+                        LValue::Tuple(_) => format!("({})", self.lvalue(i)),
+                        _ => self.lvalue(i),
+                    })
+                    .collect();
                 rendered.join(", ")
             }
         }

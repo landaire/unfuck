@@ -346,3 +346,9 @@ def run_exec(code, g, l):
     exec code
     exec code in g
     exec code in g, l
+
+
+def nested_unpack(pairs):
+    (a, b), c = pairs
+    d, (e, f) = pairs
+    return a + b + c + d + e + f

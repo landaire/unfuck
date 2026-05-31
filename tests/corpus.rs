@@ -49,6 +49,7 @@ fn cases() {
         "loop_break",
         "loop_break_while",
         "unpack",
+        "nested_unpack",
         "make_dict",
         "both",
         "either",

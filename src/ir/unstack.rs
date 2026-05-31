@@ -18,7 +18,10 @@ use super::IrError;
 /// A tuple-assignment target under construction by `UNPACK_SEQUENCE` and the
 /// stores that follow it.
 struct PendingUnpack {
-    rhs: ValueId,
+    /// The value being unpacked. `None` for a nested target (e.g. the `(a, b)` of
+    /// `(a, b), c = ...`): it has no right-hand side of its own and its completed
+    /// tuple fills a slot of the enclosing unpack.
+    rhs: Option<ValueId>,
     arity: usize,
     targets: Vec<LValue>,
 }
@@ -54,7 +57,9 @@ pub struct Unstacker {
     arena: ExprArena,
     stack: Vec<ValueId>,
     stmts: Vec<Stmt>,
-    unpack: Option<PendingUnpack>,
+    /// Stack of in-progress unpacks (outermost first). A flat assignment has at
+    /// most one entry; nested targets like `(a, b), c = ...` push a second.
+    unpacks: Vec<PendingUnpack>,
     shortcircuit: Vec<ShortCircuit>,
     ternary: Option<PendingTernary>,
     from_import: Option<PendingFrom>,
@@ -88,7 +93,7 @@ impl Unstacker {
             arena: ExprArena::new(),
             stack: Vec::new(),
             stmts: Vec::new(),
-            unpack: None,
+            unpacks: Vec::new(),
             shortcircuit: Vec::new(),
             ternary: None,
             from_import: None,
@@ -358,15 +363,30 @@ impl Unstacker {
                 return;
             }
         }
-        if self.unpack.is_some() && matches!(self.arena.get(value), Expr::UnpackSlot) {
-            let pending = self.unpack.as_mut().unwrap();
-            pending.targets.push(target);
-            if pending.targets.len() == pending.arity {
-                let pending = self.unpack.take().unwrap();
-                self.emit(Stmt::Assign(LValue::Tuple(pending.targets), pending.rhs));
-            }
+        if !self.unpacks.is_empty() && matches!(self.arena.get(value), Expr::UnpackSlot) {
+            self.unpacks.last_mut().unwrap().targets.push(target);
+            self.finish_unpacks();
         } else {
             self.emit(Stmt::Assign(target, value));
+        }
+    }
+
+    /// Pops every unpack whose targets are all filled. A completed nested unpack
+    /// becomes a tuple target of the enclosing unpack; the outermost one (which has
+    /// a right-hand side) is emitted as the assignment.
+    fn finish_unpacks(&mut self) {
+        while let Some(top) = self.unpacks.last() {
+            if top.targets.len() != top.arity {
+                break;
+            }
+            let done = self.unpacks.pop().unwrap();
+            let tuple = LValue::Tuple(done.targets);
+            match (self.unpacks.last_mut(), done.rhs) {
+                (Some(parent), _) => parent.targets.push(tuple),
+                (None, Some(rhs)) => self.emit(Stmt::Assign(tuple, rhs)),
+                // A top-level unpack always has a right-hand side; this is unreachable.
+                (None, None) => {}
+            }
         }
     }
 
@@ -413,7 +433,7 @@ impl Unstacker {
     /// accumulated statements are retained across blocks of the same function.
     pub fn start_block(&mut self) {
         self.stack.clear();
-        self.unpack = None;
+        self.unpacks.clear();
         self.shortcircuit.clear();
         self.ternary = None;
         self.from_import = None;
@@ -644,7 +664,7 @@ impl Unstacker {
                     let second = self.pop()?;
                     let first = self.pop()?;
                     let rhs = self.arena.alloc(Expr::Tuple(vec![first, second]));
-                    self.unpack = Some(PendingUnpack { rhs, arity: 2, targets: Vec::new() });
+                    self.unpacks.push(PendingUnpack { rhs: Some(rhs), arity: 2, targets: Vec::new() });
                     self.push(Expr::UnpackSlot);
                     self.push(Expr::UnpackSlot);
                 }
@@ -667,7 +687,7 @@ impl Unstacker {
                     let second = self.pop()?;
                     let first = self.pop()?;
                     let rhs = self.arena.alloc(Expr::Tuple(vec![first, second, third]));
-                    self.unpack = Some(PendingUnpack { rhs, arity: 3, targets: Vec::new() });
+                    self.unpacks.push(PendingUnpack { rhs: Some(rhs), arity: 3, targets: Vec::new() });
                     self.push(Expr::UnpackSlot);
                     self.push(Expr::UnpackSlot);
                     self.push(Expr::UnpackSlot);
@@ -842,12 +862,16 @@ impl Unstacker {
             Mnemonic::UNPACK_SEQUENCE => {
                 let arity = arg_u16(arg)? as usize;
                 let rhs = self.pop()?;
-                // Nested unpack targets, e.g. `(a, b), c = ...`, are not handled yet.
-                if matches!(self.arena.get(rhs), Expr::UnpackSlot) {
+                // A nested target, e.g. the `(a, b)` of `(a, b), c = ...`, unpacks a
+                // slot of the enclosing unpack: the popped rhs is that slot, the
+                // nested unpack has no rhs of its own, and its completed tuple fills
+                // the parent slot. A slot with no enclosing unpack would be malformed.
+                let nested = matches!(self.arena.get(rhs), Expr::UnpackSlot);
+                if nested && self.unpacks.is_empty() {
                     return Err(IrError::Unsupported(mnemonic));
                 }
-                self.unpack = Some(PendingUnpack {
-                    rhs,
+                self.unpacks.push(PendingUnpack {
+                    rhs: if nested { None } else { Some(rhs) },
                     arity,
                     targets: Vec::new(),
                 });
