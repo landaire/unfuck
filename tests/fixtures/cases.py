@@ -256,3 +256,44 @@ def make_empty():
         pass
 
     return Empty
+
+
+def uses_lambda(items):
+    return filter(lambda x: x > 0, items)
+
+
+def lambda_with_default(n):
+    f = lambda x, y=3: x * y
+    return f(n)
+
+
+def lambda_no_args():
+    return apply(lambda: 42)
+
+
+def has_decorated():
+
+    @property
+    def inner(self):
+        return self._x
+
+    return inner
+
+
+def has_decorator_call(tag):
+
+    @register(tag)
+    def handler(event):
+        return event
+
+    return handler
+
+
+def import_dotted_as():
+    import xml.sax.handler as h
+    return h
+
+
+def sort_with_key(items):
+    items.sort(key=lambda p: p[0])
+    return items

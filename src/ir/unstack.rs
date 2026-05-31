@@ -259,9 +259,16 @@ impl Unstacker {
             self.emit(Stmt::ClassDef { target, name, bases, code });
             return;
         }
-        // `import module` binds the module object; `from module import name` binds
-        // each name pulled by IMPORT_FROM into the pending from-import.
-        if let Expr::Import(module) = self.arena.get(value) {
+        // `import module` binds the module object; `import a.b as c` drills into the
+        // submodule with `LOAD_ATTR` after `IMPORT_NAME`, leaving an attribute access
+        // that bottoms out at the imported module. Either way it is one import bound
+        // to the target. `from module import name` binds each name pulled by
+        // IMPORT_FROM into the pending from-import.
+        let mut base = value;
+        while let Expr::Attr(obj, _) = self.arena.get(base) {
+            base = *obj;
+        }
+        if let Expr::Import(module) = self.arena.get(base) {
             let module = *module;
             self.emit(Stmt::Import { module, target });
             return;

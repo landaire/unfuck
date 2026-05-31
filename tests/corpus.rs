@@ -83,6 +83,13 @@ fn cases() {
         "do_imports",
         "make_class",
         "make_empty",
+        "uses_lambda",
+        "lambda_with_default",
+        "lambda_no_args",
+        "has_decorated",
+        "has_decorator_call",
+        "import_dotted_as",
+        "sort_with_key",
     ] {
         insta::assert_snapshot!(name, decompile(fixture, name));
     }

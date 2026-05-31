@@ -51,6 +51,12 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Renders a single expression at statement precedence. Used to recover a
+    /// lambda body in the enclosing scope.
+    pub(crate) fn expr_text(&self, id: ValueId) -> String {
+        self.expr(id, 0)
+    }
+
     /// Renders a body and returns the accumulated source, prefixed with the
     /// function's docstring when it has one.
     pub fn render_body(mut self, stmts: &[Stmt]) -> String {
@@ -91,18 +97,101 @@ impl<'a> Emitter<'a> {
         self.out.push('\n');
     }
 
+    /// The nested code object referenced by a code constant, if it is one.
+    fn nested_code(&self, code: ConstId) -> Option<Arc<Code>> {
+        match self.code.consts.get(code.0 as usize) {
+            Some(Obj::Code(nested)) => Some(Arc::new(nested.read().unwrap().clone())),
+            _ => None,
+        }
+    }
+
+    /// Renders a `MakeFunction` used as an expression. A function object that
+    /// appears inline (never bound to a name by a `STORE`) can only be a lambda in
+    /// Python 2.7, so any code object whose body is a single `return expr` becomes
+    /// `lambda args: expr`. The obfuscator may have replaced the `<lambda>` co_name
+    /// with a numeric one, so the name is not relied on. A body that is not a single
+    /// return cannot be inlined and is marked unrecovered.
+    fn lambda_expr(&self, code: ConstId, defaults: &[ValueId]) -> String {
+        let Some(nested) = self.nested_code(code) else {
+            return UNRECOVERED.to_string();
+        };
+        // Defaults are evaluated in this (enclosing) scope.
+        let rendered: Vec<String> = defaults.iter().map(|d| self.expr(*d, 0)).collect();
+        match super::DecodedFunction::decode(nested).and_then(|f| f.structure()) {
+            Ok(structured) => {
+                structured.lambda_source(&rendered).unwrap_or_else(|| UNRECOVERED.to_string())
+            }
+            Err(_) => UNRECOVERED.to_string(),
+        }
+    }
+
+    /// Recognises `name = deco(... (make_function))` where the function's own name
+    /// matches the store target: the bytecode shape of a decorated `def`. Emits the
+    /// `@deco` lines and the def, and returns `true`. Returns `false` for any other
+    /// assignment, which the caller renders normally.
+    fn try_decorated_def(&mut self, target: &LValue, value: ValueId) -> bool {
+        let mut decorators = Vec::new();
+        let mut cur = value;
+        let (code, defaults) = loop {
+            match self.arena.get(cur) {
+                // Each decorator wraps the function in a single-positional call.
+                Expr::Call { func, args, kwargs, star, kwstar }
+                    if args.len() == 1
+                        && kwargs.is_empty()
+                        && star.is_none()
+                        && kwstar.is_none() =>
+                {
+                    decorators.push(*func);
+                    cur = args[0];
+                }
+                Expr::MakeFunction { code, defaults } => break (*code, defaults.clone()),
+                _ => return false,
+            }
+        };
+        if decorators.is_empty() {
+            return false;
+        }
+        let Some(nested) = self.nested_code(code) else {
+            return false;
+        };
+        let name = nested.name.to_string();
+        // A `<lambda>`/`<genexpr>` has no `def` form, and the target must name the
+        // function for `@deco def name` to be the original source. The deobfuscator
+        // renames the nested code object to `<name>_orig_<id>` while leaving the
+        // store at the clean name, so compare against the de-mangled form.
+        if name.starts_with('<') || self.lvalue(target) != strip_orig_suffix(&sanitize_identifier(&name)) {
+            return false;
+        }
+        // Decorators are listed outermost-first, which is top-to-bottom order.
+        let lines: Vec<String> =
+            decorators.iter().map(|d| format!("@{}", self.expr(*d, 0))).collect();
+        for line in lines {
+            self.line(&line);
+        }
+        self.function_def(target, code, &defaults);
+        true
+    }
+
     /// Emits a nested `def` by recursively decompiling its code constant and
     /// indenting the result under the current block.
     fn function_def(&mut self, target: &LValue, code: ConstId, defaults: &[ValueId]) {
-        let nested = match self.code.consts.get(code.0 as usize) {
-            Some(Obj::Code(nested)) => Arc::new(nested.read().unwrap().clone()),
-            _ => {
+        let nested = match self.nested_code(code) {
+            Some(nested) => nested,
+            None => {
                 self.line(UNRECOVERED);
                 return;
             }
         };
-        // A `def` names itself; a non-identifier name (`<lambda>`, `<genexpr>`) is a
-        // form this path does not render, so mark it unrecovered.
+        // A lambda bound to a name (`f = lambda ...:`) reaches here as a stored
+        // function; render it as an assignment rather than a `def`.
+        if nested.name.to_string() == "<lambda>" {
+            let lambda = self.lambda_expr(code, defaults);
+            let line = format!("{} = {}", self.lvalue(target), lambda);
+            self.line(&line);
+            return;
+        }
+        // A `def` names itself; any other non-identifier name (`<genexpr>`) is a form
+        // this path does not render, so mark it unrecovered.
         if nested.name.to_string().starts_with('<') {
             self.line(UNRECOVERED);
             return;
@@ -128,9 +217,9 @@ impl<'a> Emitter<'a> {
             self.line(UNRECOVERED);
             return;
         };
-        let body_code = match self.code.consts.get(code.0 as usize) {
-            Some(Obj::Code(nested)) => Arc::new(nested.read().unwrap().clone()),
-            _ => {
+        let body_code = match self.nested_code(code) {
+            Some(nested) => nested,
+            None => {
                 self.line(UNRECOVERED);
                 return;
             }
@@ -203,8 +292,12 @@ impl<'a> Emitter<'a> {
     fn stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Assign(target, value) => {
-                let line = format!("{} = {}", self.lvalue(target), self.expr(*value, 0));
-                self.line(&line);
+                // A decorated `def` compiles to `name = deco(<make_function>)`; emit
+                // it as `@deco` + `def` rather than an assignment when it matches.
+                if !self.try_decorated_def(target, *value) {
+                    let line = format!("{} = {}", self.lvalue(target), self.expr(*value, 0));
+                    self.line(&line);
+                }
             }
             Stmt::AugAssign(target, op, value) => {
                 let line =
@@ -468,9 +561,9 @@ impl<'a> Emitter<'a> {
             // An unconsumed unpack slot indicates a tuple-assignment shape the
             // unstacker did not fully match; mark it so the function is rejected.
             Expr::UnpackSlot | Expr::ClosureCell(_) => (UNRECOVERED.to_string(), prec::ATOM),
-            // A function used inline (a lambda or a decorated def) is not recovered
-            // here; mark it so the function is rejected rather than mis-emitted.
-            Expr::MakeFunction { .. } => (UNRECOVERED.to_string(), prec::ATOM),
+            // A `<lambda>` renders inline; a named function used as a value (an
+            // undetected decorator) cannot, and is marked unrecovered.
+            Expr::MakeFunction { code, defaults } => (self.lambda_expr(*code, defaults), prec::ATOM),
             Expr::Yield(value) => (format!("yield {}", self.expr(*value, prec::TERNARY)), prec::TERNARY),
             // Import values are consumed by the store or POP_TOP that completes the
             // statement; one reaching here is an import shape the unstacker did not
@@ -859,6 +952,19 @@ pub(crate) fn sanitize_identifier(name: &str) -> String {
         out.push('_');
     }
     out
+}
+
+/// Strips the deobfuscator's `_orig_<id>` suffix from a nested code object name.
+/// The renamer rewrites a code object's `co_name` to `<name>_orig_<co_name>` while
+/// leaving the binding at the clean `<name>`; this recovers that clean name so a
+/// decorated `def` can be matched to its store target.
+fn strip_orig_suffix(name: &str) -> &str {
+    if let Some(index) = name.rfind("_orig_") {
+        if index > 0 && name[index + "_orig_".len()..].chars().all(|c| c.is_ascii_digit()) {
+            return &name[..index];
+        }
+    }
+    name
 }
 
 /// Renders a constant object as a Python literal.

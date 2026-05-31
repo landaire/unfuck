@@ -1,0 +1,7 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+---
+def lambda_with_default(n):
+    f = lambda x, y=3: x * y
+    return f(n)

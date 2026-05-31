@@ -130,6 +130,14 @@ impl StructuredFunction {
     /// identifiers sanitized so deobfuscator-mangled names still parse.
     fn signature(&self, defaults: &[String]) -> String {
         let ident = |name: &str| emit::sanitize_identifier(name);
+        format!("def {}({}):", ident(&self.code.name.to_string()), self.params(defaults).join(", "))
+    }
+
+    /// Builds the parameter list (positional with defaults, then `*args`/`**kwargs`)
+    /// from the code object's metadata. Shared by [`Self::signature`] and lambda
+    /// rendering. `defaults` are already rendered in the enclosing scope.
+    fn params(&self, defaults: &[String]) -> Vec<String> {
+        let ident = |name: &str| emit::sanitize_identifier(name);
         let argcount = self.code.argcount as usize;
         let mut params: Vec<String> = self
             .code
@@ -162,7 +170,24 @@ impl StructuredFunction {
                 .map_or_else(|| "kwargs".to_string(), |v| ident(&v.to_string()));
             params.push(format!("**{}", name));
         }
-        format!("def {}({}):", ident(&self.code.name.to_string()), params.join(", "))
+        params
+    }
+
+    /// Renders this function as a `lambda args: expr` when its body is a single
+    /// `return expr` (the only shape a Python lambda compiles to). `defaults` are
+    /// rendered in the enclosing scope. Returns `None` for any other body, so the
+    /// caller can fall back to rejecting the construct.
+    fn lambda_source(&self, defaults: &[String]) -> Option<String> {
+        let [Stmt::Return(Some(value))] = self.body.as_slice() else {
+            return None;
+        };
+        let body = emit::Emitter::new(&self.code, &self.arena).expr_text(*value);
+        let params = self.params(defaults).join(", ");
+        Some(if params.is_empty() {
+            format!("lambda: {}", body)
+        } else {
+            format!("lambda {}: {}", params, body)
+        })
     }
 }
 

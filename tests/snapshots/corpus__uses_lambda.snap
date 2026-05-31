@@ -1,0 +1,6 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+---
+def uses_lambda(items):
+    return filter(lambda x: x > 0, items)

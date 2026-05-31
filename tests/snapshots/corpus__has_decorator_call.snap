@@ -1,0 +1,9 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+---
+def has_decorator_call(tag):
+    @register(tag)
+    def handler(event):
+        return event
+    return handler

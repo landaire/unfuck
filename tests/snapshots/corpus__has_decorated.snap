@@ -1,0 +1,9 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+---
+def has_decorated():
+    @property
+    def inner(self):
+        return self._x
+    return inner

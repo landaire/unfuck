@@ -1,0 +1,7 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+---
+def sort_with_key(items):
+    items.sort(key=lambda p: p[0])
+    return items
