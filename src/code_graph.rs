@@ -668,11 +668,21 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                     }
                 }
 
-                // We've found that all nodes agree on this value. Let's add the
-                // related instructions to our list of instructions to remove
-                for (node, idx) in path_instructions {
-                    self.graph[node].flags |= BasicBlockFlags::USED_IN_EXECUTION;
-                    insns_to_remove.entry(node).or_default().insert(idx);
+                // We've found that all nodes agree on this value. The access tracker
+                // accumulates every instruction that ever touched the operands, so it
+                // is polluted with live instructions from other blocks (a call whose
+                // result feeds an unrelated variable, comparisons on other paths).
+                // Removing those corrupts the function. The instructions that actually
+                // compute this jump's condition are the local slice in the jump's own
+                // block; only those are safe to remove. A tainted instruction in
+                // another block is left in place (it may be dead, but the IR's own
+                // simplification drops genuinely dead code without risking corruption).
+                let condition_node = *node;
+                for (instr_node, idx) in path_instructions {
+                    self.graph[instr_node].flags |= BasicBlockFlags::USED_IN_EXECUTION;
+                    if instr_node == condition_node {
+                        insns_to_remove.entry(instr_node).or_default().insert(idx);
+                    }
                 }
 
                 node_branch_direction.insert(*node, branch_taken);
