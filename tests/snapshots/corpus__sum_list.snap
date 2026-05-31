@@ -5,6 +5,8 @@ snapshot_kind: text
 ---
 def sum_list(items):
     total = 0
+
     for x in items:
         total = total + x
+
     return total

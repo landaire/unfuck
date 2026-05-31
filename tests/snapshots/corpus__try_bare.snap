@@ -8,4 +8,5 @@ def try_bare(data):
         load(data)
     except:
         log('failed')
+
     return None

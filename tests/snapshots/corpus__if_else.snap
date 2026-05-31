@@ -8,4 +8,5 @@ def if_else(x):
         y = 1
     else:
         y = 2
+
     return y

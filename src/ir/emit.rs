@@ -67,9 +67,7 @@ impl<'a> Emitter<'a> {
         if stmts.is_empty() && docstring.is_none() {
             self.line("pass");
         }
-        for stmt in stmts {
-            self.stmt(stmt);
-        }
+        self.emit_stmts(stmts);
         self.out
     }
 
@@ -90,10 +88,14 @@ impl<'a> Emitter<'a> {
     }
 
     fn line(&mut self, text: &str) {
-        for _ in 0..self.indent {
-            self.out.push_str("    ");
+        // A blank line carries no indentation, so emit it as a truly empty line
+        // rather than one padded with trailing whitespace.
+        if !text.is_empty() {
+            for _ in 0..self.indent {
+                self.out.push_str("    ");
+            }
+            self.out.push_str(text);
         }
-        self.out.push_str(text);
         self.out.push('\n');
     }
 
@@ -283,10 +285,40 @@ impl<'a> Emitter<'a> {
         if stmts.is_empty() {
             self.line("pass");
         }
-        for stmt in stmts {
-            self.stmt(stmt);
-        }
+        self.emit_stmts(stmts);
         self.indent -= 1;
+    }
+
+    /// A statement that spans an indented block of its own. These get a blank line
+    /// separating them from neighbouring statements at the same level so the output
+    /// reads with the visual spacing of hand-written Python.
+    fn is_compound(stmt: &Stmt) -> bool {
+        matches!(
+            stmt,
+            Stmt::If { .. }
+                | Stmt::While { .. }
+                | Stmt::For { .. }
+                | Stmt::Try { .. }
+                | Stmt::FunctionDef { .. }
+                | Stmt::ClassDef { .. }
+        )
+    }
+
+    /// Emits a sequence of statements, inserting a blank line between two of them
+    /// whenever either is a compound block (an `if`/`for`/`def`/etc.). This keeps a
+    /// run of simple statements tight while giving functions and control-flow blocks
+    /// breathing room above and below.
+    fn emit_stmts(&mut self, stmts: &[Stmt]) {
+        let mut prev: Option<&Stmt> = None;
+        for stmt in stmts {
+            if let Some(prev) = prev {
+                if Self::is_compound(prev) || Self::is_compound(stmt) {
+                    self.line("");
+                }
+            }
+            self.stmt(stmt);
+            prev = Some(stmt);
+        }
     }
 
     fn stmt(&mut self, stmt: &Stmt) {

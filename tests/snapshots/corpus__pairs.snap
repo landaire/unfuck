@@ -5,6 +5,8 @@ snapshot_kind: text
 ---
 def pairs(items):
     total = 0
+
     for k, v in items:
         total = total + v
+
     return total

@@ -243,7 +243,7 @@ fn simple_if() {
         .op(Standard::RETURN_VALUE)
         .finish();
 
-    assert_eq!(decompile(code), "def f(x):\n    if x:\n        y = 1\n    return y\n");
+    assert_eq!(decompile(code), "def f(x):\n    if x:\n        y = 1\n\n    return y\n");
 }
 
 #[test]
@@ -265,7 +265,7 @@ fn if_else() {
 
     assert_eq!(
         decompile(code),
-        "def f(x):\n    if x:\n        y = 1\n    else:\n        y = 2\n    return y\n"
+        "def f(x):\n    if x:\n        y = 1\n    else:\n        y = 2\n\n    return y\n"
     );
 }
 
@@ -287,7 +287,7 @@ fn while_loop() {
         .op(Standard::RETURN_VALUE)
         .finish();
 
-    assert_eq!(decompile(code), "def f(n):\n    while n:\n        n = n\n    return n\n");
+    assert_eq!(decompile(code), "def f(n):\n    while n:\n        n = n\n\n    return n\n");
 }
 
 #[test]
@@ -509,7 +509,7 @@ fn bare_except() {
 
     assert_eq!(
         decompile(code),
-        "def f():\n    try:\n        g()\n    except:\n        h()\n    return None\n"
+        "def f():\n    try:\n        g()\n    except:\n        h()\n\n    return None\n"
     );
 }
 
@@ -545,7 +545,7 @@ fn typed_except_as_name() {
 
     assert_eq!(
         decompile(code),
-        "def f():\n    try:\n        x = g()\n    except Exception as e:\n        log(e)\n    return None\n"
+        "def f():\n    try:\n        x = g()\n    except Exception as e:\n        log(e)\n\n    return None\n"
     );
 }
 
@@ -594,7 +594,7 @@ fn multi_clause_except() {
     assert_eq!(
         decompile(code),
         "def f():\n    try:\n        x = g()\n    except A:\n        h1()\n    \
-         except B as e:\n        h2(e)\n    return None\n"
+         except B as e:\n        h2(e)\n\n    return None\n"
     );
 }
 
@@ -626,7 +626,7 @@ fn except_with_branch_in_handler() {
 
     assert_eq!(
         decompile(code),
-        "def f(x):\n    try:\n        g()\n    except:\n        if x:\n            h()\n    return None\n"
+        "def f(x):\n    try:\n        g()\n    except:\n        if x:\n            h()\n\n    return None\n"
     );
 }
 

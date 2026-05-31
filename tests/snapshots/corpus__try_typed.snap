@@ -5,8 +5,10 @@ snapshot_kind: text
 ---
 def try_typed(data):
     result = None
+
     try:
         result = load(data)
     except Exception as e:
         log('failed', str(e))
+
     return result

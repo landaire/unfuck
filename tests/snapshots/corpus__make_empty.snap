@@ -6,4 +6,5 @@ snapshot_kind: text
 def make_empty():
     class Empty:
         pass
+
     return Empty

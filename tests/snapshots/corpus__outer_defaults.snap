@@ -6,4 +6,5 @@ snapshot_kind: text
 def outer_defaults(x):
     def inner(y, z=10, w='hi'):
         return y + z
+
     return inner(x)

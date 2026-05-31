@@ -5,8 +5,10 @@ snapshot_kind: text
 ---
 def loop_break(items):
     found = None
+
     for x in items:
         if x:
             found = x
             break
+
     return found

@@ -6,6 +6,8 @@ snapshot_kind: text
 def loop_break_while(n):
     while True:
         n = n - 1
+
         if n < 0:
             break
+
     return n
