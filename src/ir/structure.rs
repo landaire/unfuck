@@ -136,7 +136,7 @@ impl Structurer<'_> {
     /// Emits the region from `start` up to (but excluding) `stop`.
     fn region(&mut self, start: BlockId, stop: Point, depth: usize) -> Result<Vec<Stmt>, IrError> {
         if depth > MAX_DEPTH {
-            return Err(IrError::Unstructurable);
+                return Err(IrError::Unstructurable);
         }
 
         let mut out = Vec::new();
@@ -371,8 +371,31 @@ impl Graph {
             }
         }
 
+        // Post-dominance is computed over normal control flow only, so a try's merge
+        // point post-dominates the try even when a handler returns or raises (an
+        // exceptional edge would otherwise route to the exit and defeat the merge).
+        // The node layout matches `graph` (blocks 0..n, then exit), so post-dominator
+        // indices map back to the same blocks.
+        let mut normal = DiGraph::<(), ()>::new();
+        let normal_nodes: Vec<NodeIndex> =
+            (0..cfg.blocks.len()).map(|_| normal.add_node(())).collect();
+        let normal_exit = normal.add_node(());
+        for (idx, block) in cfg.blocks.iter().enumerate() {
+            let from = normal_nodes[idx];
+            let successors = block.normal_successors();
+            for target in &successors {
+                match cfg.by_offset.get(target) {
+                    Some(to) => normal.add_edge(from, normal_nodes[to.0 as usize], ()),
+                    None => normal.add_edge(from, normal_exit, ()),
+                };
+            }
+            if successors.is_empty() {
+                normal.add_edge(from, normal_exit, ());
+            }
+        }
+
         let forward = simple_fast(&graph, block_nodes[cfg.entry.0 as usize]);
-        let post = simple_fast(Reversed(&graph), exit);
+        let post = simple_fast(Reversed(&normal), normal_exit);
         Graph {
             graph,
             exit,

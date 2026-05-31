@@ -94,6 +94,17 @@ impl Block {
             Terminator::Return(_) | Terminator::Raise(_) => Vec::new(),
         }
     }
+
+    /// Successors along normal (non-exceptional) control flow. A `Try` reaches its
+    /// protected body; its handlers run only on an exception. Post-dominance over
+    /// these edges reflects where ordinary flow converges -- the try's merge point --
+    /// even when a handler returns or raises and so never reaches that merge.
+    pub fn normal_successors(&self) -> Vec<Offset> {
+        match &self.terminator {
+            Terminator::Try { body, .. } => vec![*body],
+            _ => self.successors(),
+        }
+    }
 }
 
 /// A function lowered to a control-flow graph of statement blocks.
