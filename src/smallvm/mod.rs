@@ -146,6 +146,13 @@ where
     /// of merges.
     pub fn extend(&self, other: &InstructionTracker<T>) {
         const DEDUP_HIGH_WATER: usize = 1 << 16;
+        // Extending a tracker with itself would lock the same (non-reentrant)
+        // mutex twice and deadlock. It is also a no-op: appending a set's own
+        // entries adds nothing the dedup would not remove. Shared trackers
+        // (cloned Arc) make this reachable, so guard against it explicitly.
+        if Arc::ptr_eq(&self.0, &other.0) {
+            return;
+        }
         let mut data = self.0.lock().unwrap();
         data.extend_from_slice(other.0.lock().unwrap().as_slice());
         if data.len() > DEDUP_HIGH_WATER {
