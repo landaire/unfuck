@@ -163,6 +163,22 @@ impl Unstacker {
         self.shortcircuit.is_empty() && self.ternary.is_none()
     }
 
+    /// Folds every pending short-circuit into the value on top of the stack, used at
+    /// a `RETURN` whose short-circuits never reached their merge. `return X and Y`
+    /// where an arm is itself a chained comparison returns its value directly from
+    /// the arm rather than at a single merge, so the merge blocks are dead
+    /// (JUMP_IF_*_OR_POP creates no CFG edge) and the operators are left pending. The
+    /// top of stack is the short-circuit's final operand, so combining inward yields
+    /// the returned expression. The most recently opened operator binds tightest.
+    pub fn force_resolve_shortcircuits(&mut self) -> Result<(), IrError> {
+        while let Some(sc) = self.shortcircuit.pop() {
+            let rhs = self.pop()?;
+            let combined = self.combine_bool(sc.kind, sc.lhs, rhs);
+            self.stack.push(combined);
+        }
+        Ok(())
+    }
+
     /// Combines two short-circuit operands, flattening a right side of the same
     /// kind so `a and b and c` is one chain rather than nested pairs.
     fn combine_bool(&mut self, kind: BoolKind, lhs: ValueId, rhs: ValueId) -> ValueId {

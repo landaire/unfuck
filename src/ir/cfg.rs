@@ -398,7 +398,16 @@ fn lower_block(
     // unsupported.
     unstacker.resolve_pending(last.offset)?;
     if !unstacker.pending_resolved() {
-        return Err(IrError::Unsupported(Mnemonic::JUMP_IF_FALSE_OR_POP));
+        // A returned short-circuit expression (`return X and Y`) whose arm is itself
+        // a chained comparison returns from the arm directly, so the operators never
+        // reach a merge and their false exits are dead blocks. Fold the pending
+        // operators into the value being returned; the dead exits are pruned.
+        if matches!(kind, TerminatorKind::Return) {
+            unstacker.force_resolve_shortcircuits()?;
+        }
+        if !unstacker.pending_resolved() {
+            return Err(IrError::Unsupported(Mnemonic::JUMP_IF_FALSE_OR_POP));
+        }
     }
 
     let terminator = match kind {
