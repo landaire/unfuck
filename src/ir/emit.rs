@@ -424,8 +424,17 @@ impl<'a> Emitter<'a> {
                     self.line(&line);
                     self.block(then);
                     if !els.is_empty() {
-                        self.line("else:");
-                        self.block(els);
+                        if then.last().is_some_and(is_terminal_stmt) {
+                            // The `then` branch always leaves the block (it ends in a
+                            // return/raise/break/continue), so the `else` only adds a
+                            // level of nesting. Emit its body at this level instead --
+                            // the same `if guard: return ...` flattening a human writes.
+                            self.line("");
+                            self.emit_stmts(els);
+                        } else {
+                            self.line("else:");
+                            self.block(els);
+                        }
                     }
                 }
             }
@@ -836,6 +845,23 @@ fn class_body_source(body_code: Arc<Code>) -> Result<String, super::IrError> {
     }
     stmts.retain(|stmt| !is_class_boilerplate(&structured.code, stmt));
     Ok(Emitter::new(&structured.code, &structured.arena).render_body(&stmts))
+}
+
+/// Whether a statement unconditionally leaves its enclosing block, so a following
+/// `else` is redundant and can be flattened away. An `if`/`else` qualifies when both
+/// arms are present and each always leaves, so a chain of fully-returning branches
+/// collapses level by level.
+fn is_terminal_stmt(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Return(_) | Stmt::Raise(_) | Stmt::Break | Stmt::Continue => true,
+        Stmt::If { then, els, .. } => {
+            !then.is_empty()
+                && !els.is_empty()
+                && then.last().is_some_and(is_terminal_stmt)
+                && els.last().is_some_and(is_terminal_stmt)
+        }
+        _ => false,
+    }
 }
 
 /// Whether a class-body statement is compiler-inserted boilerplate (`__module__`
