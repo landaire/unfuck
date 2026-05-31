@@ -93,7 +93,7 @@ impl<'a> Emitter<'a> {
 
     /// Emits a nested `def` by recursively decompiling its code constant and
     /// indenting the result under the current block.
-    fn function_def(&mut self, target: &LValue, code: ConstId) {
+    fn function_def(&mut self, target: &LValue, code: ConstId, defaults: &[ValueId]) {
         let nested = match self.code.consts.get(code.0 as usize) {
             Some(Obj::Code(nested)) => Arc::new(nested.read().unwrap().clone()),
             _ => {
@@ -107,7 +107,10 @@ impl<'a> Emitter<'a> {
             self.line(UNRECOVERED);
             return;
         }
-        match super::decompile_function(nested) {
+        // Default values are evaluated in this (enclosing) scope, so render them
+        // here and inject them into the nested signature.
+        let defaults: Vec<String> = defaults.iter().map(|d| self.expr(*d, 0)).collect();
+        match super::decompile_function_with_defaults(nested, &defaults) {
             Ok(source) => {
                 for text in source.trim_end_matches('\n').split('\n') {
                     self.line(text);
@@ -235,7 +238,9 @@ impl<'a> Emitter<'a> {
                 }
                 self.line(line.trim_end());
             }
-            Stmt::FunctionDef { target, code } => self.function_def(target, *code),
+            Stmt::FunctionDef { target, code, defaults } => {
+                self.function_def(target, *code, defaults)
+            }
             Stmt::ClassDef { name, bases, code, .. } => self.class_def(*name, *bases, *code),
             Stmt::Raise(args) => {
                 let rendered: Vec<String> = args.iter().map(|a| self.expr(*a, 0)).collect();
@@ -446,7 +451,7 @@ impl<'a> Emitter<'a> {
             Expr::UnpackSlot => (UNRECOVERED.to_string(), prec::ATOM),
             // A function used inline (a lambda or a decorated def) is not recovered
             // here; mark it so the function is rejected rather than mis-emitted.
-            Expr::MakeFunction(_) => (UNRECOVERED.to_string(), prec::ATOM),
+            Expr::MakeFunction { .. } => (UNRECOVERED.to_string(), prec::ATOM),
             Expr::Yield(value) => (format!("yield {}", self.expr(*value, prec::TERNARY)), prec::TERNARY),
             // Import values are consumed by the store or POP_TOP that completes the
             // statement; one reaching here is an import shape the unstacker did not
@@ -487,7 +492,10 @@ impl<'a> Emitter<'a> {
         if args.len() != 1 || !kwargs.is_empty() || star.is_some() || kwstar.is_some() {
             return None;
         }
-        let Expr::MakeFunction(const_id) = self.arena.get(func) else {
+        let Expr::MakeFunction { code: const_id, defaults } = self.arena.get(func) else {
+            return None;
+        };
+        if !defaults.is_empty() {
             return None;
         };
         let comp_code = match self.code.consts.get(const_id.0 as usize) {

@@ -115,9 +115,11 @@ impl DecodedFunction {
 }
 
 impl StructuredFunction {
-    /// Renders the function as a Python `def`, including its signature.
-    pub fn to_source(&self) -> String {
-        let mut source = self.signature();
+    /// Renders the function as a Python `def`, including its signature. `defaults`
+    /// are the rendered default values for the trailing positional parameters,
+    /// supplied by the enclosing scope's `MAKE_FUNCTION`.
+    pub fn to_source(&self, defaults: &[String]) -> String {
+        let mut source = self.signature(defaults);
         source.push('\n');
         let body = emit::Emitter::new(&self.code, &self.arena).render_body(&self.body);
         source.push_str(&body);
@@ -126,7 +128,7 @@ impl StructuredFunction {
 
     /// Builds the `def name(args):` line from the code object's metadata, with
     /// identifiers sanitized so deobfuscator-mangled names still parse.
-    fn signature(&self) -> String {
+    fn signature(&self, defaults: &[String]) -> String {
         let ident = |name: &str| emit::sanitize_identifier(name);
         let argcount = self.code.argcount as usize;
         let mut params: Vec<String> = self
@@ -136,6 +138,13 @@ impl StructuredFunction {
             .take(argcount)
             .map(|p| ident(&p.to_string()))
             .collect();
+        // The defaults apply to the last `defaults.len()` positional parameters.
+        let first_default = argcount.saturating_sub(defaults.len());
+        for (offset, default) in defaults.iter().enumerate() {
+            if let Some(param) = params.get_mut(first_default + offset) {
+                *param = format!("{}={}", param, default);
+            }
+        }
         if self.code.flags.contains(CodeFlags::VARARGS) {
             let name = self
                 .code
@@ -161,7 +170,16 @@ impl StructuredFunction {
 /// [`IrError::Incomplete`] if any construct could not be fully recovered, so the
 /// caller never receives invalid or partial source.
 pub fn decompile_function(code: Arc<Code>) -> Result<String, IrError> {
-    let source = DecodedFunction::decode(code)?.structure()?.to_source();
+    decompile_function_with_defaults(code, &[])
+}
+
+/// Decompiles a code object whose enclosing scope supplied default argument
+/// values (rendered in that scope), used for nested `def`s with defaults.
+pub fn decompile_function_with_defaults(
+    code: Arc<Code>,
+    defaults: &[String],
+) -> Result<String, IrError> {
+    let source = DecodedFunction::decode(code)?.structure()?.to_source(defaults);
     if source.contains(emit::UNRECOVERED) {
         return Err(IrError::Incomplete);
     }

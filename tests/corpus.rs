@@ -54,6 +54,7 @@ fn cases() {
         "either",
         "guard_chain",
         "outer",
+        "outer_defaults",
         "pairs",
         "choose",
         "choose_not",

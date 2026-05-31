@@ -207,8 +207,12 @@ pub enum Expr {
     /// that follow to build a tuple-assignment target. Never reaches emission.
     UnpackSlot,
     /// A function object built from a nested code constant by `MAKE_FUNCTION`.
-    /// Becomes a `def` when stored to a name.
-    MakeFunction(ConstId),
+    /// Becomes a `def` when stored to a name. `defaults` are the default values for
+    /// the trailing positional parameters.
+    MakeFunction {
+        code: ConstId,
+        defaults: Vec<ValueId>,
+    },
     /// `yield value`. `YIELD_VALUE` pushes the value the generator receives, which
     /// a statement-level yield then pops.
     Yield(ValueId),
@@ -278,6 +282,8 @@ pub enum Stmt {
     FunctionDef {
         target: LValue,
         code: ConstId,
+        /// Default values for the trailing positional parameters.
+        defaults: Vec<ValueId>,
     },
     /// A class definition: `class name(bases): ...`, with the body decompiled from
     /// the code constant `code`. `name` is the class-name constant and `bases` the

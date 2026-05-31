@@ -90,6 +90,14 @@ def outer(x):
     return inner(x)
 
 
+def outer_defaults(x):
+
+    def inner(y, z=10, w='hi'):
+        return y + z
+
+    return inner(x)
+
+
 def pairs(items):
     total = 0
     for k, v in items:

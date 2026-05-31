@@ -213,9 +213,9 @@ impl Unstacker {
     /// the stores it feeds collect into a single tuple assignment instead of
     /// emitting one statement each.
     fn complete_store(&mut self, target: LValue, value: ValueId) {
-        if let Expr::MakeFunction(code) = self.arena.get(value) {
-            let code = *code;
-            self.emit(Stmt::FunctionDef { target, code });
+        if let Expr::MakeFunction { code, defaults } = self.arena.get(value) {
+            let (code, defaults) = (*code, defaults.clone());
+            self.emit(Stmt::FunctionDef { target, code, defaults });
             return;
         }
         if let Expr::BuildClass { name, bases, code } = self.arena.get(value) {
@@ -586,16 +586,14 @@ impl Unstacker {
                 self.emit(Stmt::Delete(LValue::Attr(obj, NameId(arg_u16(arg)?))));
             }
             Mnemonic::MAKE_FUNCTION => {
-                // Default arguments are not recovered into the signature yet, so
-                // only the no-default form is supported.
-                if arg_u16(arg)? != 0 {
-                    return Err(IrError::Unsupported(mnemonic));
-                }
+                // The operand is the number of default values, pushed (in order)
+                // before the code object for the trailing parameters.
                 let code = self.pop()?;
+                let defaults = self.pop_n(arg_u16(arg)? as usize)?;
                 match self.arena.get(code) {
                     Expr::Const(const_id) => {
-                        let const_id = *const_id;
-                        self.push(Expr::MakeFunction(const_id));
+                        let code = *const_id;
+                        self.push(Expr::MakeFunction { code, defaults });
                     }
                     _ => return Err(IrError::Unsupported(mnemonic)),
                 }
@@ -681,7 +679,7 @@ impl Unstacker {
                             && kwstar.is_none() =>
                     {
                         match self.arena.get(*func) {
-                            Expr::MakeFunction(code) => *code,
+                            Expr::MakeFunction { code, defaults } if defaults.is_empty() => *code,
                             _ => return Err(IrError::Unsupported(mnemonic)),
                         }
                     }
