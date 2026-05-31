@@ -773,19 +773,32 @@ fn recover_try(
     let handler_off = branch_target(setup)?;
     let body_entry = instrs.get(setup_idx + 1).ok_or(IrError::Unstructurable)?.offset;
     let handler_idx = *index.get(&handler_off).ok_or(IrError::BadOperand)?;
-    // The protected body exits through `POP_BLOCK; JUMP_FORWARD end` immediately
-    // before the handler.
-    if handler_idx < 2 {
-        return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT));
+    // The protected body exits through `POP_BLOCK; JUMP end`. The relinearizer does
+    // not always place this immediately before the handler -- post-try code, or a
+    // folded ternary's else arm, can sit between the body exit and the handler -- so
+    // locate the body's own `POP_BLOCK` by scanning from the body with block-nesting
+    // depth rather than assuming adjacency. The first `POP_BLOCK` reached at depth 0
+    // pops this try's block.
+    let mut depth = 0i32;
+    let mut pop_idx = None;
+    for i in (setup_idx + 1)..handler_idx {
+        let mnemonic = instrs[i].instr.opcode.mnemonic();
+        if format!("{:?}", mnemonic).starts_with("SETUP_") {
+            depth += 1;
+        } else if mnemonic == Mnemonic::POP_BLOCK {
+            if depth == 0 {
+                pop_idx = Some(i);
+                break;
+            }
+            depth -= 1;
+        }
     }
-    let jump = &instrs[handler_idx - 1];
+    let pop_idx = pop_idx.ok_or(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT))?;
+    let jump = instrs.get(pop_idx + 1).ok_or(IrError::Unstructurable)?;
     let end = match jump.instr.opcode.mnemonic() {
         Mnemonic::JUMP_FORWARD | Mnemonic::JUMP_ABSOLUTE => branch_target(jump)?,
         _ => return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT)),
     };
-    if mnemonic_at(instrs, handler_idx - 2)? != Mnemonic::POP_BLOCK {
-        return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT));
-    }
 
     let mut clauses = Vec::new();
     let mut clause_idx = handler_idx;
@@ -857,8 +870,12 @@ fn recover_try(
     // unmatched exception. A bare `except:` leaves it unreachable rather than
     // removing it. END_FINALLY has no source form, so drop every one in the
     // handler span.
+    // Drop every END_FINALLY in the handler span. The relinearizer can place the
+    // merge before the handler, so clamp the scan to a forward span (when the merge
+    // is earlier, the handler's END_FINALLY, if any, lies past it and the bare-except
+    // forms reaching here have none).
     let end_idx = *index.get(&end).ok_or(IrError::BadOperand)?;
-    for item in &instrs[handler_idx..end_idx] {
+    for item in &instrs[handler_idx..end_idx.max(handler_idx)] {
         if item.instr.opcode.mnemonic() == Mnemonic::END_FINALLY {
             excluded.insert(item.offset);
         }
