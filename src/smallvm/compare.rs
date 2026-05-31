@@ -16,7 +16,7 @@ pub(crate) fn execute_compare_op<O, T>(
 ) -> Result<(), Error<O>>
 where
     O: Opcode<Mnemonic = py27::Mnemonic>,
-    T: Clone + Copy,
+    T: Clone + Copy + Ord,
 {
     let (right, right_modifying_instrs) = stack_pop(stack)?;
     let (left, left_modifying_instrs) = stack_pop(stack)?;

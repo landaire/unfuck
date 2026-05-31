@@ -19,7 +19,7 @@ pub(crate) fn execute_collection_op<O, T>(
 ) -> Result<(), Error<O>>
 where
     O: Opcode<Mnemonic = py27::Mnemonic>,
-    T: Clone + Copy,
+    T: Clone + Copy + Ord,
 {
     match instr.opcode.mnemonic() {
         Mnemonic::STORE_SUBSCR => {

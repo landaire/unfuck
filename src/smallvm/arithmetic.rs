@@ -89,7 +89,7 @@ pub(crate) fn apply_binary_op<O, T>(
 ) -> Result<(), Error<O>>
 where
     O: Opcode<Mnemonic = py27::Mnemonic>,
-    T: Clone + Copy,
+    T: Clone + Copy + Ord,
 {
     let (tos, tos_accesses) = stack_pop(stack)?;
     let (tos1, tos1_accesses) = stack_pop(stack)?;
@@ -102,22 +102,34 @@ where
         (Some(Obj::Long(left)), Some(Obj::Long(right))) => {
             // Special case: Power with negative exponent returns Float
             if let BinaryOp::Power = op {
+                // Opaque junk computes `base ** huge`, whose result has
+                // exp * bits(base) bits and would allocate gigabytes before we
+                // could use it. Bound the result and treat an oversized (or
+                // out-of-u32-range) exponent as unknown -- real code never
+                // raises to a billion-bit power, so these are only dead
+                // predicates.
+                const MAX_RESULT_BITS: u64 = 1 << 23; // ~1 MB
                 let right_guard = right.read().unwrap();
+                let exponent = right_guard.magnitude().to_u32();
+                let base_bits = left.read().unwrap().bits().max(1);
+                let oversized = match exponent {
+                    Some(exp) => (exp as u64).saturating_mul(base_bits) > MAX_RESULT_BITS,
+                    None => true,
+                };
+                if oversized {
+                    stack.push((None, tos_accesses));
+                    return Ok(());
+                }
+                let exp = exponent.unwrap();
                 if let num_bigint::Sign::Minus = right_guard.sign() {
-                    let positive_exponent = (-&*right_guard).to_u32().unwrap();
-                    let value = left.read().unwrap().pow(positive_exponent);
+                    let value = left.read().unwrap().pow(exp);
                     stack.push((
                         Some(Obj::Float(1.0 / value.to_f64().unwrap())),
                         tos_accesses,
                     ));
                     return Ok(());
                 } else {
-                    let value =
-                        left.read()
-                            .unwrap()
-                            .pow(right_guard.to_u32().unwrap_or_else(|| {
-                                panic!("could not convert {:?} to u32", right_guard)
-                            }));
+                    let value = left.read().unwrap().pow(exp);
                     stack.push((Some(Obj::Long(Arc::new(RwLock::new(value)))), tos_accesses));
                     return Ok(());
                 }
@@ -129,6 +141,23 @@ where
                     / right.read().unwrap().to_f64().unwrap();
                 stack.push((Some(Obj::Float(value)), tos_accesses));
                 return Ok(());
+            }
+
+            // Multiply grows without bound -- a chain of `x * x` doubles the bit
+            // count each step -- so junk opaque computation can balloon to
+            // gigabytes. Cap the result (add/sub/bitwise stay within the operand
+            // sizes, so only multiply needs guarding here).
+            if let BinaryOp::Multiply = op {
+                const MAX_RESULT_BITS: u64 = 1 << 23; // ~1 MB
+                let bits = left
+                    .read()
+                    .unwrap()
+                    .bits()
+                    .saturating_add(right.read().unwrap().bits());
+                if bits > MAX_RESULT_BITS {
+                    stack.push((None, tos_accesses));
+                    return Ok(());
+                }
             }
 
             let result = op.apply_long_long(&left.read().unwrap(), &right.read().unwrap());
@@ -282,7 +311,7 @@ pub(crate) fn apply_unary_op<O, T>(
 ) -> Result<(), Error<O>>
 where
     O: Opcode<Mnemonic = py27::Mnemonic>,
-    T: Clone + Copy,
+    T: Clone + Copy + Ord,
 {
     let (tos, tos_accesses) = stack_pop(stack)?;
     tos_accesses.push(access_tracking);
@@ -327,7 +356,7 @@ pub(crate) fn execute_shift<O, T>(
 ) -> Result<(), Error<O>>
 where
     O: Opcode<Mnemonic = py27::Mnemonic>,
-    T: Clone + Copy,
+    T: Clone + Copy + Ord,
 {
     let is_left = matches!(
         instr.opcode.mnemonic(),
@@ -354,13 +383,39 @@ where
     tos_accesses.push(access_tracking);
 
     if tos_value.is_some() && tos1_value.is_some() {
-        let shift_amount = tos_value.unwrap().read().unwrap().to_usize().unwrap();
-        let value = if is_left {
-            &*tos1_value.unwrap().read().unwrap() << shift_amount
-        } else {
-            &*tos1_value.unwrap().read().unwrap() >> shift_amount
+        // The obfuscator feeds huge shift amounts as junk opaque computation;
+        // `x << huge` materializes a multi-gigabyte integer and aborts the
+        // process. Bound a left shift's result and treat an oversized (or
+        // out-of-range) shift as an unknown value -- real code never shifts by
+        // millions of bits, so these only ever appear in dead predicates. A
+        // right shift only shrinks the value, so it is always safe.
+        const MAX_SHIFT_BITS: u64 = 1 << 23; // ~1 MB result
+        let shift_amount = tos_value.unwrap().read().unwrap().to_usize();
+        let value = match shift_amount {
+            Some(shift_amount) => {
+                let operand = tos1_value.unwrap();
+                let operand = operand.read().unwrap();
+                if is_left {
+                    // A left shift grows the value by `shift_amount` bits; bound
+                    // the total so an already-large operand cannot balloon.
+                    if operand.bits().saturating_add(shift_amount as u64) <= MAX_SHIFT_BITS {
+                        Some(&*operand << shift_amount)
+                    } else {
+                        None
+                    }
+                } else {
+                    // A right shift only shrinks the value, so it is always safe.
+                    Some(&*operand >> shift_amount)
+                }
+            }
+            None => None,
         };
-        stack.push((Some(Obj::Long(Arc::new(RwLock::new(value)))), tos_accesses));
+        match value {
+            Some(value) => {
+                stack.push((Some(Obj::Long(Arc::new(RwLock::new(value)))), tos_accesses))
+            }
+            None => stack.push((None, tos_accesses)),
+        }
     } else {
         stack.push((None, tos_accesses));
     }

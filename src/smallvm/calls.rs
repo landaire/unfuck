@@ -17,7 +17,7 @@ pub(crate) fn execute_call_op<O, F, T>(
 where
     O: Opcode<Mnemonic = py27::Mnemonic>,
     F: FnMut(VmVar, Vec<VmVar>, std::collections::HashMap<Option<ObjHashable>, VmVar>) -> VmVar,
-    T: Clone + Copy,
+    T: Clone + Copy + Ord,
 {
     match instr.opcode.mnemonic() {
         Mnemonic::MAKE_FUNCTION => {

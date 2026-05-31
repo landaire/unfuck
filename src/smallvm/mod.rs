@@ -128,14 +128,30 @@ where
     pub fn push(&self, data: T) {
         self.0.lock().unwrap().push(data)
     }
+}
 
+impl<T> InstructionTracker<T>
+where
+    T: Clone + Ord,
+{
     /// Extends the state of this instruction tracker by copying all items from `other`'s
     /// tracked state into this.
+    ///
+    /// Obfuscated control flow merges the same producer instructions over and
+    /// over, so this set is almost entirely duplicates and can balloon to many
+    /// gigabytes. Collapsing duplicates is semantically a no-op for removal --
+    /// deleting an instruction twice is the same as deleting it once -- so we
+    /// dedup whenever the set grows past a high-water mark, keeping memory
+    /// bounded by the number of *distinct* instructions instead of the number
+    /// of merges.
     pub fn extend(&self, other: &InstructionTracker<T>) {
-        self.0
-            .lock()
-            .unwrap()
-            .extend_from_slice(other.0.lock().unwrap().as_slice());
+        const DEDUP_HIGH_WATER: usize = 1 << 16;
+        let mut data = self.0.lock().unwrap();
+        data.extend_from_slice(other.0.lock().unwrap().as_slice());
+        if data.len() > DEDUP_HIGH_WATER {
+            data.sort_unstable();
+            data.dedup();
+        }
     }
 }
 
@@ -180,7 +196,7 @@ pub struct VmFrame<'a, T> {
     pub access_tracking: T,
 }
 
-impl<T: Clone + Copy> VmFrame<'_, T> {
+impl<T: Clone + Copy + Ord> VmFrame<'_, T> {
     /// Interprets one instruction against this frame. `function_callback` resolves
     /// the result of a `CALL_FUNCTION` the VM cannot evaluate on its own.
     pub fn execute<O, F>(
@@ -219,7 +235,7 @@ pub(crate) fn execute_instruction<O: Opcode<Mnemonic = py27::Mnemonic>, F, T>(
 ) -> Result<(), Error<O>>
 where
     F: FnMut(VmVar, Vec<VmVar>, std::collections::HashMap<Option<ObjHashable>, VmVar>) -> VmVar,
-    T: Clone + Copy,
+    T: Clone + Copy + Ord,
 {
     use arithmetic::BinaryOp;
 
