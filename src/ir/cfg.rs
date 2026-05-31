@@ -1369,7 +1369,25 @@ fn recover_try(
                 _ => return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT)),
             }
         }
-        None => None,
+        // Merge-less: the body always raises or returns. A handler that falls through
+        // then reaches whatever follows the construct, which the structurer absorbs
+        // into that arm. That is wrong when the fall-through path is shared with the
+        // cleanup of an enclosing try/finally or with, which its own structurer also
+        // emits (double execution). The relinearizer scatters the protected region, so
+        // the block-at-a-time recoverer cannot reliably tell an enclosed merge-less try
+        // from a standalone one; when the code object contains any SETUP_FINALLY or
+        // SETUP_WITH, reject rather than risk it. Objects with neither cannot enclose.
+        None => {
+            if instrs.iter().any(|item| {
+                matches!(
+                    item.instr.opcode.mnemonic(),
+                    Mnemonic::SETUP_FINALLY | Mnemonic::SETUP_WITH
+                )
+            }) {
+                return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT));
+            }
+            None
+        }
     };
 
     let mut clauses = Vec::new();

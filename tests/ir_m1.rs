@@ -631,6 +631,40 @@ fn except_with_branch_in_handler() {
 }
 
 #[test]
+fn mergeless_except_in_finally_is_rejected() {
+    // A merge-less try/except nested in a try/finally: the inner body returns, so its
+    // POP_BLOCK is gone, and the bare handler falls through to the finally's cleanup.
+    // Absorbing that cleanup into the handler would double it with the finally clause,
+    // so the merge-less recovery is rejected when the object contains a finally/with.
+    // try: (try: return g() except: pass) finally: cleanup()
+    let code = Builder::new("f", 0, &[], &["g", "cleanup"], vec![Obj::None])
+        .jump(Standard::SETUP_FINALLY, "finally")
+        .jump(Standard::SETUP_EXCEPT, "handler")
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::RETURN_VALUE)
+        .label("handler")
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_FORWARD, "merge")
+        .label("merge")
+        .op(Standard::POP_BLOCK)
+        .arg(Standard::LOAD_CONST, 0)
+        .label("finally")
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .op(Standard::END_FINALLY)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    let result = unfuck::ir::decompile_function(code);
+    assert!(matches!(result, Err(unfuck::ir::IrError::HasControlFlow(_))));
+}
+
+#[test]
 fn mergeless_with() {
     // A with-body that always returns: the deob drops the unreachable normal-exit
     // POP_BLOCK; LOAD_CONST None, leaving no body POP_BLOCK. The WITH_CLEANUP runs

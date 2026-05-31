@@ -207,15 +207,18 @@ impl Structurer<'_> {
                     cursor = self.point_block(follow);
                 }
                 Terminator::Try { body, handlers, end } => {
-                    // A merge-less try (`end` is `None`) has no normal successor: the
-                    // body always raises or returns, so the merge is reached only
-                    // through a handler that falls through, and structuring to the
-                    // function exit absorbs it into that arm. Require the body and
-                    // every handler to terminate, so an unsound shape (a body that
-                    // could fall through to a merge) is rejected, not mis-absorbed.
+                    // A merge-less try (`end` is `None`) has no merge of its own: the
+                    // body always raises or returns, so any merge is reached only
+                    // through a handler that falls through. Such a handler continues to
+                    // wherever the enclosing region continues, so its arm follows the
+                    // enclosing `stop` rather than the function exit. Following the exit
+                    // would absorb code past the enclosing boundary -- e.g. the cleanup
+                    // of an enclosing try/finally that the fall-through path shares --
+                    // into the arm, where the finally structurer also emits it (double
+                    // execution). Bounding at `stop` keeps that shared code outside.
                     let follow = match end {
                         Some(end) => Point::Block(self.cfg.target(*end)?),
-                        None => Point::Exit,
+                        None => stop,
                     };
                     let try_body = self.region(self.cfg.target(*body)?, follow, depth + 1)?;
                     let mut arms = Vec::with_capacity(handlers.len());
@@ -227,11 +230,12 @@ impl Structurer<'_> {
                             body: arm_body,
                         });
                     }
-                    if follow == Point::Exit {
-                        let terminal = |stmts: &[Stmt]| stmts.last().is_some_and(terminates);
-                        if !terminal(&try_body) || !arms.iter().all(|arm| terminal(&arm.body)) {
-                            return Err(IrError::Unstructurable);
-                        }
+                    // The body of a merge-less try must terminate: its missing POP_BLOCK
+                    // means it has no normal exit. If that does not hold (e.g. a nested
+                    // merge-less try miscounted the block depth), reject rather than
+                    // mis-structure.
+                    if end.is_none() && !try_body.last().is_some_and(terminates) {
+                        return Err(IrError::Unstructurable);
                     }
                     out.push(Stmt::Try { body: try_body, handlers: arms });
                     cursor = self.point_block(follow);
