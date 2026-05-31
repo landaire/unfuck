@@ -53,6 +53,14 @@ pub enum Terminator {
         handlers: Vec<HandlerArm>,
         end: Offset,
     },
+    /// `SETUP_WITH`: a `with` region. `body` is the managed suite; `end` is the
+    /// merge after the construct. `target` is the `as` binding, if any. The context
+    /// manager expression is the value left on this block's `stack_out`.
+    With {
+        body: Offset,
+        end: Offset,
+        target: Option<LValue>,
+    },
 }
 
 /// One recovered `except` clause: the matched type, the optional `as name`
@@ -93,6 +101,7 @@ impl Block {
                 targets.extend(handlers.iter().map(|arm| arm.body));
                 targets
             }
+            Terminator::With { body, end, .. } => vec![*body, *end],
             Terminator::Return(_) | Terminator::Raise(_) => Vec::new(),
         }
     }
@@ -104,6 +113,9 @@ impl Block {
     pub fn normal_successors(&self) -> Vec<Offset> {
         match &self.terminator {
             Terminator::Try { body, .. } => vec![*body],
+            // The body always reaches `end` through the cleanup; that is the normal
+            // convergence point even though the implicit edge runs via WITH_CLEANUP.
+            Terminator::With { body, end, .. } => vec![*body, *end],
             _ => self.successors(),
         }
     }
@@ -144,6 +156,8 @@ impl Cfg {
     fn build_with(instrs: &[OffsetInstr], comp: bool) -> Result<Cfg, IrError> {
         let mut ternaries = find_ternaries(instrs);
         let (tries, mut excluded) = recover_tries(instrs)?;
+        let (withs, with_excluded) = recover_withs(instrs)?;
+        excluded.extend(with_excluded);
         // A chained comparison's short-circuit lands past its cleanup; record the
         // merge override and drop the cleanup/forward-jump instructions.
         let (merge_overrides, chained_excluded) = find_chained_comparisons(instrs);
@@ -169,7 +183,8 @@ impl Cfg {
             comp_then_merges.insert(*build, *merge);
         }
         let breaks = break_targets(instrs);
-        let leaders = block_leaders(instrs, &ternaries, &tries, &excluded, &list_interior, &breaks)?;
+        let leaders =
+            block_leaders(instrs, &ternaries, &tries, &withs, &excluded, &list_interior, &breaks)?;
         let mut by_offset = HashMap::new();
         for (idx, leader) in leaders.iter().enumerate() {
             by_offset.insert(*leader, BlockId(idx as u32));
@@ -200,6 +215,7 @@ impl Cfg {
         // lowered through the shared unstacker so they enter the same arena the
         // block bodies use.
         let try_terminators = build_try_terminators(&mut unstacker, instrs, &tries)?;
+        let with_terminators = build_with_terminators(&withs);
 
         let mut blocks = Vec::with_capacity(leaders.len());
         let mut for_targets = HashMap::new();
@@ -223,6 +239,7 @@ impl Cfg {
                 for_header,
                 &mut for_targets,
                 &try_terminators,
+                &with_terminators,
                 &list_comps,
                 &breaks,
                 &else_feeds,
@@ -514,6 +531,7 @@ fn block_leaders(
     instrs: &[OffsetInstr],
     ternaries: &HashSet<Offset>,
     tries: &[TryShape],
+    withs: &[WithShape],
     excluded: &HashSet<Offset>,
     list_interior: &HashSet<Offset>,
     breaks: &HashMap<Offset, Offset>,
@@ -521,6 +539,12 @@ fn block_leaders(
     let mut leaders = BTreeSet::new();
     if let Some(first) = instrs.first() {
         leaders.insert(first.offset);
+    }
+    // A with's managed body and its merge begin blocks; the binding and cleanup
+    // between them are excluded, so add these leaders explicitly.
+    for shape in withs {
+        leaders.insert(shape.body_entry);
+        leaders.insert(shape.end);
     }
     // A try's body and every handler clause begin a block; the dispatch between
     // them is excluded, so these leaders are added explicitly rather than falling
@@ -562,9 +586,12 @@ fn block_leaders(
                     leaders.insert(next);
                 }
             }
-            // SETUP_EXCEPT only falls through to its protected body; its handler is
-            // reached by the recovered terminator, not a layout edge.
-            TerminatorKind::Try | TerminatorKind::Return | TerminatorKind::Raise => {
+            // SETUP_EXCEPT/SETUP_WITH only fall through to their managed body; the
+            // recovered terminator supplies the other edges, not a layout split.
+            TerminatorKind::Try
+            | TerminatorKind::With
+            | TerminatorKind::Return
+            | TerminatorKind::Raise => {
                 if let Some(next) = next {
                     leaders.insert(next);
                 }
@@ -587,6 +614,7 @@ fn lower_block(
     for_header: Option<BlockId>,
     for_targets: &mut HashMap<BlockId, LValue>,
     try_terminators: &HashMap<Offset, Terminator>,
+    with_terminators: &HashMap<Offset, Terminator>,
     list_comps: &HashMap<Offset, Offset>,
     breaks: &HashMap<Offset, Offset>,
     else_feeds: &HashMap<Offset, Vec<&OffsetInstr>>,
@@ -680,6 +708,11 @@ fn lower_block(
             .get(&last.offset)
             .cloned()
             .ok_or(IrError::Unstructurable)?,
+        // The context manager expression stays on the stack (it is not consumed by
+        // the terminator), so it reaches the structurer through `stack_out`.
+        TerminatorKind::With => {
+            with_terminators.get(&last.offset).cloned().ok_or(IrError::Unstructurable)?
+        }
         TerminatorKind::Jump => Terminator::Jump(branch_target(last)?),
         TerminatorKind::BreakLoop => {
             Terminator::Jump(breaks.get(&last.offset).copied().ok_or(IrError::Unstructurable)?)
@@ -762,6 +795,7 @@ enum TerminatorKind {
     Return,
     Raise,
     Try,
+    With,
     /// `BREAK_LOOP`: an implicit jump out of the enclosing loop, resolved to the
     /// loop's follow block via the `SETUP_LOOP` table.
     BreakLoop,
@@ -781,8 +815,9 @@ fn terminator_kind(mnemonic: Mnemonic) -> Result<TerminatorKind, IrError> {
         Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE => TerminatorKind::Branch,
         Mnemonic::FOR_ITER => TerminatorKind::ForIter,
         Mnemonic::SETUP_EXCEPT => TerminatorKind::Try,
+        Mnemonic::SETUP_WITH => TerminatorKind::With,
         Mnemonic::BREAK_LOOP => TerminatorKind::BreakLoop,
-        Mnemonic::SETUP_FINALLY | Mnemonic::SETUP_WITH | Mnemonic::END_FINALLY => {
+        Mnemonic::SETUP_FINALLY | Mnemonic::END_FINALLY => {
             return Err(IrError::HasControlFlow(mnemonic))
         }
         // JUMP_IF_*_OR_POP is a short-circuit operator handled inside a block by the
@@ -1025,6 +1060,109 @@ fn recover_tries(instrs: &[OffsetInstr]) -> Result<(Vec<TryShape>, HashSet<Offse
         shapes.push(shape);
     }
     Ok((shapes, excluded))
+}
+
+/// A recovered `with` region over the raw instruction stream.
+struct WithShape {
+    /// Offset of the `SETUP_WITH` (the block whose terminator becomes `With`).
+    setup: Offset,
+    /// First instruction of the managed body, after the `as` binding.
+    body_entry: Offset,
+    /// Merge point reached after the construct (past `END_FINALLY`).
+    end: Offset,
+    /// The `as` target, or `None` when the manager's value is discarded.
+    target: Option<LValue>,
+}
+
+/// Recovers every `with` region and the structural instruction offsets to drop from
+/// blocks. A `SETUP_WITH` whose surrounding bytecode is not the regular CPython 2.7
+/// shape rejects the function rather than risk wrong source.
+fn recover_withs(instrs: &[OffsetInstr]) -> Result<(Vec<WithShape>, HashSet<Offset>), IrError> {
+    let index: HashMap<Offset, usize> =
+        instrs.iter().enumerate().map(|(i, it)| (it.offset, i)).collect();
+    let mut shapes = Vec::new();
+    let mut excluded = HashSet::new();
+    for (idx, item) in instrs.iter().enumerate() {
+        if item.instr.opcode.mnemonic() == Mnemonic::SETUP_WITH {
+            shapes.push(recover_with(instrs, &index, idx, &mut excluded)?);
+        }
+    }
+    Ok((shapes, excluded))
+}
+
+/// Recovers a single `with` rooted at the `SETUP_WITH` at `setup_idx`. The shape is
+/// `<ctx>; SETUP_WITH cleanup; STORE/POP_TOP; <body>; POP_BLOCK; LOAD_CONST None;
+/// cleanup: WITH_CLEANUP; END_FINALLY`.
+fn recover_with(
+    instrs: &[OffsetInstr],
+    index: &HashMap<Offset, usize>,
+    setup_idx: usize,
+    excluded: &mut HashSet<Offset>,
+) -> Result<WithShape, IrError> {
+    let setup = &instrs[setup_idx];
+    let cleanup_off = branch_target(setup)?;
+    let cleanup_idx = *index.get(&cleanup_off).ok_or(IrError::BadOperand)?;
+    // The `as` binding (or a discarding POP_TOP) immediately follows SETUP_WITH.
+    let bind_idx = setup_idx + 1;
+    let target = match mnemonic_at(instrs, bind_idx)? {
+        Mnemonic::POP_TOP => None,
+        Mnemonic::STORE_FAST
+        | Mnemonic::STORE_NAME
+        | Mnemonic::STORE_GLOBAL
+        | Mnemonic::STORE_DEREF => Some(store_target(&instrs[bind_idx].instr)?),
+        _ => return Err(IrError::HasControlFlow(Mnemonic::SETUP_WITH)),
+    };
+    let body_entry = instrs.get(bind_idx + 1).ok_or(IrError::Unstructurable)?.offset;
+    // The body exits through POP_BLOCK; find it at block-nesting depth 0 so a nested
+    // try/with inside the body does not steal it.
+    let mut depth = 0i32;
+    let mut pop_idx = None;
+    for i in (bind_idx + 1)..cleanup_idx {
+        let mnemonic = instrs[i].instr.opcode.mnemonic();
+        if format!("{:?}", mnemonic).starts_with("SETUP_") {
+            depth += 1;
+        } else if mnemonic == Mnemonic::POP_BLOCK {
+            if depth == 0 {
+                pop_idx = Some(i);
+                break;
+            }
+            depth -= 1;
+        }
+    }
+    let pop_idx = pop_idx.ok_or(IrError::HasControlFlow(Mnemonic::SETUP_WITH))?;
+    // POP_BLOCK; LOAD_CONST None; then the WITH_CLEANUP/END_FINALLY at the cleanup.
+    if mnemonic_at(instrs, pop_idx + 1)? != Mnemonic::LOAD_CONST
+        || pop_idx + 2 != cleanup_idx
+        || mnemonic_at(instrs, cleanup_idx)? != Mnemonic::WITH_CLEANUP
+        || mnemonic_at(instrs, cleanup_idx + 1)? != Mnemonic::END_FINALLY
+    {
+        return Err(IrError::HasControlFlow(Mnemonic::SETUP_WITH));
+    }
+    let end = instrs.get(cleanup_idx + 2).ok_or(IrError::Unstructurable)?.offset;
+    // Drop the binding and the cleanup machinery so they never form blocks.
+    for off in [
+        instrs[bind_idx].offset,
+        instrs[pop_idx].offset,
+        instrs[pop_idx + 1].offset,
+        instrs[cleanup_idx].offset,
+        instrs[cleanup_idx + 1].offset,
+    ] {
+        excluded.insert(off);
+    }
+    Ok(WithShape { setup: setup.offset, body_entry, end, target })
+}
+
+/// Builds each `with` block's `With` terminator from its recovered shape.
+fn build_with_terminators(withs: &[WithShape]) -> HashMap<Offset, Terminator> {
+    withs
+        .iter()
+        .map(|w| {
+            (
+                w.setup,
+                Terminator::With { body: w.body_entry, end: w.end, target: w.target.clone() },
+            )
+        })
+        .collect()
 }
 
 /// Returns the mnemonic at an instruction index, or `Unstructurable` past the end.
@@ -1450,6 +1588,7 @@ fn branch_target(item: &OffsetInstr) -> Result<Offset, IrError> {
         Mnemonic::JUMP_FORWARD
         | Mnemonic::FOR_ITER
         | Mnemonic::SETUP_EXCEPT
+        | Mnemonic::SETUP_WITH
         | Mnemonic::SETUP_LOOP => Offset(item.offset.0 + item.instr.len() as u32 + arg),
         other => return Err(IrError::HasControlFlow(other)),
     })

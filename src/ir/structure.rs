@@ -83,6 +83,7 @@ fn cleanup(stmts: &mut Vec<Stmt>) {
                     cleanup(&mut handler.body);
                 }
             }
+            Stmt::With { body, .. } => cleanup(body),
             _ => {}
         }
     }
@@ -214,6 +215,22 @@ impl Structurer<'_> {
                         });
                     }
                     out.push(Stmt::Try { body: try_body, handlers: arms });
+                    cursor = self.point_block(follow);
+                }
+                Terminator::With { body, end, target } => {
+                    // The context manager is the value the block left on its stack
+                    // before SETUP_WITH (it is not consumed by the terminator).
+                    let context = self
+                        .cfg
+                        .block(current)
+                        .stack_out
+                        .last()
+                        .copied()
+                        .ok_or(IrError::Unstructurable)?;
+                    let target = target.clone();
+                    let follow = Point::Block(self.cfg.target(*end)?);
+                    let with_body = self.region(self.cfg.target(*body)?, follow, depth + 1)?;
+                    out.push(Stmt::With { context, target, body: with_body });
                     cursor = self.point_block(follow);
                 }
                 // A ForIter block is always a loop header and is handled by the loop

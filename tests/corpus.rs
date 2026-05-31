@@ -70,6 +70,8 @@ fn cases() {
         "deletes",
         "try_bare",
         "try_typed",
+        "with_as",
+        "with_no_as",
         "gen_squares",
         "gen_filtered",
         "gen_consumed",

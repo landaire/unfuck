@@ -315,6 +315,12 @@ pub enum Stmt {
         body: Vec<Stmt>,
         handlers: Vec<ExceptHandler>,
     },
+    /// `with context [as target]: ...`, recovered from a `SETUP_WITH` region.
+    With {
+        context: ValueId,
+        target: Option<LValue>,
+        body: Vec<Stmt>,
+    },
     /// `import module [as target]`. `target` is the bound name; when it matches the
     /// module's top component no `as` clause is emitted.
     Import {

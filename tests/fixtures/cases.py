@@ -192,6 +192,17 @@ def try_typed(data):
     return result
 
 
+def with_as(path):
+    with open(path, 'w') as f:
+        f.write('x')
+
+
+def with_no_as(lock):
+    with lock:
+        x = compute()
+    return x
+
+
 def gen_squares(items):
     return (x * x for x in items)
 

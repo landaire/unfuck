@@ -318,6 +318,7 @@ impl<'a> Emitter<'a> {
                 | Stmt::While { .. }
                 | Stmt::For { .. }
                 | Stmt::Try { .. }
+                | Stmt::With { .. }
                 | Stmt::FunctionDef { .. }
                 | Stmt::ClassDef { .. }
         )
@@ -422,6 +423,16 @@ impl<'a> Emitter<'a> {
                     self.line(&header);
                     self.block(&handler.body);
                 }
+            }
+            Stmt::With { context, target, body } => {
+                let header = match target {
+                    Some(target) => {
+                        format!("with {} as {}:", self.expr(*context, 0), self.lvalue(target))
+                    }
+                    None => format!("with {}:", self.expr(*context, 0)),
+                };
+                self.line(&header);
+                self.block(body);
             }
             Stmt::Import { module, target } => self.line(&self.import_line(*module, target)),
             Stmt::FromImport { module, names, star } => {
