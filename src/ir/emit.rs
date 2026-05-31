@@ -288,6 +288,15 @@ impl<'a> Emitter<'a> {
         })
     }
 
+    /// Whether `v` is the `None` constant. Used to render the bare `exec code` form
+    /// (the compiler fills the omitted globals/locals slots with `None`).
+    fn is_none_const(&self, v: ValueId) -> bool {
+        match self.arena.get(v) {
+            Expr::Const(c) => matches!(self.code.consts.get(c.0 as usize), Some(Obj::None)),
+            _ => false,
+        }
+    }
+
     /// The value of a string constant, if it is one.
     fn const_string(&self, c: ConstId) -> Option<String> {
         match self.code.consts.get(c.0 as usize) {
@@ -383,6 +392,17 @@ impl<'a> Emitter<'a> {
                     line.push(',');
                 }
                 self.line(line.trim_end());
+            }
+            Stmt::Exec { code, globals, locals } => {
+                let code_s = self.expr(*code, 0);
+                let line = if self.is_none_const(*globals) {
+                    format!("exec {}", code_s)
+                } else if let Some(locals) = locals {
+                    format!("exec {} in {}, {}", code_s, self.expr(*globals, 0), self.expr(*locals, 0))
+                } else {
+                    format!("exec {} in {}", code_s, self.expr(*globals, 0))
+                };
+                self.line(&line);
             }
             Stmt::FunctionDef { target, code, defaults } => {
                 self.function_def(target, *code, defaults)
@@ -523,9 +543,15 @@ impl<'a> Emitter<'a> {
             ),
             // A slice renders as `lower:upper`, each bound omitted when absent. Only
             // valid inside a subscript, which supplies the brackets.
-            Expr::Slice { lower, upper } => {
+            Expr::Slice { lower, upper, step } => {
                 let bound = |b: &Option<ValueId>| b.map_or(String::new(), |id| self.expr(id, 0));
-                (format!("{}:{}", bound(lower), bound(upper)), prec::ATOM)
+                let text = match step {
+                    Some(step) => {
+                        format!("{}:{}:{}", bound(lower), bound(upper), self.expr(*step, 0))
+                    }
+                    None => format!("{}:{}", bound(lower), bound(upper)),
+                };
+                (text, prec::ATOM)
             }
             // An in-place op normally becomes an augmented assignment; if one is
             // ever used as a value it renders like the plain binary operation.

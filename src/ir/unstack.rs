@@ -706,7 +706,7 @@ impl Unstacker {
             Mnemonic::SLICE_0 | Mnemonic::SLICE_1 | Mnemonic::SLICE_2 | Mnemonic::SLICE_3 => {
                 let (lower, upper) = self.pop_slice_bounds(mnemonic)?;
                 let container = self.pop()?;
-                let slice = self.arena.alloc(Expr::Slice { lower, upper });
+                let slice = self.arena.alloc(Expr::Slice { lower, upper, step: None });
                 self.push(Expr::Subscript(container, slice));
             }
             Mnemonic::STORE_SLICE_0
@@ -716,7 +716,7 @@ impl Unstacker {
                 let (lower, upper) = self.pop_slice_bounds(mnemonic)?;
                 let container = self.pop()?;
                 let value = self.pop()?;
-                let slice = self.arena.alloc(Expr::Slice { lower, upper });
+                let slice = self.arena.alloc(Expr::Slice { lower, upper, step: None });
                 self.complete_store(LValue::Subscript(container, slice), value);
             }
             Mnemonic::DELETE_SLICE_0
@@ -725,13 +725,33 @@ impl Unstacker {
             | Mnemonic::DELETE_SLICE_3 => {
                 let (lower, upper) = self.pop_slice_bounds(mnemonic)?;
                 let container = self.pop()?;
-                let slice = self.arena.alloc(Expr::Slice { lower, upper });
+                let slice = self.arena.alloc(Expr::Slice { lower, upper, step: None });
                 self.emit(Stmt::Delete(LValue::Subscript(container, slice)));
             }
             Mnemonic::DELETE_SUBSCR => {
                 let key = self.pop()?;
                 let container = self.pop()?;
                 self.emit(Stmt::Delete(LValue::Subscript(container, key)));
+            }
+            // `obj[lower:upper:step]`: BUILD_SLICE pops 2 or 3 bounds and pushes a
+            // slice for the following BINARY_SUBSCR/STORE_SUBSCR. A bound the source
+            // omitted is a `None` constant here and round-trips as one.
+            Mnemonic::BUILD_SLICE => {
+                let (lower, upper, step) = match arg_u16(arg)? {
+                    2 => {
+                        let upper = self.pop()?;
+                        let lower = self.pop()?;
+                        (Some(lower), Some(upper), None)
+                    }
+                    3 => {
+                        let step = self.pop()?;
+                        let upper = self.pop()?;
+                        let lower = self.pop()?;
+                        (Some(lower), Some(upper), Some(step))
+                    }
+                    _ => return Err(IrError::Unsupported(mnemonic)),
+                };
+                self.push(Expr::Slice { lower, upper, step });
             }
             Mnemonic::DELETE_FAST => self.emit(Stmt::Delete(LValue::Local(VarId(arg_u16(arg)?)))),
             Mnemonic::DELETE_NAME => self.emit(Stmt::Delete(LValue::Name(NameId(arg_u16(arg)?)))),
@@ -838,6 +858,16 @@ impl Unstacker {
             Mnemonic::YIELD_VALUE => {
                 let value = self.pop()?;
                 self.push(Expr::Yield(value));
+            }
+            // `exec code in globals, locals`. The compiler dups the namespace into
+            // the locals slot for `exec code` and `exec code in g`, so equal operands
+            // mean the source supplied no separate locals mapping.
+            Mnemonic::EXEC_STMT => {
+                let locals = self.pop()?;
+                let globals = self.pop()?;
+                let code = self.pop()?;
+                let locals = if locals == globals { None } else { Some(locals) };
+                self.emit(Stmt::Exec { code, globals, locals });
             }
             // `print a, b` is PRINT_ITEM per operand then PRINT_NEWLINE; `print a,`
             // (suppressed newline) omits the PRINT_NEWLINE.

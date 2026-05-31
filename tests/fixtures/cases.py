@@ -336,3 +336,13 @@ def import_dotted_as():
 def sort_with_key(items):
     items.sort(key=lambda p: p[0])
     return items
+
+
+def ext_slice(o, a, b, c):
+    return o[a:b:c], o[::2], o[1::2]
+
+
+def run_exec(code, g, l):
+    exec code
+    exec code in g
+    exec code in g, l

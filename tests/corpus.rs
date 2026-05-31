@@ -67,6 +67,7 @@ fn cases() {
         "aug_attr",
         "aug_subscript",
         "slices",
+        "ext_slice",
         "deletes",
         "try_bare",
         "try_typed",
@@ -97,6 +98,7 @@ fn cases() {
         "has_decorator_call",
         "import_dotted_as",
         "sort_with_key",
+        "run_exec",
     ] {
         insta::assert_snapshot!(name, decompile(fixture, name));
     }

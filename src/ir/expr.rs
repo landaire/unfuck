@@ -168,11 +168,13 @@ pub enum Expr {
     Name(NameId),
     Attr(ValueId, NameId),
     Subscript(ValueId, ValueId),
-    /// A two-element slice `lower:upper` (from the `SLICE_*` opcodes). Only valid as
-    /// the key of a [`Expr::Subscript`] or [`LValue::Subscript`].
+    /// A slice `lower:upper` or `lower:upper:step`. The two-bound form comes from the
+    /// `SLICE_*` opcodes (`step` is `None`); the three-bound form from `BUILD_SLICE`.
+    /// Only valid as the key of a [`Expr::Subscript`] or [`LValue::Subscript`].
     Slice {
         lower: Option<ValueId>,
         upper: Option<ValueId>,
+        step: Option<ValueId>,
     },
     BinOp(BinOp, ValueId, ValueId),
     /// An in-place binary op result (`INPLACE_*`), kept distinct from `BinOp` so a
@@ -273,6 +275,13 @@ pub enum Stmt {
     Print {
         values: Vec<ValueId>,
         newline: bool,
+    },
+    /// `exec code`, `exec code in globals`, or `exec code in globals, locals`.
+    /// `globals` is the `None` constant for the bare `exec code` form.
+    Exec {
+        code: ValueId,
+        globals: ValueId,
+        locals: Option<ValueId>,
     },
     If {
         cond: ValueId,

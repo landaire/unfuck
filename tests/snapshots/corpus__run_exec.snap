@@ -1,0 +1,10 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def run_exec(code, g, l):
+    exec code
+    exec code in g
+    exec code in g, l
+    return None
