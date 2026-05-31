@@ -68,6 +68,9 @@ pub struct Unstacker {
     comp: bool,
     /// Whether the comprehension accumulator has been consumed from the stream.
     comp_acc_seen: bool,
+    /// Operands of a `print` statement under construction. `PRINT_ITEM` appends one;
+    /// `PRINT_NEWLINE` (or the next non-print instruction) flushes them.
+    print_values: Vec<ValueId>,
 }
 
 impl Unstacker {
@@ -92,6 +95,17 @@ impl Unstacker {
             merge_overrides: HashMap::new(),
             comp,
             comp_acc_seen: false,
+            print_values: Vec::new(),
+        }
+    }
+
+    /// Emits a pending `print` statement, if any, with a trailing comma. Called when
+    /// a non-print instruction or the block terminator interrupts a `print a,` whose
+    /// suppressed newline left no `PRINT_NEWLINE`.
+    pub fn flush_print(&mut self) {
+        if !self.print_values.is_empty() {
+            let values = std::mem::take(&mut self.print_values);
+            self.emit(Stmt::Print { values, newline: false });
         }
     }
 
@@ -387,6 +401,7 @@ impl Unstacker {
         self.shortcircuit.clear();
         self.ternary = None;
         self.from_import = None;
+        self.print_values.clear();
     }
 
     /// Pops a value left on the stack, e.g. a branch condition or return value.
@@ -471,6 +486,15 @@ impl Unstacker {
     pub fn step(&mut self, instr: &Instruction<Standard>, offset: Offset) -> Result<(), IrError> {
         let arg = instr.arg;
         let mnemonic = instr.opcode.mnemonic();
+
+        // A `print a, b` accumulates its operands across PRINT_ITEMs; anything other
+        // than another print op (or its terminating PRINT_NEWLINE) ends a trailing-
+        // comma `print a,`, so flush the pending statement first.
+        if !self.print_values.is_empty()
+            && !matches!(mnemonic, Mnemonic::PRINT_ITEM | Mnemonic::PRINT_NEWLINE)
+        {
+            self.flush_print();
+        }
 
         if let Some(op) = inplace_op(mnemonic) {
             let rhs = self.pop()?;
@@ -798,6 +822,16 @@ impl Unstacker {
             Mnemonic::YIELD_VALUE => {
                 let value = self.pop()?;
                 self.push(Expr::Yield(value));
+            }
+            // `print a, b` is PRINT_ITEM per operand then PRINT_NEWLINE; `print a,`
+            // (suppressed newline) omits the PRINT_NEWLINE.
+            Mnemonic::PRINT_ITEM => {
+                let value = self.pop()?;
+                self.print_values.push(value);
+            }
+            Mnemonic::PRINT_NEWLINE => {
+                let values = std::mem::take(&mut self.print_values);
+                self.emit(Stmt::Print { values, newline: true });
             }
             // The namespace a class body returns; placed so the body's RETURN_VALUE
             // has a value to pop and the class recogniser can drop it.

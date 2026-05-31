@@ -418,6 +418,10 @@ fn lower_block(
         unstacker.step(&item.instr, item.offset)?;
         i += 1;
     }
+    // Flush a `print a,` whose suppressed newline left no PRINT_NEWLINE before the
+    // block's terminator runs.
+    unstacker.flush_print();
+
     // Resolve any short-circuit or ternary that merges at the terminator before the
     // terminator consumes its operands. One that merges outside this block is
     // unsupported.
