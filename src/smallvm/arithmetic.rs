@@ -46,36 +46,36 @@ impl BinaryOp {
         })))
     }
 
-    fn apply_long_float(self, left: &BigInt, right: f64) -> Obj {
+    fn apply_long_float(self, left: &BigInt, right: f64) -> Option<Obj> {
         let left = left.to_f64().unwrap();
-        Obj::Float(match self {
+        Some(Obj::Float(match self {
             BinaryOp::Add => left + right,
             BinaryOp::Subtract => left - right,
             BinaryOp::Multiply => left * right,
             BinaryOp::Divide => left / right,
-            other => panic!("operator {:?} not handled for Long x Float", other),
-        })
+            _ => return None,
+        }))
     }
 
-    fn apply_float_long(self, left: f64, right: &BigInt) -> Obj {
+    fn apply_float_long(self, left: f64, right: &BigInt) -> Option<Obj> {
         let right = right.to_f64().unwrap();
-        Obj::Float(match self {
+        Some(Obj::Float(match self {
             BinaryOp::Add => left + right,
             BinaryOp::Subtract => left - right,
             BinaryOp::Multiply => left * right,
             BinaryOp::Divide => left / right,
-            other => panic!("operator {:?} not handled for Float x Long", other),
-        })
+            _ => return None,
+        }))
     }
 
-    fn apply_float_float(self, left: f64, right: f64) -> Obj {
-        Obj::Float(match self {
+    fn apply_float_float(self, left: f64, right: f64) -> Option<Obj> {
+        Some(Obj::Float(match self {
             BinaryOp::Add => left + right,
             BinaryOp::Subtract => left - right,
             BinaryOp::Multiply => left * right,
             BinaryOp::Divide => left / right,
-            other => panic!("operator {:?} not handled for Float x Float", other),
-        })
+            _ => return None,
+        }))
     }
 }
 
@@ -165,15 +165,15 @@ where
         }
         (Some(Obj::Long(left)), Some(Obj::Float(right))) => {
             let result = op.apply_long_float(&left.read().unwrap(), *right);
-            stack.push((Some(result), tos_accesses));
+            stack.push((result, tos_accesses));
         }
         (Some(Obj::Float(left)), Some(Obj::Long(right))) => {
             let result = op.apply_float_long(*left, &right.read().unwrap());
-            stack.push((Some(result), tos_accesses));
+            stack.push((result, tos_accesses));
         }
         (Some(Obj::Float(left)), Some(Obj::Float(right))) => {
             let result = op.apply_float_float(*left, *right);
-            stack.push((Some(result), tos_accesses));
+            stack.push((result, tos_accesses));
         }
         (Some(Obj::Set(left)), Some(Obj::Set(right))) => match op {
             BinaryOp::And => {
@@ -200,7 +200,7 @@ where
                     tos_accesses,
                 ));
             }
-            other => panic!("unsupported operator {:?} for Set", other),
+            _ => stack.push((None, tos_accesses.clone())),
         },
         (Some(Obj::String(left)), _) => {
             // String formatting special case
@@ -243,7 +243,7 @@ where
                             tos_accesses,
                         ));
                     }
-                    other => panic!("unsupported operator {:?} for LHS String RHS Long", other),
+                    _ => stack.push((None, tos_accesses.clone())),
                 },
                 Some(Obj::String(right)) => match op {
                     BinaryOp::Add => {
@@ -254,13 +254,9 @@ where
                             tos_accesses,
                         ));
                     }
-                    other => panic!("unsupported operator {:?} for LHS String RHS String", other),
+                    _ => stack.push((None, tos_accesses.clone())),
                 },
-                Some(right) => panic!(
-                    "unsupported RHS. left: String, right: {:?}. operator: {:?}",
-                    right.typ(),
-                    op
-                ),
+                _ => stack.push((None, tos_accesses.clone())),
                 None => stack.push((None, tos_accesses)),
             }
         }
@@ -273,7 +269,7 @@ where
                     tos_accesses,
                 ));
             }
-            other => panic!("unsupported operator {:?} for Tuple", other),
+            _ => stack.push((None, tos_accesses.clone())),
         },
         (Some(left), Some(right)) => {
             warn!(
@@ -319,7 +315,14 @@ where
     match tos {
         Some(Obj::Bool(result)) => match op {
             UnaryOp::Not => stack.push((Some(Obj::Bool(!result)), tos_accesses)),
-            UnaryOp::Negative => panic!("unexpected unary operator Negative for bool"),
+            UnaryOp::Negative => stack.push((
+                Some(Obj::Long(Arc::new(RwLock::new(if result {
+                    -BigInt::from(1)
+                } else {
+                    BigInt::from(0)
+                })))),
+                tos_accesses,
+            )),
         },
         Some(Obj::Long(result)) => match op {
             UnaryOp::Not => {
@@ -335,7 +338,9 @@ where
         },
         Some(Obj::None) => match op {
             UnaryOp::Not => stack.push((Some(Obj::Bool(true)), tos_accesses)),
-            UnaryOp::Negative => panic!("unexpected unary operator Negative for None"),
+            // -None is a runtime TypeError in Python; treat as unknown rather
+            // than panic during partial execution.
+            UnaryOp::Negative => stack.push((None, tos_accesses)),
         },
         Some(_other) => {
             stack.push((None, tos_accesses));

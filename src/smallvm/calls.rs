@@ -92,7 +92,10 @@ where
 
                 let (key, key_accesses) = stack_pop(stack)?;
                 accessed_instrs.extend(&key_accesses);
-                let key = key.map(|key| ObjHashable::try_from(&key).unwrap());
+                // A kwarg key that is unknown or not hashable (some opaque value
+                // during partial execution) cannot index the map; treat it as an
+                // unknown key rather than panicking.
+                let key = key.and_then(|key| ObjHashable::try_from(&key).ok());
                 kwargs.insert(key, value);
             }
 

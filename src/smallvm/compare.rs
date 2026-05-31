@@ -42,7 +42,7 @@ where
                     Some(Obj::Bool(l.read().unwrap().to_f64().unwrap() < r)),
                     left_modifying_instrs,
                 )),
-                other => panic!("unsupported right-hand operand: {:?}", other.typ()),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
             Obj::Float(l) => match right {
                 Obj::Long(r) => stack.push((
@@ -50,10 +50,7 @@ where
                     left_modifying_instrs,
                 )),
                 Obj::Float(r) => stack.push((Some(Obj::Bool(l < r)), left_modifying_instrs)),
-                other => panic!(
-                    "unsupported right-hand operand for Float <: {:?}",
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
             Obj::String(left) => match right {
                 Obj::String(right) => {
@@ -77,11 +74,7 @@ where
                     stack.push((Some(Obj::Bool(false)), left_modifying_instrs));
                 }
             },
-            other => panic!(
-                "unsupported left-hand operand: {:?} for op {}",
-                other.typ(),
-                op
-            ),
+            _ => stack.push((None, left_modifying_instrs.clone())),
         },
         "<=" => match left {
             Obj::Long(l) => match right {
@@ -90,10 +83,7 @@ where
                     Some(Obj::Bool(l.read().unwrap().to_f64().unwrap() <= r)),
                     left_modifying_instrs,
                 )),
-                other => panic!(
-                    "unsupported right-hand operand for Long <=: {:?}",
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
             Obj::Bool(l) => match right {
                 Obj::Long(r) => stack.push((
@@ -107,10 +97,7 @@ where
                 Obj::Bool(r) => {
                     stack.push((Some(Obj::Bool(l as u32 <= r as u32)), left_modifying_instrs))
                 }
-                other => panic!(
-                    "unsupported right-hand operand for Bool <=: {:?}",
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
             Obj::Float(l) => match right {
                 Obj::Long(r) => stack.push((
@@ -118,16 +105,9 @@ where
                     left_modifying_instrs,
                 )),
                 Obj::Float(r) => stack.push((Some(Obj::Bool(l <= r)), left_modifying_instrs)),
-                other => panic!(
-                    "unsupported right-hand operand for Float <=: {:?}",
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
-            other => panic!(
-                "unsupported left-hand operand: {:?} for op {}",
-                other.typ(),
-                op
-            ),
+            _ => stack.push((None, left_modifying_instrs.clone())),
         },
         "==" => match left {
             Obj::Long(l) => match right {
@@ -136,10 +116,7 @@ where
                     Some(Obj::Bool(l.read().unwrap().to_f64().unwrap() == r)),
                     left_modifying_instrs,
                 )),
-                other => panic!(
-                    "unsupported right-hand operand for Long ==: {:?}",
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
             Obj::Float(l) => match right {
                 Obj::Long(r) => stack.push((
@@ -147,10 +124,7 @@ where
                     left_modifying_instrs,
                 )),
                 Obj::Float(r) => stack.push((Some(Obj::Bool(l == r)), left_modifying_instrs)),
-                other => panic!(
-                    "unsupported right-hand operand for Float ==: {:?}",
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
             Obj::Set(left_set) => match right {
                 Obj::Set(right_set) => {
@@ -161,10 +135,7 @@ where
                         left_modifying_instrs,
                     ))
                 }
-                other => panic!(
-                    "unsupported right-hand operand for Set == : {:?}",
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
             Obj::String(left_str) => match right {
                 Obj::String(right_str) => {
@@ -175,11 +146,7 @@ where
                     stack.push((Some(Obj::Bool(false)), left_modifying_instrs));
                 }
             },
-            other => panic!(
-                "unsupported left-hand operand: {:?} for op {}",
-                other.typ(),
-                op
-            ),
+            _ => stack.push((None, left_modifying_instrs.clone())),
         },
         "!=" => match left {
             Obj::Long(l) => match right {
@@ -188,10 +155,7 @@ where
                     Some(Obj::Bool(l.read().unwrap().to_f64().unwrap() != r)),
                     left_modifying_instrs,
                 )),
-                other => panic!(
-                    "unsupported right-hand operand for Long !=: {:?}",
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
             Obj::Float(l) => match right {
                 Obj::Long(r) => stack.push((
@@ -199,10 +163,7 @@ where
                     left_modifying_instrs,
                 )),
                 Obj::Float(r) => stack.push((Some(Obj::Bool(l != r)), left_modifying_instrs)),
-                other => panic!(
-                    "unsupported right-hand operand for Float !=: {:?}",
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
             Obj::Set(left_set) => match right {
                 Obj::Set(right_set) => {
@@ -213,7 +174,7 @@ where
                         left_modifying_instrs,
                     ))
                 }
-                other => panic!("unsupported right-hand operand for !=: {:?}", other.typ()),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
             Obj::String(left_str) => match right {
                 Obj::String(right_str) => {
@@ -224,11 +185,7 @@ where
                     stack.push((Some(Obj::Bool(true)), left_modifying_instrs));
                 }
             },
-            other => panic!(
-                "unsupported left-hand operand: {:?} for op {}",
-                other.typ(),
-                op
-            ),
+            _ => stack.push((None, left_modifying_instrs.clone())),
         },
         ">" => match left {
             Obj::Long(l) => match right {
@@ -237,10 +194,7 @@ where
                     Some(Obj::Bool(l.read().unwrap().to_f64().unwrap() > r)),
                     left_modifying_instrs,
                 )),
-                other => panic!(
-                    "unsupported right-hand operand for Long >: {:?}",
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
             Obj::Float(l) => match right {
                 Obj::Long(r) => stack.push((
@@ -248,10 +202,7 @@ where
                     left_modifying_instrs,
                 )),
                 Obj::Float(r) => stack.push((Some(Obj::Bool(l > r)), left_modifying_instrs)),
-                other => panic!(
-                    "unsupported right-hand operand for Float >: {:?}",
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
             Obj::String(left) => match right {
                 Obj::String(right) => {
@@ -275,11 +226,7 @@ where
                     stack.push((Some(Obj::Bool(true)), left_modifying_instrs));
                 }
             },
-            other => panic!(
-                "unsupported left-hand operand: {:?} for op {}",
-                other.typ(),
-                op
-            ),
+            _ => stack.push((None, left_modifying_instrs.clone())),
         },
         ">=" => match left {
             Obj::Long(l) => match right {
@@ -288,9 +235,7 @@ where
                     Some(Obj::Bool(l.read().unwrap().to_f64().unwrap() >= r)),
                     left_modifying_instrs,
                 )),
-                other => {
-                    panic!("unsupported right-hand operand for Long: {:?}", other.typ())
-                }
+                _ => stack.push((None, left_modifying_instrs.clone()))
             },
             Obj::Float(l) => match right {
                 Obj::Long(r) => stack.push((
@@ -298,9 +243,7 @@ where
                     left_modifying_instrs,
                 )),
                 Obj::Float(r) => stack.push((Some(Obj::Bool(l >= r)), left_modifying_instrs)),
-                other => {
-                    panic!("unsupported right-hand operand for Long: {:?}", other.typ())
-                }
+                _ => stack.push((None, left_modifying_instrs.clone()))
             },
             Obj::Tuple(left_tuple) => match right {
                 Obj::Tuple(right_tuple) => {
@@ -365,72 +308,36 @@ where
                     }
                     stack.push((Some(Obj::Bool(result)), left_modifying_instrs));
                 }
-                other => panic!(
-                    "unsupported right-hand operand for Tuple >=: {:?}",
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
-            other => panic!(
-                "unsupported left-hand operand: {:?} for op {}",
-                other.typ(),
-                op
-            ),
+            _ => stack.push((None, left_modifying_instrs.clone())),
         },
         "is not" => match left {
             Obj::Long(_) => match right {
                 Obj::None => stack.push((Some(Obj::Bool(true)), left_modifying_instrs)),
-                other => panic!(
-                    "unsupported right-hand operand for Long {:?}: {:?}",
-                    op,
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
             Obj::String(_) => match right {
                 Obj::None => stack.push((Some(Obj::Bool(true)), left_modifying_instrs)),
-                other => panic!(
-                    "unsupported right-hand operand for string {:?}: {:?}",
-                    op,
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
             Obj::None => match right {
                 Obj::None => stack.push((Some(Obj::Bool(false)), left_modifying_instrs)),
-                other => panic!(
-                    "unsupported right-hand operand for None, operator {:?}: {:?}",
-                    op,
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
-            other => panic!(
-                "unsupported left-hand operand: {:?} for op {}. RHS is {:?}",
-                other.typ(),
-                op,
-                right.typ(),
-            ),
+            _ => stack.push((None, left_modifying_instrs.clone())),
         },
         "is" => match left {
             Obj::String(_) => match right {
-                other => panic!(
-                    "unsupported right-hand operand for string {:?}: {:?}",
-                    op,
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
             Obj::None => match right {
                 Obj::None => {
                     stack.push((Some(Obj::Bool(true)), left_modifying_instrs));
                 }
-                other => panic!(
-                    "unsupported right-hand operand for None {:?}: {:?}",
-                    op,
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
-            other => panic!(
-                "unsupported left-hand operand: {:?} for op {}",
-                other.typ(),
-                op
-            ),
+            _ => stack.push((None, left_modifying_instrs.clone())),
         },
         "in" => match left {
             Obj::String(left) => match right {
@@ -480,23 +387,12 @@ where
                         left_modifying_instrs,
                     ));
                 }
-                other => panic!(
-                    "unsupported right-hand operand for string operator {:?}: {:?}",
-                    op,
-                    other.typ()
-                ),
+                _ => stack.push((None, left_modifying_instrs.clone())),
             },
-            other => panic!(
-                "unsupported left-hand operand: {:?} for op {}",
-                other.typ(),
-                op
-            ),
+            _ => stack.push((None, left_modifying_instrs.clone())),
         },
 
-        other => panic!(
-            "unsupported comparison operator: {:?} (left: {:?}, right: {:?})",
-            other, left, right
-        ),
+        _ => stack.push((None, left_modifying_instrs.clone())),
     }
 
     Ok(())
