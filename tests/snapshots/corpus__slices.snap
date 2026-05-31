@@ -1,0 +1,13 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def slices(s):
+    a = s[:]
+    b = s[1:]
+    c = s[:2]
+    d = s[1:2]
+    s[1:2] = a
+    del s[:]
+    return (a, b, c, d)

@@ -58,6 +58,8 @@ fn cases() {
         "aug_name",
         "aug_attr",
         "aug_subscript",
+        "slices",
+        "deletes",
         "try_bare",
         "try_typed",
         "gen_squares",

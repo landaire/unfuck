@@ -208,6 +208,10 @@ impl<'a> Emitter<'a> {
                     format!("{} {}= {}", self.lvalue(target), op.symbol(), self.expr(*value, 0));
                 self.line(&line);
             }
+            Stmt::Delete(target) => {
+                let line = format!("del {}", self.lvalue(target));
+                self.line(&line);
+            }
             Stmt::Expr(value) => {
                 let line = self.expr(*value, 0);
                 self.line(&line);
@@ -341,6 +345,12 @@ impl<'a> Emitter<'a> {
                 format!("{}[{}]", self.expr(*container, prec::ATOM), self.expr(*key, 0)),
                 prec::ATOM,
             ),
+            // A slice renders as `lower:upper`, each bound omitted when absent. Only
+            // valid inside a subscript, which supplies the brackets.
+            Expr::Slice { lower, upper } => {
+                let bound = |b: &Option<ValueId>| b.map_or(String::new(), |id| self.expr(id, 0));
+                (format!("{}:{}", bound(lower), bound(upper)), prec::ATOM)
+            }
             // An in-place op normally becomes an augmented assignment; if one is
             // ever used as a value it renders like the plain binary operation.
             Expr::BinOp(op, lhs, rhs) | Expr::Inplace(op, lhs, rhs) => {

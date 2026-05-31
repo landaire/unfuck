@@ -168,6 +168,12 @@ pub enum Expr {
     Name(NameId),
     Attr(ValueId, NameId),
     Subscript(ValueId, ValueId),
+    /// A two-element slice `lower:upper` (from the `SLICE_*` opcodes). Only valid as
+    /// the key of a [`Expr::Subscript`] or [`LValue::Subscript`].
+    Slice {
+        lower: Option<ValueId>,
+        upper: Option<ValueId>,
+    },
     BinOp(BinOp, ValueId, ValueId),
     /// An in-place binary op result (`INPLACE_*`), kept distinct from `BinOp` so a
     /// store back to the operand recovers as an augmented assignment (`x += y`).
@@ -252,6 +258,8 @@ pub enum Stmt {
     /// `target op= value`, recovered from an `INPLACE_*` op stored back to its
     /// left operand.
     AugAssign(LValue, BinOp, ValueId),
+    /// `del target`.
+    Delete(LValue),
     Expr(ValueId),
     Return(Option<ValueId>),
     Print {

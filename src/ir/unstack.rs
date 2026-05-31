@@ -179,6 +179,27 @@ impl Unstacker {
         }
     }
 
+    /// Pops the bounds of a `SLICE_*`/`STORE_SLICE_*`/`DELETE_SLICE_*` opcode. The
+    /// opcode number selects which bounds are present: +1 a lower, +2 an upper, +3
+    /// both (upper on top of the stack).
+    fn pop_slice_bounds(
+        &mut self,
+        mnemonic: Mnemonic,
+    ) -> Result<(Option<ValueId>, Option<ValueId>), IrError> {
+        let kind = format!("{:?}", mnemonic);
+        let upper = if kind.ends_with("_2") || kind.ends_with("_3") {
+            Some(self.pop()?)
+        } else {
+            None
+        };
+        let lower = if kind.ends_with("_1") || kind.ends_with("_3") {
+            Some(self.pop()?)
+        } else {
+            None
+        };
+        Ok((lower, upper))
+    }
+
     fn push(&mut self, expr: Expr) {
         let id = self.arena.alloc(expr);
         self.stack.push(id);
@@ -521,6 +542,48 @@ impl Unstacker {
                 let container = self.pop()?;
                 let value = self.pop()?;
                 self.complete_store(LValue::Subscript(container, key), value);
+            }
+            // The two-bound slice opcodes: read (`x[a:b]`), store, and delete. The
+            // bounds are popped top-first (upper before lower), the object below
+            // them, and for stores the value below that.
+            Mnemonic::SLICE_0 | Mnemonic::SLICE_1 | Mnemonic::SLICE_2 | Mnemonic::SLICE_3 => {
+                let (lower, upper) = self.pop_slice_bounds(mnemonic)?;
+                let container = self.pop()?;
+                let slice = self.arena.alloc(Expr::Slice { lower, upper });
+                self.push(Expr::Subscript(container, slice));
+            }
+            Mnemonic::STORE_SLICE_0
+            | Mnemonic::STORE_SLICE_1
+            | Mnemonic::STORE_SLICE_2
+            | Mnemonic::STORE_SLICE_3 => {
+                let (lower, upper) = self.pop_slice_bounds(mnemonic)?;
+                let container = self.pop()?;
+                let value = self.pop()?;
+                let slice = self.arena.alloc(Expr::Slice { lower, upper });
+                self.complete_store(LValue::Subscript(container, slice), value);
+            }
+            Mnemonic::DELETE_SLICE_0
+            | Mnemonic::DELETE_SLICE_1
+            | Mnemonic::DELETE_SLICE_2
+            | Mnemonic::DELETE_SLICE_3 => {
+                let (lower, upper) = self.pop_slice_bounds(mnemonic)?;
+                let container = self.pop()?;
+                let slice = self.arena.alloc(Expr::Slice { lower, upper });
+                self.emit(Stmt::Delete(LValue::Subscript(container, slice)));
+            }
+            Mnemonic::DELETE_SUBSCR => {
+                let key = self.pop()?;
+                let container = self.pop()?;
+                self.emit(Stmt::Delete(LValue::Subscript(container, key)));
+            }
+            Mnemonic::DELETE_FAST => self.emit(Stmt::Delete(LValue::Local(VarId(arg_u16(arg)?)))),
+            Mnemonic::DELETE_NAME => self.emit(Stmt::Delete(LValue::Name(NameId(arg_u16(arg)?)))),
+            Mnemonic::DELETE_GLOBAL => {
+                self.emit(Stmt::Delete(LValue::Global(NameId(arg_u16(arg)?))))
+            }
+            Mnemonic::DELETE_ATTR => {
+                let obj = self.pop()?;
+                self.emit(Stmt::Delete(LValue::Attr(obj, NameId(arg_u16(arg)?))));
             }
             Mnemonic::MAKE_FUNCTION => {
                 // Default arguments are not recovered into the signature yet, so

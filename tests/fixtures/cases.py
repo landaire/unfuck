@@ -106,6 +106,22 @@ def aug_subscript(d, k):
     return d
 
 
+def slices(s):
+    a = s[:]
+    b = s[1:]
+    c = s[:2]
+    d = s[1:2]
+    s[1:2] = a
+    del s[:]
+    return (a, b, c, d)
+
+
+def deletes(obj, d, k):
+    del obj.attr
+    del d[k]
+    del k
+
+
 def try_bare(data):
     try:
         load(data)
