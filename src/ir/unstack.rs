@@ -266,6 +266,22 @@ impl Unstacker {
         Ok((lower, upper))
     }
 
+    /// Pops the code constant that `MAKE_FUNCTION`/`MAKE_CLOSURE` builds from. In
+    /// real 2.7 bytecode the code object is always the `LOAD_CONST` immediately on
+    /// top, but the obfuscator injects an opaque-predicate value (a comparison built
+    /// from junk `unknown_N` temps) between that `LOAD_CONST` and the `MAKE_*`. That
+    /// value is never a constant, so any non-`Const` entries on top are opaque junk:
+    /// discard them until the real code constant resurfaces. A function's defaults
+    /// sit *below* the code object, so this never consumes them.
+    fn pop_code_const(&mut self) -> Result<ValueId, IrError> {
+        loop {
+            let top = self.pop()?;
+            if matches!(self.arena.get(top), Expr::Const(_)) {
+                return Ok(top);
+            }
+        }
+    }
+
     /// Pushes a function object built from a code constant with the given defaults,
     /// shared by `MAKE_FUNCTION` and `MAKE_CLOSURE`.
     fn make_function(&mut self, code: ValueId, defaults: Vec<ValueId>) -> Result<(), IrError> {
@@ -729,7 +745,7 @@ impl Unstacker {
             Mnemonic::MAKE_FUNCTION => {
                 // The operand is the number of default values, pushed (in order)
                 // before the code object for the trailing parameters.
-                let code = self.pop()?;
+                let code = self.pop_code_const()?;
                 let defaults = self.pop_n(arg_u16(arg)? as usize)?;
                 self.make_function(code, defaults)?;
             }
@@ -739,7 +755,7 @@ impl Unstacker {
             Mnemonic::MAKE_CLOSURE => {
                 // Like MAKE_FUNCTION, but with the closure tuple below the code and
                 // above the defaults. The tuple is implicit in source, so drop it.
-                let code = self.pop()?;
+                let code = self.pop_code_const()?;
                 let _closure = self.pop()?;
                 let defaults = self.pop_n(arg_u16(arg)? as usize)?;
                 self.make_function(code, defaults)?;
