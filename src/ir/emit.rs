@@ -805,6 +805,7 @@ impl<'a> Emitter<'a> {
 }
 
 /// Which comprehension a recovered nested code object represents.
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum CompKind {
     Gen,
     List,
@@ -816,6 +817,11 @@ enum CompKind {
 enum CompClause {
     For { target: LValue, iter: ValueId },
     If(ValueId),
+    /// A negated filter `if not cond`, from `if cond: <skip> else: <element>`.
+    IfNot(ValueId),
+    /// A disjunctive filter `if a or b or ...`, from the short-circuit `if a:
+    /// <element> else: if b: <element> ...` the compiler emits for an `or` filter.
+    IfAny(Vec<ValueId>),
 }
 
 /// A recovered comprehension over the nested code object's own arena.
@@ -925,6 +931,19 @@ fn comprehension_parts(comp_code: Arc<Code>) -> Result<CompParts, super::IrError
             // A comprehension `if` takes an `or_test`, so a ternary or lambda
             // condition must parenthesise; render at `or` precedence.
             CompClause::If(cond) => tail.push_str(&format!(" if {}", emitter.expr(*cond, prec::OR))),
+            // `not` binds looser than comparison but tighter than `or`/`and`, so
+            // parenthesise anything at `and` precedence or below.
+            CompClause::IfNot(cond) => {
+                tail.push_str(&format!(" if not {}", emitter.expr(*cond, prec::COMPARE)))
+            }
+            CompClause::IfAny(conds) => {
+                let joined = conds
+                    .iter()
+                    .map(|c| emitter.expr(*c, prec::OR))
+                    .collect::<Vec<_>>()
+                    .join(" or ");
+                tail.push_str(&format!(" if {}", joined));
+            }
         }
     }
     Ok(CompParts { kind: recog.kind, head, tail })
@@ -983,7 +1002,46 @@ fn walk_comp_body(
             clauses.push(CompClause::If(*cond));
             walk_comp_body(arena, then, clauses)
         }
+        // `if cond: <skip> else: <element>` is a negated filter `if not cond`.
+        [Stmt::If { cond, then, els }] if then.is_empty() => {
+            clauses.push(CompClause::IfNot(*cond));
+            walk_comp_body(arena, els, clauses)
+        }
+        // `if a: BODY else: if b: BODY else: ...` (each arm the same element) is the
+        // short-circuit form of a disjunctive filter `if a or b or ...`.
+        [Stmt::If { cond, then, els }] => {
+            let element = comp_terminal(arena, then)?;
+            let mut conds = vec![*cond];
+            let mut rest: &[Stmt] = els;
+            loop {
+                match rest {
+                    [Stmt::If { cond, then, els }] if comp_terminal(arena, then) == Some(element) => {
+                        conds.push(*cond);
+                        rest = els;
+                    }
+                    [] => break,
+                    _ => return None,
+                }
+            }
+            clauses.push(CompClause::IfAny(conds));
+            walk_comp_body(arena, then, clauses)
+        }
         [for_stmt @ Stmt::For { .. }] => walk_comp_for(arena, for_stmt, clauses),
+        _ => None,
+    }
+}
+
+/// The element signature of a comprehension's terminal body (its accumulator add or
+/// generator yield), used to confirm the arms of a disjunctive filter all produce the
+/// same element. Returns `None` for any non-terminal body.
+fn comp_terminal(arena: &ExprArena, body: &[Stmt]) -> Option<(CompKind, ValueId, Option<ValueId>)> {
+    match body {
+        [Stmt::Expr(value)] => match arena.get(*value) {
+            Expr::Yield(element) => Some((CompKind::Gen, *element, None)),
+            _ => None,
+        },
+        [Stmt::SetAdd(element)] => Some((CompKind::Set, *element, None)),
+        [Stmt::DictAdd { key, value }] => Some((CompKind::Dict, *value, Some(*key))),
         _ => None,
     }
 }

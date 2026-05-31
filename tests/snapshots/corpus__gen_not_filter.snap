@@ -1,0 +1,7 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def gen_not_filter(items):
+    return list((x for x in items if not x.hidden))

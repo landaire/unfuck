@@ -204,6 +204,18 @@ def gen_consumed(items):
     return sum(x for x in items if x)
 
 
+def gen_not_filter(items):
+    return list(x for x in items if not x.hidden)
+
+
+def gen_or_filter(items):
+    return list(x for x in items if x.a or x.b)
+
+
+def set_comp_or_filter(items):
+    return {x for x in items if x.a or x.b}
+
+
 def dict_comp(items):
     return {k: k * k for k in items}
 
