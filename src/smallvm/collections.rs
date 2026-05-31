@@ -74,27 +74,29 @@ where
             match tos1 {
                 Some(Obj::List(list_lock)) => {
                     let list = list_lock.read().unwrap();
-                    if let Obj::Long(long) = tos.unwrap() {
-                        let long_val = long.read().unwrap();
-                        if long_val.to_usize().unwrap() >= list.len() {
-                            stack.push((None, accessing_instrs));
-                        } else {
-                            stack.push((
-                                Some(list[long_val.to_usize().unwrap()].clone()),
-                                accessing_instrs,
-                            ));
+                    // The index may be unknown, a non-integer (e.g. a slice), or
+                    // negative/out-of-range (to_usize yields None). In any of
+                    // those cases we cannot statically resolve the element, so
+                    // push an unknown value rather than panic.
+                    let index = tos.as_ref().and_then(|t| match t {
+                        Obj::Long(long) => long.read().unwrap().to_usize(),
+                        _ => None,
+                    });
+                    match index {
+                        Some(idx) if idx < list.len() => {
+                            stack.push((Some(list[idx].clone()), accessing_instrs));
                         }
-                    } else {
-                        panic!("TOS must be a long");
+                        _ => stack.push((None, accessing_instrs)),
                     }
                 }
                 Some(Obj::Dict(dict_lock)) => {
                     let dict = dict_lock.read().unwrap();
-                    if let Some(tos) = tos {
-                        let hashable_tos = (&tos).try_into().unwrap();
-                        stack.push((dict.get(&hashable_tos).cloned(), accessing_instrs));
-                    } else {
-                        stack.push((None, accessing_instrs));
+                    // An unknown or non-hashable key cannot index the dict.
+                    match tos.as_ref().and_then(|t| ObjHashable::try_from(t).ok()) {
+                        Some(hashable_tos) => {
+                            stack.push((dict.get(&hashable_tos).cloned(), accessing_instrs));
+                        }
+                        None => stack.push((None, accessing_instrs)),
                     }
                 }
                 Some(other) => {
@@ -171,7 +173,10 @@ where
                     continue;
                 }
                 tos_modifiers.push(access_tracking);
-                set.insert(ObjHashable::try_from(&tos.unwrap()).unwrap());
+                // Skip an unhashable element rather than panic.
+                if let Ok(hashable) = ObjHashable::try_from(&tos.unwrap()) {
+                    set.insert(hashable);
+                }
             }
 
             set_accessors.push(access_tracking);
@@ -227,25 +232,25 @@ where
             if let Some((dict_entry, dict_tracking)) = stack.get_mut(stack_len - oparg) {
                 match dict_entry {
                     Some(Obj::Dict(dict)) => {
-                        dict.write()
-                            .unwrap()
-                            .insert(key.as_ref().unwrap().try_into().unwrap(), value.unwrap());
+                        // Skip an unhashable key rather than panic.
+                        if let Some(hashable_key) =
+                            key.as_ref().and_then(|k| ObjHashable::try_from(k).ok())
+                        {
+                            dict.write().unwrap().insert(hashable_key, value.unwrap());
+                        }
                         dict_tracking.extend(&key_tracking);
                         dict_tracking.extend(&value_tracking);
                         dict_tracking.push(access_tracking);
                     }
-                    Some(_) => {
-                        panic!(
-                            "Error executing MAP_ADD: target is not a dict -- this indicates a bug somewhere"
-                        );
-                    }
+                    // Target is an unknown/unmodeled value: skip the add.
+                    Some(_) => {}
                     None => {
                         // This scenario is fine
                     }
                 }
-            } else {
-                panic!("no dict for MAP_ADD at stack depth {}?", oparg);
             }
+            // If there is no stack entry at that depth there is nothing to add
+            // to; skip rather than panic.
         }
         Mnemonic::BUILD_MAP => {
             let tracking = InstructionTracker::new();
@@ -316,8 +321,12 @@ where
                         stack.push((Some(item.clone()), tos_modifiers.deep_clone()));
                     }
                 }
-                Some(other) => {
-                    panic!("need to add UNPACK_SEQUENCE support for {:?}", other.typ());
+                Some(_other) => {
+                    // Unknown or unsupported sequence shape: push the right
+                    // number of unknown elements rather than panic.
+                    for _i in 0..instr.arg.unwrap() {
+                        stack.push((None, tos_modifiers.deep_clone()));
+                    }
                 }
                 None => {
                     for _i in 0..instr.arg.unwrap() {
@@ -341,17 +350,18 @@ where
                 return Ok(());
             }
 
-            let dict_lock = dict.unwrap().extract_dict().unwrap();
-            let mut dict = dict_lock.write().unwrap();
-            let hashable_key: ObjHashable = key
-                .as_ref()
-                .unwrap()
-                .try_into()
-                .expect("key is not hashable");
-            dict.insert(hashable_key, value.unwrap());
-
-            drop(dict);
-
+            let Ok(dict_lock) = dict.unwrap().extract_dict() else {
+                // The map slot is not a dict we can model; yield unknown.
+                stack.push((None, new_accesses));
+                return Ok(());
+            };
+            match key.as_ref().and_then(|k| ObjHashable::try_from(k).ok()) {
+                Some(hashable_key) => {
+                    dict_lock.write().unwrap().insert(hashable_key, value.unwrap());
+                }
+                // Unhashable key: leave the dict unchanged rather than panic.
+                None => {}
+            }
             stack.push((Some(Obj::Dict(dict_lock)), new_accesses));
         }
         other => unreachable!("not a collection op: {:?}", other),

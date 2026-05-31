@@ -585,6 +585,16 @@ impl<O: Opcode<Mnemonic = py27::Mnemonic>> ParsedInstr<O> {
         }
     }
 
+    /// Returns the decoded instruction, or `None` if this slot holds a
+    /// bad/undecodable instruction. Use at sites that must tolerate undecodable
+    /// bytecode (offset fixups, branch updates) rather than panic on it.
+    pub fn get(&self) -> Option<Arc<Instruction<O>>> {
+        match self {
+            ParsedInstr::Good(ins) | ParsedInstr::GoodDoNotRemove(ins) => Some(Arc::clone(ins)),
+            ParsedInstr::Bad => None,
+        }
+    }
+
     /// Returns a mutable reference to the inner Arc, panicking if Bad.
     #[track_caller]
     pub fn unwrap_mut(&mut self) -> &mut Arc<Instruction<O>> {

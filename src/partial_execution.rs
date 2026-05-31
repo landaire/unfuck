@@ -37,6 +37,22 @@ pub struct ExecutionPath {
     pub fork_depth: usize,
 }
 
+impl ExecutionPath {
+    /// Produces the lightweight record retained in the `completed` set. The only
+    /// field the downstream analysis (`remove_const_conditions`) reads from a
+    /// completed path is `condition_results`; the heavy per-path VM state (stack,
+    /// vars, names, globals, taint trackers) is dropped here instead of cloned.
+    /// Up to `MAX_TOTAL_PATHS` completed paths are retained per code object, so
+    /// cloning the full state was the dominant memory cost of partial execution;
+    /// trimming it loses no analysis precision.
+    fn completed_snapshot(&self) -> ExecutionPath {
+        ExecutionPath {
+            condition_results: self.condition_results.clone(),
+            ..ExecutionPath::default()
+        }
+    }
+}
+
 /// Information required to track back an instruction that accessed/tainted a var
 pub type AccessTrackingInfo = (petgraph::graph::NodeIndex, usize);
 
@@ -68,10 +84,15 @@ pub(crate) fn perform_partial_execution<
     let execution_path = &mut execution_path;
 
     // Bail out if this path has forked too many times on unknown conditions.
-    // With N forks, we get 2^N paths -- cap it to prevent exponential explosion.
-    const MAX_FORK_DEPTH: usize = 16;
+    // With N forks we get 2^N paths, each cloning a full execution state
+    // (stack, vars, taint trackers). At depth 16 that is 65536 paths per file;
+    // run across all cores in parallel it can exhaust machine RAM. Forks only
+    // happen on genuinely-unknown branch conditions (rare -- most opaque
+    // predicates resolve to a known value and never fork), so a much lower cap
+    // keeps memory bounded with negligible loss of deobfuscation coverage.
+    const MAX_FORK_DEPTH: usize = 11;
     if execution_path.fork_depth > MAX_FORK_DEPTH {
-        completed.push(execution_path.clone());
+        completed.push(execution_path.completed_snapshot());
         return;
     }
     let debug = !false;
@@ -109,7 +130,7 @@ pub(crate) fn perform_partial_execution<
     for (ins_idx, instr) in instrs {
         // We handle jumps
         if instr.opcode.mnemonic() == Mnemonic::RETURN_VALUE {
-            completed.push(execution_path.clone());
+            completed.push(execution_path.completed_snapshot());
             return;
         }
 
@@ -178,6 +199,27 @@ pub(crate) fn perform_partial_execution<
                 }
             }
 
+            // A TOS whose type has no truthiness rule below (a complex number, a
+            // code object, ...) cannot resolve this condition. Treat it as unknown
+            // and explore both branches rather than panicking on an unhandled type.
+            if let Some(obj) = tos {
+                let evaluable = matches!(
+                    obj,
+                    Obj::Bool(_)
+                        | Obj::Long(_)
+                        | Obj::Float(_)
+                        | Obj::Set(_)
+                        | Obj::List(_)
+                        | Obj::Dict(_)
+                        | Obj::Tuple(_)
+                        | Obj::String(_)
+                        | Obj::None
+                );
+                if !evaluable {
+                    tos = None;
+                }
+            }
+
             // we know where this jump should take us
             if let Some(tos) = tos {
                 // if *code.filename == "26949592413111478" && *code.name == "50857798689625" {
@@ -225,9 +267,11 @@ pub(crate) fn perform_partial_execution<
                             Some(Obj::Tuple(result)) => !result.read().unwrap_or_else(|e| e.into_inner()).is_empty(),
                             Some(Obj::String(result)) => !result.read().unwrap_or_else(|e| e.into_inner()).is_empty(),
                             Some(Obj::None) => false,
-                            other => {
-                                panic!("unexpected TOS type for condition: {:?}", other);
-                            }
+                            // The guard above nulls out any TOS without a truthiness
+                            // rule before this path is entered, so this arm is not
+                            // reached in practice; fall back to a falsey result rather
+                            // than panicking if a new type ever slips through.
+                            _ => false,
                         }
                     };
                 }
@@ -273,16 +317,19 @@ pub(crate) fn perform_partial_execution<
                     }
                 }
 
-                let target = targets
-                    .iter()
-                    .find_map(|(weight, idx, _edge)| {
-                        if *weight == target_weight {
-                            Some(*idx)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap();
+                let target = targets.iter().find_map(|(weight, idx, _edge)| {
+                    if *weight == target_weight {
+                        Some(*idx)
+                    } else {
+                        None
+                    }
+                });
+                let Some(target) = target else {
+                    // The resolved branch has no matching CFG edge (malformed or
+                    // hostile control flow). Abandon this path rather than panic.
+                    completed.push(execution_path.completed_snapshot());
+                    return;
+                };
 
                 modifying_instructions.push((root, ins_idx));
                 execution_path.condition_results.insert(
@@ -466,7 +513,7 @@ pub(crate) fn perform_partial_execution<
                     "Encountered error executing instruction in name {:?} (filename: {:?}) at index {}: {:?}",
                     code.name, code.filename, ins_idx, e
                 );
-                completed.push(execution_path.clone());
+                completed.push(execution_path.completed_snapshot());
                 return;
             }
         }
@@ -487,7 +534,7 @@ pub(crate) fn perform_partial_execution<
 
     // This path is complete. We are about to fork this path down a branch
     // whose true execution path is unknown
-    completed.push(execution_path.clone());
+    completed.push(execution_path.completed_snapshot());
 
     // We reached the last instruction in this node -- go on to the next
     // We don't know which branch to take

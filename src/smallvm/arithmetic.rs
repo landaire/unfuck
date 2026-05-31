@@ -28,8 +28,17 @@ pub(crate) enum BinaryOp {
 }
 
 impl BinaryOp {
-    fn apply_long_long(self, left: &BigInt, right: &BigInt) -> Obj {
-        Obj::Long(Arc::new(RwLock::new(match self {
+    fn apply_long_long(self, left: &BigInt, right: &BigInt) -> Option<Obj> {
+        // Integer division or modulo by zero panics in num-bigint; opaque junk
+        // can produce a zero divisor, so yield unknown instead.
+        if matches!(
+            self,
+            BinaryOp::Divide | BinaryOp::FloorDivide | BinaryOp::Modulo
+        ) && matches!(right.sign(), num_bigint::Sign::NoSign)
+        {
+            return None;
+        }
+        Some(Obj::Long(Arc::new(RwLock::new(match self {
             BinaryOp::Add => left + right,
             BinaryOp::Subtract => left - right,
             BinaryOp::Multiply => left * right,
@@ -43,7 +52,7 @@ impl BinaryOp {
             BinaryOp::Power | BinaryOp::TrueDivide => {
                 unreachable!("handled in apply_binary_op directly")
             }
-        })))
+        }))))
     }
 
     fn apply_long_float(self, left: &BigInt, right: f64) -> Option<Obj> {
@@ -161,7 +170,7 @@ where
             }
 
             let result = op.apply_long_long(&left.read().unwrap(), &right.read().unwrap());
-            stack.push((Some(result), tos_accesses));
+            stack.push((result, tos_accesses));
         }
         (Some(Obj::Long(left)), Some(Obj::Float(right))) => {
             let result = op.apply_long_float(&left.read().unwrap(), *right);

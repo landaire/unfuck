@@ -562,7 +562,17 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             // still provide parallelism; one code object's path walk is sequential.
             let mut worklist: Vec<(NodeIndex, ExecutionPath)> =
                 vec![(root, ExecutionPath::default())];
+            // Memory backstop. The fork-depth cap already bounds the normal case,
+            // but a pathological code object can still queue an unreasonable
+            // number of paths -- and each path clones a full execution state, so
+            // unbounded growth (times every core running in parallel) can exhaust
+            // machine RAM. Stop exploring past this ceiling; partial path coverage
+            // still produces valid bytecode, just less deobfuscated.
+            const MAX_TOTAL_PATHS: usize = 1 << 14;
             while let Some((node, path)) = worklist.pop() {
+                if completed_paths.len() + worklist.len() > MAX_TOTAL_PATHS {
+                    break;
+                }
                 // A panic on one hostile path (a bad instruction, an unhandled VM
                 // state) must not abort the whole code object; contain it so the
                 // remaining paths still run. The driver is single-threaded here, so
@@ -801,7 +811,12 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 .map(|e| e.target())
                 .filter(|target| !self.is_downgraph(*target, node))
                 .collect::<Vec<_>>();
-            assert!(child.len() <= 1);
+            // More than one forward child means this is not the simple
+            // single-successor shape this pass handles; skip it rather than
+            // assume the first edge.
+            if child.len() > 1 {
+                continue;
+            }
             let Some(&child) = child.first() else {
                 continue;
             };
@@ -881,12 +896,21 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             let end_offset = current_node
                 .instrs
                 .iter()
-                .fold(0, |accum, instr| accum + instr.unwrap().len());
+                .fold(0, |accum, instr| {
+                    accum + instr.get().map_or(0, |ins| ins.len())
+                });
 
             let end_offset = end_offset as u64;
             current_node.start_offset = current_offset;
-            current_node.end_offset = current_offset
-                + (end_offset - current_node.instrs.last().unwrap().unwrap().len() as u64);
+            // An emptied basic block (or one ending in an undecodable instruction)
+            // has no trailing instruction to subtract; treat its last-instruction
+            // length as zero rather than panic.
+            let last_instr_len = current_node
+                .instrs
+                .last()
+                .and_then(|instr| instr.get())
+                .map_or(0, |ins| ins.len() as u64);
+            current_node.end_offset = current_offset + (end_offset - last_instr_len);
 
             current_offset += end_offset;
 
@@ -1071,6 +1095,18 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 _ => continue,
             };
             if target == nx {
+                continue;
+            }
+            // A `FOR_ITER` block is a loop header, not an `if` merge. Appending a
+            // body-terminating jump to a block that falls into it (the iterable's
+            // `GET_ITER` block, or a list comp's filter) inserts a spurious
+            // `JUMP_FORWARD 0` between `GET_ITER` and `FOR_ITER`; the IR's list
+            // comprehension recovery expects them adjacent, so skip these.
+            if matches!(
+                self.graph[target].instrs.first(),
+                Some(ParsedInstr::Good(instr) | ParsedInstr::GoodDoNotRemove(instr))
+                    if instr.opcode.mnemonic() == Mnemonic::FOR_ITER
+            ) {
                 continue;
             }
 
@@ -1329,7 +1365,13 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 }
 
                 let source_node = &mut self.graph[incoming_edge];
-                let last_ins_ref = source_node.instrs.last().unwrap().unwrap();
+                // An empty block, or one whose last slot is an undecodable
+                // instruction, has no jump to retarget; skip the edge rather than
+                // panic on it.
+                let last_ins_ref = match source_node.instrs.last().and_then(|i| i.get()) {
+                    Some(ins) => ins,
+                    None => continue,
+                };
 
                 if !last_ins_ref.opcode.is_jump() {
                     continue;
@@ -1418,7 +1460,11 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
 
             current_node.flags |= BasicBlockFlags::BYTECODE_WRITTEN;
 
-            for instr in current_node.instrs.iter().map(|i| i.unwrap()) {
+            // An undecodable instruction has no opcode byte to emit. Skip it rather
+            // than panic: the rest of the module still regenerates, and the affected
+            // function is rejected later by the decoder rather than taking the whole
+            // file down.
+            for instr in current_node.instrs.iter().filter_map(|i| i.get()) {
                 new_bytecode.push(instr.opcode.to_u8().unwrap());
                 if let Some(arg) = instr.arg {
                     new_bytecode.extend_from_slice(&arg.to_le_bytes()[..]);
@@ -1885,23 +1931,19 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         if let Some(last_instr) = parent_node.instrs.last().map(|i| i.unwrap())
             && last_instr.opcode.is_jump()
         {
+            // Only an unconditional, removable jump can be dropped when joining
+            // blocks: a conditional jump would lose a branch, and a permanent
+            // (GoodDoNotRemove) instruction must be kept. If either holds this
+            // join is invalid, so skip it rather than corrupt the graph.
+            if last_instr.opcode.is_conditional_jump()
+                || matches!(parent_node.instrs.last(), Some(ParsedInstr::GoodDoNotRemove(_)))
+            {
+                return;
+            }
+
             // Remove the last instruction -- this is our jump
             let removed_instruction = parent_node.instrs.pop().unwrap();
-
             trace!("{:?}", removed_instruction);
-            assert!(
-                !removed_instruction.unwrap().opcode.is_conditional_jump(),
-                "Removed instruction is a conditional jump: {:#x?}. File: {}",
-                removed_instruction,
-                self.generate_file_name(None)
-            );
-
-            assert!(
-                !matches!(removed_instruction, ParsedInstr::GoodDoNotRemove(_)),
-                "Removed instruction is a permanent instruction: {:#x?}. File: {}",
-                removed_instruction,
-                self.generate_file_name(None)
-            );
             // parent_node.instrs.push(ParsedInstr::Good(Arc::new(Instr!(TargetOpcode::POP_TOP))));
             // current_end_offset -= removed_instruction.unwrap().len() as u64;
             // current_end_offset += parent_node.instrs.last().unwrap().unwrap().len() as u64;
