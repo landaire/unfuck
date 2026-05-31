@@ -356,6 +356,29 @@ fn opaque_predicate_arithmetic_false_drops_branch() {
 }
 
 #[test]
+fn opaque_predicate_prunes_unlowerable_junk() {
+    // if <const 0>: <junk> else: return a  -- the predicate is always false, so the
+    // junk branch (an unsupported ROT_TWO swap that poisons its block) is unreachable
+    // and pruned rather than failing the whole function.
+    let code = Builder::new("f", 2, &["a", "b"], &[], vec![Obj::None, long(0)])
+        .arg(Standard::LOAD_CONST, 1)
+        .jump(Standard::POP_JUMP_IF_FALSE, "real")
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::ROT_TWO)
+        .arg(Standard::STORE_FAST, 0)
+        .arg(Standard::STORE_FAST, 1)
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::RETURN_VALUE)
+        .label("real")
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(a, b):\n    return a\n");
+}
+
+#[test]
 fn swap_is_rejected() {
     // A ROT_TWO swap (`a, b = b, a`) is not an augmented assignment; recovering it
     // as sequential stores would be wrong, so it is rejected rather than emitted.

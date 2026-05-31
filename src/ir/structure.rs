@@ -83,6 +83,13 @@ impl Structurer<'_> {
                 break;
             }
 
+            // A block that could not be lowered is reachable here, so the function
+            // genuinely needs it; surface the error that poisoned it. (Opaque-dead
+            // poison blocks are never reached.)
+            if let Some(error) = &self.cfg.block(current).poison {
+                return Err(error.clone());
+            }
+
             // The first time control reaches a loop header, emit the whole loop and
             // resume at its follow.
             if self.loops.contains_key(&current) && !self.in_current_loop(current) {

@@ -71,6 +71,10 @@ pub struct Block {
     /// Values left on the symbolic stack after the block. Empty except where a
     /// value lives across a block boundary, e.g. a `for` loop iterator.
     pub stack_out: Vec<ValueId>,
+    /// Set when the block could not be lowered (an unsupported opcode or stack
+    /// error). The block is kept so opaque-predicate folding can prove it
+    /// unreachable; if the structurer ever reaches it, this error surfaces.
+    pub poison: Option<IrError>,
 }
 
 impl Block {
@@ -184,7 +188,21 @@ impl Cfg {
                 &mut for_targets,
                 &try_terminators,
                 &list_comps,
-            )?;
+            )
+            // A block that does not lower (an unsupported opcode, a stack error) is
+            // kept as a poison dead-end rather than failing the whole function, so
+            // opaque-predicate folding can prove it unreachable and drop it. Partial
+            // statements from the failed attempt are discarded.
+            .unwrap_or_else(|error| {
+                let _ = unstacker.take_stmts();
+                Block {
+                    start: leader,
+                    stmts: Vec::new(),
+                    terminator: Terminator::Return(None),
+                    stack_out: Vec::new(),
+                    poison: Some(error),
+                }
+            });
             blocks.push(block);
         }
 
@@ -405,6 +423,7 @@ fn lower_block(
         stmts: unstacker.take_stmts(),
         terminator,
         stack_out,
+        poison: None,
     })
 }
 
