@@ -206,6 +206,10 @@ pub enum Expr {
     /// A transient placeholder pushed by `UNPACK_SEQUENCE`; consumed by the stores
     /// that follow to build a tuple-assignment target. Never reaches emission.
     UnpackSlot,
+    /// A cell pushed by `LOAD_CLOSURE` for a captured variable. Collected into the
+    /// closure tuple that `MAKE_CLOSURE` consumes; the capture is implicit in
+    /// source, so this never reaches emission.
+    ClosureCell(DerefId),
     /// A function object built from a nested code constant by `MAKE_FUNCTION`.
     /// Becomes a `def` when stored to a name. `defaults` are the default values for
     /// the trailing positional parameters.

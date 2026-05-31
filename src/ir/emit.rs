@@ -448,7 +448,7 @@ impl<'a> Emitter<'a> {
             }
             // An unconsumed unpack slot indicates a tuple-assignment shape the
             // unstacker did not fully match; mark it so the function is rejected.
-            Expr::UnpackSlot => (UNRECOVERED.to_string(), prec::ATOM),
+            Expr::UnpackSlot | Expr::ClosureCell(_) => (UNRECOVERED.to_string(), prec::ATOM),
             // A function used inline (a lambda or a decorated def) is not recovered
             // here; mark it so the function is rejected rather than mis-emitted.
             Expr::MakeFunction { .. } => (UNRECOVERED.to_string(), prec::ATOM),

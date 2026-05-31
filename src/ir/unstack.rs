@@ -200,6 +200,19 @@ impl Unstacker {
         Ok((lower, upper))
     }
 
+    /// Pushes a function object built from a code constant with the given defaults,
+    /// shared by `MAKE_FUNCTION` and `MAKE_CLOSURE`.
+    fn make_function(&mut self, code: ValueId, defaults: Vec<ValueId>) -> Result<(), IrError> {
+        match self.arena.get(code) {
+            Expr::Const(const_id) => {
+                let code = *const_id;
+                self.push(Expr::MakeFunction { code, defaults });
+                Ok(())
+            }
+            _ => Err(IrError::Unsupported(Mnemonic::MAKE_FUNCTION)),
+        }
+    }
+
     fn push(&mut self, expr: Expr) {
         let id = self.arena.alloc(expr);
         self.stack.push(id);
@@ -590,13 +603,18 @@ impl Unstacker {
                 // before the code object for the trailing parameters.
                 let code = self.pop()?;
                 let defaults = self.pop_n(arg_u16(arg)? as usize)?;
-                match self.arena.get(code) {
-                    Expr::Const(const_id) => {
-                        let code = *const_id;
-                        self.push(Expr::MakeFunction { code, defaults });
-                    }
-                    _ => return Err(IrError::Unsupported(mnemonic)),
-                }
+                self.make_function(code, defaults)?;
+            }
+            // The captured cells of a closure; collected by BUILD_TUPLE into the
+            // closure tuple. The capture itself is implicit in the source.
+            Mnemonic::LOAD_CLOSURE => self.push(Expr::ClosureCell(DerefId(arg_u16(arg)?))),
+            Mnemonic::MAKE_CLOSURE => {
+                // Like MAKE_FUNCTION, but with the closure tuple below the code and
+                // above the defaults. The tuple is implicit in source, so drop it.
+                let code = self.pop()?;
+                let _closure = self.pop()?;
+                let defaults = self.pop_n(arg_u16(arg)? as usize)?;
+                self.make_function(code, defaults)?;
             }
             // POP_JUMP_IF_FALSE and JUMP_FORWARD reach the unstacker only as the two
             // jumps of a ternary diamond the pre-pass identified; otherwise they are

@@ -98,6 +98,14 @@ def outer_defaults(x):
     return inner(x)
 
 
+def make_adder(n):
+
+    def add(x, step=1):
+        return x + n + step
+
+    return add
+
+
 def pairs(items):
     total = 0
     for k, v in items:

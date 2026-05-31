@@ -1,0 +1,9 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def make_adder(n):
+    def add(x, step=1):
+        return x + n + step
+    return add
