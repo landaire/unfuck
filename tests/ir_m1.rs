@@ -631,6 +631,32 @@ fn except_with_branch_in_handler() {
 }
 
 #[test]
+fn mergeless_with() {
+    // A with-body that always returns: the deob drops the unreachable normal-exit
+    // POP_BLOCK; LOAD_CONST None, leaving no body POP_BLOCK. The WITH_CLEANUP runs
+    // on every exit and the merge still follows it (it is reachable if __exit__
+    // suppresses), so the construct keeps its merge. def f(): with cm() as x: return x
+    let code = Builder::new("f", 0, &["x"], &["cm"], vec![Obj::None])
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .jump(Standard::SETUP_WITH, "cleanup")
+        .arg(Standard::STORE_FAST, 0)
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::RETURN_VALUE)
+        .label("cleanup")
+        .op(Standard::WITH_CLEANUP)
+        .op(Standard::END_FINALLY)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f():\n    with cm() as x:\n        return x\n\n    return None\n"
+    );
+}
+
+#[test]
 fn malformed_except_is_rejected() {
     // A SETUP_EXCEPT whose handler offset is not a real handler dispatch (here a
     // bare RETURN_VALUE, neither the POP_TOP of a bare clause nor the DUP_TOP of a

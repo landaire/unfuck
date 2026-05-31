@@ -1171,21 +1171,28 @@ fn recover_with(
             depth -= 1;
         }
     }
-    let pop_idx = pop_idx.ok_or(IrError::HasControlFlow(Mnemonic::SETUP_WITH))?;
-    // POP_BLOCK; LOAD_CONST None; then the WITH_CLEANUP/END_FINALLY at the cleanup.
-    if mnemonic_at(instrs, pop_idx + 1)? != Mnemonic::LOAD_CONST
-        || pop_idx + 2 != cleanup_idx
-        || mnemonic_at(instrs, cleanup_idx)? != Mnemonic::WITH_CLEANUP
+    // The cleanup (WITH_CLEANUP; END_FINALLY) runs on every exit, so it is present
+    // and the merge always follows it. The normal-exit `POP_BLOCK; LOAD_CONST None`
+    // precedes it, but the deob drops that as unreachable when the body always raises
+    // or returns, leaving no body POP_BLOCK. The merge stays reachable because
+    // `__exit__` may suppress the exception, so it is kept (not `None` as for `try`).
+    if mnemonic_at(instrs, cleanup_idx)? != Mnemonic::WITH_CLEANUP
         || mnemonic_at(instrs, cleanup_idx + 1)? != Mnemonic::END_FINALLY
     {
         return Err(IrError::HasControlFlow(Mnemonic::SETUP_WITH));
+    }
+    if let Some(pop_idx) = pop_idx {
+        if mnemonic_at(instrs, pop_idx + 1)? != Mnemonic::LOAD_CONST || pop_idx + 2 != cleanup_idx
+        {
+            return Err(IrError::HasControlFlow(Mnemonic::SETUP_WITH));
+        }
+        excluded.insert(instrs[pop_idx].offset);
+        excluded.insert(instrs[pop_idx + 1].offset);
     }
     let end = instrs.get(cleanup_idx + 2).ok_or(IrError::Unstructurable)?.offset;
     // Drop the binding and the cleanup machinery so they never form blocks.
     for off in [
         instrs[bind_idx].offset,
-        instrs[pop_idx].offset,
-        instrs[pop_idx + 1].offset,
         instrs[cleanup_idx].offset,
         instrs[cleanup_idx + 1].offset,
     ] {
