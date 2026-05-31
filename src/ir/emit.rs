@@ -569,9 +569,13 @@ impl<'a> Emitter<'a> {
             // statement; one reaching here is an import shape the unstacker did not
             // fully match (e.g. `import a.b as c`), so reject the function.
             Expr::Import(_) | Expr::ImportFrom(_) => (UNRECOVERED.to_string(), prec::ATOM),
-            // The class namespace and class object are consumed by their store; one
-            // reaching here is a class shape that was not fully matched.
-            Expr::Locals | Expr::BuildClass { .. } => (UNRECOVERED.to_string(), prec::ATOM),
+            // `LOAD_LOCALS` is the class namespace a class body returns. Inline
+            // class recovery drops the trailing `return locals()`, so this is only
+            // reached when a class body is decompiled on its own; render the builtin.
+            Expr::Locals => ("locals()".to_string(), prec::ATOM),
+            // The class object is consumed by its store; one reaching here is a class
+            // shape that was not fully matched.
+            Expr::BuildClass { .. } => (UNRECOVERED.to_string(), prec::ATOM),
             Expr::ListComp { element, target, iter, conds } => {
                 let mut text = format!(
                     "[{} for {} in {}",
