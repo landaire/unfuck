@@ -20,9 +20,9 @@ pub mod simplify;
 pub mod structure;
 pub mod unstack;
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
-use py27_marshal::{Code, CodeFlags};
+use py27_marshal::{Code, CodeFlags, Obj};
 use pydis::opcode::py27::Mnemonic;
 
 use cfg::{Cfg, OffsetInstr};
@@ -207,6 +207,42 @@ impl StructuredFunction {
 /// caller never receives invalid or partial source.
 pub fn decompile_function(code: Arc<Code>) -> Result<String, IrError> {
     decompile_function_with_defaults(code, &[])
+}
+
+/// Collects `code` and every code object nested in its consts (functions, class
+/// bodies, comprehensions) into `out`, parents before children.
+fn collect_code_objects(code: &Arc<RwLock<Code>>, out: &mut Vec<Arc<Code>>) {
+    let guard = code.read().unwrap_or_else(|e| e.into_inner());
+    out.push(Arc::new(guard.clone()));
+    for konst in guard.consts.iter() {
+        if let Obj::Code(inner) = konst {
+            collect_code_objects(inner, out);
+        }
+    }
+}
+
+/// Decompiles every code object reachable from `root` (the module body and all
+/// nested functions, classes, and comprehensions) to Python source, concatenated.
+/// A code object that cannot be fully recovered is emitted as a comment naming the
+/// object and the reason, so output is always produced rather than the whole module
+/// failing on one unsupported construct. This is the whole-module entry point the
+/// deobfuscator uses in place of an external decompiler.
+pub fn decompile_module(root: &Arc<RwLock<Code>>) -> String {
+    let mut all = Vec::new();
+    collect_code_objects(root, &mut all);
+    let mut out = String::new();
+    for code in &all {
+        match decompile_function(Arc::clone(code)) {
+            Ok(source) => {
+                out.push_str(&source);
+                out.push_str("\n\n");
+            }
+            Err(err) => {
+                out.push_str(&format!("# {}: {}\n\n", code.name, err));
+            }
+        }
+    }
+    out
 }
 
 /// Decompiles a code object whose enclosing scope supplied default argument
