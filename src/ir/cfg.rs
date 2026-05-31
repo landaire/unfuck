@@ -1274,10 +1274,17 @@ fn recover_finally(
             depth -= 1;
         }
     }
-    let pop_idx = pop_idx.ok_or(IrError::HasControlFlow(Mnemonic::SETUP_FINALLY))?;
-    // `POP_BLOCK; LOAD_CONST None;` then the finally body begins.
-    if mnemonic_at(instrs, pop_idx + 1)? != Mnemonic::LOAD_CONST || pop_idx + 2 != finalbody_idx {
-        return Err(IrError::HasControlFlow(Mnemonic::SETUP_FINALLY));
+    // The normal-exit `POP_BLOCK; LOAD_CONST None;` precedes the finally body, but the
+    // deob drops it as unreachable when the body always raises or returns, leaving no
+    // body POP_BLOCK. The finally body and merge are derived from the SETUP_FINALLY
+    // target and its END_FINALLY, not from this POP_BLOCK, and structuring the body to
+    // the finally is the correct flow whether the body falls through or exits
+    // abnormally, so a missing POP_BLOCK is sound without further checks.
+    if let Some(pop_idx) = pop_idx {
+        if mnemonic_at(instrs, pop_idx + 1)? != Mnemonic::LOAD_CONST || pop_idx + 2 != finalbody_idx
+        {
+            return Err(IrError::HasControlFlow(Mnemonic::SETUP_FINALLY));
+        }
     }
     // The finally clause ends at its own `END_FINALLY` at depth 0.
     let mut depth = 0i32;
