@@ -616,14 +616,9 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         // set of paths not taken which can be removed.
         let mut node_branch_direction = HashMap::<NodeIndex, EdgeWeight>::new();
         let mut potentially_unused_nodes = BTreeSet::<NodeIndex>::new();
-        // All of the nodes which we _know_ are used as part of some execution.
-        // May not be complete.
-        let mut known_used_nodes = BTreeSet::<NodeIndex>::new();
 
         // TODO: high runtime complexity
         for path in &completed_paths {
-            known_used_nodes.extend(path.executed_nodes.iter());
-
             // Filtered list of all the conditions we reached _and_ reached a condition for
             let conditions_reached = path.condition_results.iter().filter_map(|(node, result)| {
                 if result.is_some() {
@@ -751,45 +746,29 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
 
         self.generate_dot_graph("unused_partially_removed_edges");
 
-        // Now that we've figured out which instructions to remove, and which nodes
-        // are required for execution, let's figure out the set of nodes which we
-        // _know_ are never used
-        for nx in self.graph.node_indices() {
-            // Our criteria for removing nodes is as follows:
-            // 1. It must not be any node we've reached
-            // 2. It must not be downgraph from any node we've reached (ignoring
-            //    cyclic nodes)
-
-            trace!("node incides testing: {:#?}", self.graph[nx]);
-            // This node is used -- it must be kept
-            if self.graph[nx]
-                .flags
-                .contains(BasicBlockFlags::USED_IN_EXECUTION)
-                || known_used_nodes.contains(&nx)
-            {
-                trace!("ignoring");
-                continue;
-            }
-
-            let has_used_parent = node_branch_direction
-                .keys()
-                .any(|used_nx| self.is_downgraph(*used_nx, nx));
-            trace!("has_used_parent? {:#?}", has_used_parent);
-
-            // We don't have any paths to this node from nodes which are _actually_ used. We should
-            // remove it
-            if !has_used_parent {
-                nodes_to_remove.insert(nx);
-
-                // Remove this edge to any children
-                let child_edges = self
+        // The dead code is exactly the set of nodes no longer reachable from the
+        // root once the untaken arms of folded opaque predicates are disconnected.
+        // Remove those, and only those. The previous criterion -- keep a node only
+        // if the partial executor walked it or it is downgraph of a walked condition
+        // -- wrongly dropped live blocks the executor simply never walked (forwarding
+        // trampolines, arms reached only past the fork-depth cap). Dropping a live
+        // node severs a real edge, which leaves an orphaned jump and a spurious
+        // fall-through return, corrupting the function.
+        let mut reachable = BTreeSet::new();
+        let mut stack = vec![self.root];
+        while let Some(nx) = stack.pop() {
+            if reachable.insert(nx) {
+                let children = self
                     .graph
                     .edges_directed(nx, Direction::Outgoing)
-                    .map(|e| e.id())
+                    .map(|edge| edge.target())
                     .collect::<Vec<_>>();
-
-                self.graph
-                    .retain_edges(|_g, edge| !child_edges.contains(&edge));
+                stack.extend(children);
+            }
+        }
+        for nx in self.graph.node_indices() {
+            if !reachable.contains(&nx) {
+                nodes_to_remove.insert(nx);
             }
         }
 
@@ -1828,16 +1807,16 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             .map(|edge| edge.id())
             .collect::<Vec<_>>();
 
-        let outgoing_edges: Vec<(EdgeIndex, u64, EdgeWeight)> = self
+        // Capture the destination's outgoing edges by target node index, not by
+        // start offset. join_blocks removes nodes only after the whole pass, so
+        // indices are stable here, while start offsets are not yet recomputed and
+        // can be stale or ambiguous -- re-finding a target by offset can rewire the
+        // edge onto the wrong block (e.g. an `addBan` jump drifting onto a
+        // reassembled `LOG_INFO` call that now shares the trampoline's old offset).
+        let outgoing_edges: Vec<(EdgeIndex, NodeIndex, EdgeWeight)> = self
             .graph
             .edges_directed(dest, Direction::Outgoing)
-            .map(|edge| {
-                (
-                    edge.id(),
-                    self.graph[edge.target()].start_offset,
-                    *edge.weight(),
-                )
-            })
+            .map(|edge| (edge.id(), edge.target(), *edge.weight()))
             .collect();
         let current_node = &self.graph[dest];
 
@@ -1886,15 +1865,8 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                 && !incoming_edges.contains(&edge)
         });
 
-        // Re-add the old node's outgoing edges
-        for (_edge_index, target_offset, weight) in outgoing_edges {
-            let target_index = self
-                .graph
-                .node_indices()
-                .find(|i| self.graph[*i].start_offset == target_offset)
-                .unwrap();
-
-            // Grab this node's index
+        // Re-add the old node's outgoing edges from the merged node.
+        for (_edge_index, target_index, weight) in outgoing_edges {
             self.graph.add_edge(merged_node_index, target_index, weight);
         }
     }
