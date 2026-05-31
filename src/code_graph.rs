@@ -789,29 +789,44 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
 
         self.generate_dot_graph("instructions_removed");
 
-        // go over the empty nodes, merge them into their parent
+        // Drop empty nodes (their only instructions were the condition slice of a
+        // folded opaque predicate) by splicing them out: redirect each predecessor
+        // straight to the empty node's single child, then remove the empty node.
+        //
+        // The previous code merged the child INTO the empty node and removed the
+        // child, which silently dropped the child's OTHER predecessors. When the
+        // child was a forwarding block shared by several jumps (e.g. the
+        // `addBan`/`removeBan` jumps and a folded condition all targeting one
+        // trampoline-to-return), those jumps were left with no successor, which
+        // orphaned them and corrupted the function.
         for node in self.graph.node_indices() {
-            self.generate_dot_graph("last_merged");
-            // TODO: This leaves some nodes that are empty
-            if self.graph[node].instrs.is_empty() {
-                let outgoing_nodes = self
-                    .graph
-                    .edges_directed(node, Direction::Outgoing)
-                    .map(|e| e.target())
-                    .filter(|target| {
-                        // make sure these nodes aren't circular
-                        !self.is_downgraph(*target, node)
-                    })
-                    .collect::<Vec<_>>();
-
-                assert!(outgoing_nodes.len() <= 1);
-
-                if let Some(child) = outgoing_nodes.first() {
-                    self.join_block(node, *child);
-                    nodes_to_remove.insert(*child);
+            if !self.graph[node].instrs.is_empty() {
+                continue;
+            }
+            let child = self
+                .graph
+                .edges_directed(node, Direction::Outgoing)
+                .map(|e| e.target())
+                .filter(|target| !self.is_downgraph(*target, node))
+                .collect::<Vec<_>>();
+            assert!(child.len() <= 1);
+            let Some(&child) = child.first() else {
+                continue;
+            };
+            if child == node {
+                continue;
+            }
+            let incoming: Vec<(NodeIndex, EdgeWeight)> = self
+                .graph
+                .edges_directed(node, Direction::Incoming)
+                .map(|e| (e.source(), *e.weight()))
+                .collect();
+            for (source, weight) in incoming {
+                if source != child {
+                    self.graph.add_edge(source, child, weight);
                 }
             }
-            self.generate_dot_graph("last_merged");
+            nodes_to_remove.insert(node);
         }
 
         let mut needs_new_root = false;
