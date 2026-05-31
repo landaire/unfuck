@@ -319,6 +319,7 @@ impl<'a> Emitter<'a> {
                 | Stmt::For { .. }
                 | Stmt::Try { .. }
                 | Stmt::With { .. }
+                | Stmt::TryFinally { .. }
                 | Stmt::FunctionDef { .. }
                 | Stmt::ClassDef { .. }
         )
@@ -433,6 +434,12 @@ impl<'a> Emitter<'a> {
                 };
                 self.line(&header);
                 self.block(body);
+            }
+            Stmt::TryFinally { body, finalbody } => {
+                self.line("try:");
+                self.block(body);
+                self.line("finally:");
+                self.block(finalbody);
             }
             Stmt::Import { module, target } => self.line(&self.import_line(*module, target)),
             Stmt::FromImport { module, names, star } => {

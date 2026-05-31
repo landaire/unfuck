@@ -84,6 +84,10 @@ fn cleanup(stmts: &mut Vec<Stmt>) {
                 }
             }
             Stmt::With { body, .. } => cleanup(body),
+            Stmt::TryFinally { body, finalbody } => {
+                cleanup(body);
+                cleanup(finalbody);
+            }
             _ => {}
         }
     }
@@ -231,6 +235,16 @@ impl Structurer<'_> {
                     let follow = Point::Block(self.cfg.target(*end)?);
                     let with_body = self.region(self.cfg.target(*body)?, follow, depth + 1)?;
                     out.push(Stmt::With { context, target, body: with_body });
+                    cursor = self.point_block(follow);
+                }
+                Terminator::Finally { body, finalbody, end } => {
+                    let follow = Point::Block(self.cfg.target(*end)?);
+                    let final_at = Point::Block(self.cfg.target(*finalbody)?);
+                    // The protected body converges at the finally clause; the clause
+                    // then converges at the merge.
+                    let try_body = self.region(self.cfg.target(*body)?, final_at, depth + 1)?;
+                    let final_body = self.region(self.cfg.target(*finalbody)?, follow, depth + 1)?;
+                    out.push(Stmt::TryFinally { body: try_body, finalbody: final_body });
                     cursor = self.point_block(follow);
                 }
                 // A ForIter block is always a loop header and is handled by the loop

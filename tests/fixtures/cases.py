@@ -192,6 +192,22 @@ def try_typed(data):
     return result
 
 
+def try_finally(resource):
+    try:
+        use(resource)
+    finally:
+        resource.close()
+
+
+def try_except_finally(data):
+    try:
+        load(data)
+    except Exception as e:
+        log(e)
+    finally:
+        cleanup()
+
+
 def with_as(path):
     with open(path, 'w') as f:
         f.write('x')

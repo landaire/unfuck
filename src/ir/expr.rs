@@ -321,6 +321,12 @@ pub enum Stmt {
         target: Option<LValue>,
         body: Vec<Stmt>,
     },
+    /// `try: ... finally: ...`, recovered from a `SETUP_FINALLY` region. A
+    /// `try/except/finally` lowers to this with a nested [`Stmt::Try`] as the body.
+    TryFinally {
+        body: Vec<Stmt>,
+        finalbody: Vec<Stmt>,
+    },
     /// `import module [as target]`. `target` is the bound name; when it matches the
     /// module's top component no `as` clause is emitted.
     Import {

@@ -1,0 +1,12 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def try_finally(resource):
+    try:
+        use(resource)
+    finally:
+        resource.close()
+
+    return None

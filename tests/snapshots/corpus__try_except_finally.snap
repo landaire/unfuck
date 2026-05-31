@@ -1,0 +1,15 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def try_except_finally(data):
+    try:
+        try:
+            load(data)
+        except Exception as e:
+            log(e)
+    finally:
+        cleanup()
+
+    return None

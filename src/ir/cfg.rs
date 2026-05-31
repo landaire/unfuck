@@ -61,6 +61,13 @@ pub enum Terminator {
         end: Offset,
         target: Option<LValue>,
     },
+    /// `SETUP_FINALLY`: a `try`/`finally` region. `body` is the protected suite,
+    /// `finalbody` the cleanup that always runs, and `end` the merge after it.
+    Finally {
+        body: Offset,
+        finalbody: Offset,
+        end: Offset,
+    },
 }
 
 /// One recovered `except` clause: the matched type, the optional `as name`
@@ -102,6 +109,7 @@ impl Block {
                 targets
             }
             Terminator::With { body, end, .. } => vec![*body, *end],
+            Terminator::Finally { body, finalbody, end } => vec![*body, *finalbody, *end],
             Terminator::Return(_) | Terminator::Raise(_) => Vec::new(),
         }
     }
@@ -116,6 +124,8 @@ impl Block {
             // The body always reaches `end` through the cleanup; that is the normal
             // convergence point even though the implicit edge runs via WITH_CLEANUP.
             Terminator::With { body, end, .. } => vec![*body, *end],
+            // The body falls into the finally, which converges at `end`.
+            Terminator::Finally { body, finalbody, .. } => vec![*body, *finalbody],
             _ => self.successors(),
         }
     }
@@ -158,6 +168,8 @@ impl Cfg {
         let (tries, mut excluded) = recover_tries(instrs)?;
         let (withs, with_excluded) = recover_withs(instrs)?;
         excluded.extend(with_excluded);
+        let (finallys, finally_excluded) = recover_finallys(instrs)?;
+        excluded.extend(finally_excluded);
         // A chained comparison's short-circuit lands past its cleanup; record the
         // merge override and drop the cleanup/forward-jump instructions.
         let (merge_overrides, chained_excluded) = find_chained_comparisons(instrs);
@@ -183,8 +195,16 @@ impl Cfg {
             comp_then_merges.insert(*build, *merge);
         }
         let breaks = break_targets(instrs);
-        let leaders =
-            block_leaders(instrs, &ternaries, &tries, &withs, &excluded, &list_interior, &breaks)?;
+        let leaders = block_leaders(
+            instrs,
+            &ternaries,
+            &tries,
+            &withs,
+            &finallys,
+            &excluded,
+            &list_interior,
+            &breaks,
+        )?;
         let mut by_offset = HashMap::new();
         for (idx, leader) in leaders.iter().enumerate() {
             by_offset.insert(*leader, BlockId(idx as u32));
@@ -216,6 +236,7 @@ impl Cfg {
         // block bodies use.
         let try_terminators = build_try_terminators(&mut unstacker, instrs, &tries)?;
         let with_terminators = build_with_terminators(&withs);
+        let finally_terminators = build_finally_terminators(&finallys);
 
         let mut blocks = Vec::with_capacity(leaders.len());
         let mut for_targets = HashMap::new();
@@ -240,6 +261,7 @@ impl Cfg {
                 &mut for_targets,
                 &try_terminators,
                 &with_terminators,
+                &finally_terminators,
                 &list_comps,
                 &breaks,
                 &else_feeds,
@@ -532,6 +554,7 @@ fn block_leaders(
     ternaries: &HashSet<Offset>,
     tries: &[TryShape],
     withs: &[WithShape],
+    finallys: &[FinallyShape],
     excluded: &HashSet<Offset>,
     list_interior: &HashSet<Offset>,
     breaks: &HashMap<Offset, Offset>,
@@ -544,6 +567,12 @@ fn block_leaders(
     // between them are excluded, so add these leaders explicitly.
     for shape in withs {
         leaders.insert(shape.body_entry);
+        leaders.insert(shape.end);
+    }
+    // A try/finally's body, its finally clause, and its merge each begin a block.
+    for shape in finallys {
+        leaders.insert(shape.body_entry);
+        leaders.insert(shape.finalbody);
         leaders.insert(shape.end);
     }
     // A try's body and every handler clause begin a block; the dispatch between
@@ -586,10 +615,11 @@ fn block_leaders(
                     leaders.insert(next);
                 }
             }
-            // SETUP_EXCEPT/SETUP_WITH only fall through to their managed body; the
-            // recovered terminator supplies the other edges, not a layout split.
+            // SETUP_EXCEPT/SETUP_WITH/SETUP_FINALLY only fall through to their managed
+            // body; the recovered terminator supplies the other edges.
             TerminatorKind::Try
             | TerminatorKind::With
+            | TerminatorKind::Finally
             | TerminatorKind::Return
             | TerminatorKind::Raise => {
                 if let Some(next) = next {
@@ -615,6 +645,7 @@ fn lower_block(
     for_targets: &mut HashMap<BlockId, LValue>,
     try_terminators: &HashMap<Offset, Terminator>,
     with_terminators: &HashMap<Offset, Terminator>,
+    finally_terminators: &HashMap<Offset, Terminator>,
     list_comps: &HashMap<Offset, Offset>,
     breaks: &HashMap<Offset, Offset>,
     else_feeds: &HashMap<Offset, Vec<&OffsetInstr>>,
@@ -713,6 +744,9 @@ fn lower_block(
         TerminatorKind::With => {
             with_terminators.get(&last.offset).cloned().ok_or(IrError::Unstructurable)?
         }
+        TerminatorKind::Finally => {
+            finally_terminators.get(&last.offset).cloned().ok_or(IrError::Unstructurable)?
+        }
         TerminatorKind::Jump => Terminator::Jump(branch_target(last)?),
         TerminatorKind::BreakLoop => {
             Terminator::Jump(breaks.get(&last.offset).copied().ok_or(IrError::Unstructurable)?)
@@ -796,6 +830,7 @@ enum TerminatorKind {
     Raise,
     Try,
     With,
+    Finally,
     /// `BREAK_LOOP`: an implicit jump out of the enclosing loop, resolved to the
     /// loop's follow block via the `SETUP_LOOP` table.
     BreakLoop,
@@ -816,10 +851,9 @@ fn terminator_kind(mnemonic: Mnemonic) -> Result<TerminatorKind, IrError> {
         Mnemonic::FOR_ITER => TerminatorKind::ForIter,
         Mnemonic::SETUP_EXCEPT => TerminatorKind::Try,
         Mnemonic::SETUP_WITH => TerminatorKind::With,
+        Mnemonic::SETUP_FINALLY => TerminatorKind::Finally,
         Mnemonic::BREAK_LOOP => TerminatorKind::BreakLoop,
-        Mnemonic::SETUP_FINALLY | Mnemonic::END_FINALLY => {
-            return Err(IrError::HasControlFlow(mnemonic))
-        }
+        Mnemonic::END_FINALLY => return Err(IrError::HasControlFlow(mnemonic)),
         // JUMP_IF_*_OR_POP is a short-circuit operator handled inside a block by the
         // unstacker, not a control-flow terminator.
         _ => TerminatorKind::None,
@@ -1160,6 +1194,105 @@ fn build_with_terminators(withs: &[WithShape]) -> HashMap<Offset, Terminator> {
             (
                 w.setup,
                 Terminator::With { body: w.body_entry, end: w.end, target: w.target.clone() },
+            )
+        })
+        .collect()
+}
+
+/// A recovered `try`/`finally` region over the raw instruction stream.
+struct FinallyShape {
+    /// Offset of the `SETUP_FINALLY` (the block whose terminator becomes `Finally`).
+    setup: Offset,
+    /// First instruction of the protected body.
+    body_entry: Offset,
+    /// First instruction of the finally clause.
+    finalbody: Offset,
+    /// Merge point reached after the construct (past the finally's `END_FINALLY`).
+    end: Offset,
+}
+
+/// Recovers every `try`/`finally` region and the `END_FINALLY` offsets to drop. A
+/// `SETUP_FINALLY` whose surrounding bytecode is not the regular CPython 2.7 shape
+/// rejects the function rather than risk wrong source.
+fn recover_finallys(
+    instrs: &[OffsetInstr],
+) -> Result<(Vec<FinallyShape>, HashSet<Offset>), IrError> {
+    let index: HashMap<Offset, usize> =
+        instrs.iter().enumerate().map(|(i, it)| (it.offset, i)).collect();
+    let mut shapes = Vec::new();
+    let mut excluded = HashSet::new();
+    for (idx, item) in instrs.iter().enumerate() {
+        if item.instr.opcode.mnemonic() == Mnemonic::SETUP_FINALLY {
+            shapes.push(recover_finally(instrs, &index, idx, &mut excluded)?);
+        }
+    }
+    Ok((shapes, excluded))
+}
+
+/// Recovers a single `try`/`finally` rooted at the `SETUP_FINALLY` at `setup_idx`.
+/// The shape is `SETUP_FINALLY fin; <body>; POP_BLOCK; LOAD_CONST None; fin:
+/// <finalbody>; END_FINALLY`. The `POP_BLOCK`/`LOAD_CONST None` stay in the body
+/// (a no-op and a discarded sentinel) so a nested try/except whose merge is that
+/// `POP_BLOCK` still forms its block; only the finally's `END_FINALLY` is dropped.
+fn recover_finally(
+    instrs: &[OffsetInstr],
+    index: &HashMap<Offset, usize>,
+    setup_idx: usize,
+    excluded: &mut HashSet<Offset>,
+) -> Result<FinallyShape, IrError> {
+    let setup = &instrs[setup_idx];
+    let finalbody_off = branch_target(setup)?;
+    let finalbody_idx = *index.get(&finalbody_off).ok_or(IrError::BadOperand)?;
+    let body_entry = instrs.get(setup_idx + 1).ok_or(IrError::Unstructurable)?.offset;
+    // The body exits through its `POP_BLOCK` at block-nesting depth 0.
+    let mut depth = 0i32;
+    let mut pop_idx = None;
+    for i in (setup_idx + 1)..finalbody_idx {
+        let mnemonic = instrs[i].instr.opcode.mnemonic();
+        if format!("{:?}", mnemonic).starts_with("SETUP_") {
+            depth += 1;
+        } else if mnemonic == Mnemonic::POP_BLOCK {
+            if depth == 0 {
+                pop_idx = Some(i);
+                break;
+            }
+            depth -= 1;
+        }
+    }
+    let pop_idx = pop_idx.ok_or(IrError::HasControlFlow(Mnemonic::SETUP_FINALLY))?;
+    // `POP_BLOCK; LOAD_CONST None;` then the finally body begins.
+    if mnemonic_at(instrs, pop_idx + 1)? != Mnemonic::LOAD_CONST || pop_idx + 2 != finalbody_idx {
+        return Err(IrError::HasControlFlow(Mnemonic::SETUP_FINALLY));
+    }
+    // The finally clause ends at its own `END_FINALLY` at depth 0.
+    let mut depth = 0i32;
+    let mut end_idx = None;
+    for i in finalbody_idx..instrs.len() {
+        let mnemonic = instrs[i].instr.opcode.mnemonic();
+        if format!("{:?}", mnemonic).starts_with("SETUP_") {
+            depth += 1;
+        } else if mnemonic == Mnemonic::END_FINALLY {
+            if depth == 0 {
+                end_idx = Some(i);
+                break;
+            }
+            depth -= 1;
+        }
+    }
+    let end_idx = end_idx.ok_or(IrError::HasControlFlow(Mnemonic::SETUP_FINALLY))?;
+    let end = instrs.get(end_idx + 1).ok_or(IrError::Unstructurable)?.offset;
+    excluded.insert(instrs[end_idx].offset);
+    Ok(FinallyShape { setup: setup.offset, body_entry, finalbody: finalbody_off, end })
+}
+
+/// Builds each `try`/`finally` block's `Finally` terminator from its shape.
+fn build_finally_terminators(finallys: &[FinallyShape]) -> HashMap<Offset, Terminator> {
+    finallys
+        .iter()
+        .map(|f| {
+            (
+                f.setup,
+                Terminator::Finally { body: f.body_entry, finalbody: f.finalbody, end: f.end },
             )
         })
         .collect()
@@ -1589,6 +1722,7 @@ fn branch_target(item: &OffsetInstr) -> Result<Offset, IrError> {
         | Mnemonic::FOR_ITER
         | Mnemonic::SETUP_EXCEPT
         | Mnemonic::SETUP_WITH
+        | Mnemonic::SETUP_FINALLY
         | Mnemonic::SETUP_LOOP => Offset(item.offset.0 + item.instr.len() as u32 + arg),
         other => return Err(IrError::HasControlFlow(other)),
     })
