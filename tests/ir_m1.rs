@@ -632,8 +632,10 @@ fn except_with_branch_in_handler() {
 
 #[test]
 fn malformed_except_is_rejected() {
-    // A SETUP_EXCEPT without the POP_BLOCK; JUMP_FORWARD body exit is not the
-    // shape the recoverer accepts, so the function is rejected, not mis-emitted.
+    // A SETUP_EXCEPT whose handler offset is not a real handler dispatch (here a
+    // bare RETURN_VALUE, neither the POP_TOP of a bare clause nor the DUP_TOP of a
+    // typed one) is not a shape the recoverer accepts, so the function is rejected
+    // rather than mis-emitted.
     let code = Builder::new("f", 0, &[], &[], vec![Obj::None])
         .jump(Standard::SETUP_EXCEPT, "after")
         .arg(Standard::LOAD_CONST, 0)
@@ -643,4 +645,71 @@ fn malformed_except_is_rejected() {
 
     let result = unfuck::ir::decompile_function(code);
     assert!(matches!(result, Err(unfuck::ir::IrError::HasControlFlow(_))));
+}
+
+#[test]
+fn mergeless_bare_except() {
+    // When the try body always raises, the deob drops the dead `POP_BLOCK; JUMP
+    // merge` body exit, leaving the function's implicit `return None` epilogue
+    // unreachable after the RAISE. The construct then has no merge of its own; the
+    // bare handler runs and returns. def f(): try: raise g() except: h(); return
+    let code = Builder::new("f", 0, &[], &["g", "h"], vec![Obj::None])
+        .jump(Standard::SETUP_EXCEPT, "handler")
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .arg(Standard::RAISE_VARARGS, 1)
+        // Unreachable epilogue the relinearizer leaves after the raising body.
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .label("handler")
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f():\n    try:\n        raise g()\n    except:\n        h()\n        return None\n"
+    );
+}
+
+#[test]
+fn mergeless_typed_except() {
+    // The merge-less shape with a typed clause: the unmatched path re-raises through
+    // END_FINALLY (excluded), the matched handler binds the value and returns.
+    // def f(): try: raise g() except Exception as e: log(e); return
+    let code = Builder::new("f", 0, &["e"], &["g", "Exception", "log"], vec![Obj::None])
+        .jump(Standard::SETUP_EXCEPT, "handler")
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .arg(Standard::RAISE_VARARGS, 1)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .label("handler")
+        .op(Standard::DUP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::COMPARE_OP, 10)
+        .jump(Standard::POP_JUMP_IF_FALSE, "reraise")
+        .op(Standard::POP_TOP)
+        .arg(Standard::STORE_FAST, 0)
+        .op(Standard::POP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 2)
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .op(Standard::POP_TOP)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .label("reraise")
+        .op(Standard::END_FINALLY)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f():\n    try:\n        raise g()\n    except Exception as e:\n        log(e)\n        return None\n"
+    );
 }

@@ -47,11 +47,13 @@ pub enum Terminator {
     /// each handler is one `except` clause. Both the body and every handler
     /// converge at `end` (the merge after the whole construct). The handler
     /// dispatch instructions are recovered into [`HandlerArm`]s and do not appear
-    /// as blocks.
+    /// as blocks. `end` is `None` when the body always raises or returns: the deob
+    /// then drops the body's `POP_BLOCK; JUMP merge` exit, so the merge is reachable
+    /// only through a handler that falls through and is absorbed into that arm.
     Try {
         body: Offset,
         handlers: Vec<HandlerArm>,
-        end: Offset,
+        end: Option<Offset>,
     },
     /// `SETUP_WITH`: a `with` region. `body` is the managed suite; `end` is the
     /// merge after the construct. `target` is the `as` binding, if any. The context
@@ -580,7 +582,11 @@ fn block_leaders(
     // out of the terminator scan.
     for shape in tries {
         leaders.insert(shape.body_entry);
-        leaders.insert(shape.end);
+        // A merge-less try has no explicit merge leader; when a handler falls
+        // through, the terminator scan adds its jump target as a leader.
+        if let Some(end) = shape.end {
+            leaders.insert(end);
+        }
         for clause in &shape.clauses {
             leaders.insert(clause.body_entry);
         }
@@ -1059,8 +1065,10 @@ struct TryShape {
     setup: Offset,
     /// First instruction of the protected body.
     body_entry: Offset,
-    /// Merge point reached after the body and every handler.
-    end: Offset,
+    /// Merge point reached after the body and every handler, or `None` when the
+    /// body has no normal exit (always raises or returns) and the deob dropped the
+    /// `POP_BLOCK; JUMP merge` body exit.
+    end: Option<Offset>,
     clauses: Vec<ClauseShape>,
 }
 
@@ -1337,11 +1345,24 @@ fn recover_try(
             depth -= 1;
         }
     }
-    let pop_idx = pop_idx.ok_or(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT))?;
-    let jump = instrs.get(pop_idx + 1).ok_or(IrError::Unstructurable)?;
-    let end = match jump.instr.opcode.mnemonic() {
-        Mnemonic::JUMP_FORWARD | Mnemonic::JUMP_ABSOLUTE => branch_target(jump)?,
-        _ => return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT)),
+    // A SETUP_EXCEPT pushes a block that any normal exit from the body must pop, so
+    // valid CPython 2.7 bytecode always reaches a `POP_BLOCK` before leaving the body
+    // normally. The deob preserves that validity and only ever removes the
+    // `POP_BLOCK; JUMP merge` exit when it is unreachable, i.e. the body always raises
+    // or returns. So a missing POP_BLOCK means the body has no normal exit and the
+    // construct has no merge of its own (`end` is `None`); the merge, if any, is
+    // reached only through a handler and absorbed into that arm. The structurer's
+    // `Point::Exit` guard rejects (rather than mis-emits) any body whose region does
+    // not terminate, e.g. a nested merge-less try miscounted into this one.
+    let end = match pop_idx {
+        Some(pop_idx) => {
+            let jump = instrs.get(pop_idx + 1).ok_or(IrError::Unstructurable)?;
+            match jump.instr.opcode.mnemonic() {
+                Mnemonic::JUMP_FORWARD | Mnemonic::JUMP_ABSOLUTE => Some(branch_target(jump)?),
+                _ => return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT)),
+            }
+        }
+        None => None,
     };
 
     let mut clauses = Vec::new();
@@ -1417,8 +1438,13 @@ fn recover_try(
     // Drop every END_FINALLY in the handler span. The relinearizer can place the
     // merge before the handler, so clamp the scan to a forward span (when the merge
     // is earlier, the handler's END_FINALLY, if any, lies past it and the bare-except
-    // forms reaching here have none).
-    let end_idx = *index.get(&end).ok_or(IrError::BadOperand)?;
+    // forms reaching here have none). A merge-less try has no merge to clamp at, so
+    // scan to the end of the stream; END_FINALLY is always structural, so excluding
+    // one that belongs to a later sibling is idempotent with that sibling's recovery.
+    let end_idx = match end {
+        Some(end) => *index.get(&end).ok_or(IrError::BadOperand)?,
+        None => instrs.len(),
+    };
     for item in &instrs[handler_idx..end_idx.max(handler_idx)] {
         if item.instr.opcode.mnemonic() == Mnemonic::END_FINALLY {
             excluded.insert(item.offset);

@@ -207,7 +207,16 @@ impl Structurer<'_> {
                     cursor = self.point_block(follow);
                 }
                 Terminator::Try { body, handlers, end } => {
-                    let follow = Point::Block(self.cfg.target(*end)?);
+                    // A merge-less try (`end` is `None`) has no normal successor: the
+                    // body always raises or returns, so the merge is reached only
+                    // through a handler that falls through, and structuring to the
+                    // function exit absorbs it into that arm. Require the body and
+                    // every handler to terminate, so an unsound shape (a body that
+                    // could fall through to a merge) is rejected, not mis-absorbed.
+                    let follow = match end {
+                        Some(end) => Point::Block(self.cfg.target(*end)?),
+                        None => Point::Exit,
+                    };
                     let try_body = self.region(self.cfg.target(*body)?, follow, depth + 1)?;
                     let mut arms = Vec::with_capacity(handlers.len());
                     for handler in handlers {
@@ -217,6 +226,12 @@ impl Structurer<'_> {
                             name: handler.name.clone(),
                             body: arm_body,
                         });
+                    }
+                    if follow == Point::Exit {
+                        let terminal = |stmts: &[Stmt]| stmts.last().is_some_and(terminates);
+                        if !terminal(&try_body) || !arms.iter().all(|arm| terminal(&arm.body)) {
+                            return Err(IrError::Unstructurable);
+                        }
                     }
                     out.push(Stmt::Try { body: try_body, handlers: arms });
                     cursor = self.point_block(follow);
