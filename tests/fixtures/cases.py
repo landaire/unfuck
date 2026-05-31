@@ -133,6 +133,16 @@ def choose_and3(c1, c2, c3, a, b):
     return x
 
 
+def chained_cmp(a, b, c):
+    x = a <= b < c
+    return x
+
+
+def chained_cmp_and(a, b, c, d):
+    x = a < b < c and b < d
+    return x
+
+
 def aug_name(x):
     x += 1
     x *= 2

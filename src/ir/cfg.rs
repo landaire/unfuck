@@ -130,7 +130,11 @@ impl Cfg {
 
     fn build_with(instrs: &[OffsetInstr], comp: bool) -> Result<Cfg, IrError> {
         let ternaries = find_ternaries(instrs);
-        let (tries, excluded) = recover_tries(instrs)?;
+        let (tries, mut excluded) = recover_tries(instrs)?;
+        // A chained comparison's short-circuit lands past its cleanup; record the
+        // merge override and drop the cleanup/forward-jump instructions.
+        let (merge_overrides, chained_excluded) = find_chained_comparisons(instrs);
+        excluded.extend(chained_excluded);
         // Inline list comprehensions are folded whole; their interior instructions
         // stay inside one block and never become block leaders or for-loops.
         let (list_comps, list_interior) = find_list_comps(instrs);
@@ -160,6 +164,7 @@ impl Cfg {
         } else {
             Unstacker::new()
         };
+        unstacker.set_merge_overrides(merge_overrides);
 
         // Build each try's terminator up front: the exception-type expressions are
         // lowered through the shared unstacker so they enter the same arena the
@@ -915,6 +920,56 @@ fn disqualifies_list_comp(mnemonic: Mnemonic) -> bool {
         )
 }
 
+/// Recognises chained comparisons (`a < b < c`). The compiler emits each as
+/// `DUP_TOP; ROT_THREE; COMPARE; JUMP_IF_FALSE_OR_POP L`, ending with a final
+/// `COMPARE; JUMP_FORWARD L2; L: ROT_TWO; POP_TOP`. The `DUP_TOP` makes the middle
+/// operand a shared value, so the short-circuit recovers `cmp1 and cmp2 ...`
+/// (rendered chained in emit). This returns: the merge offset each
+/// `JUMP_IF_FALSE_OR_POP` should use (the value lands after the cleanup at L2, not
+/// at its literal target L), and the cleanup/forward-jump offsets to drop.
+fn find_chained_comparisons(
+    instrs: &[OffsetInstr],
+) -> (HashMap<Offset, Offset>, HashSet<Offset>) {
+    let index: HashMap<Offset, usize> = instrs
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| (item.offset, idx))
+        .collect();
+    let mut overrides = HashMap::new();
+    let mut excluded = HashSet::new();
+    for item in instrs {
+        if item.instr.opcode.mnemonic() != Mnemonic::JUMP_IF_FALSE_OR_POP {
+            continue;
+        }
+        let Ok(cleanup) = branch_target(item) else {
+            continue;
+        };
+        let Some(&l_idx) = index.get(&cleanup) else {
+            continue;
+        };
+        // The cleanup at the jump target is exactly ROT_TWO; POP_TOP, preceded by
+        // the final comparison's JUMP_FORWARD to the real merge.
+        if l_idx == 0
+            || instrs[l_idx].instr.opcode.mnemonic() != Mnemonic::ROT_TWO
+            || instrs.get(l_idx + 1).map(|i| i.instr.opcode.mnemonic()) != Some(Mnemonic::POP_TOP)
+        {
+            continue;
+        }
+        let forward = &instrs[l_idx - 1];
+        if forward.instr.opcode.mnemonic() != Mnemonic::JUMP_FORWARD {
+            continue;
+        }
+        let Ok(merge) = branch_target(forward) else {
+            continue;
+        };
+        overrides.insert(item.offset, merge);
+        excluded.insert(forward.offset);
+        excluded.insert(instrs[l_idx].offset);
+        excluded.insert(instrs[l_idx + 1].offset);
+    }
+    (overrides, excluded)
+}
+
 /// Resolves each `BREAK_LOOP` to the offset it jumps to: the block right before
 /// the enclosing `SETUP_LOOP`'s follow, which is the loop's follow as the
 /// structurer computes it (a `for` loop's `FOR_ITER` exit, a `while` loop's
@@ -959,6 +1014,8 @@ fn branch_target(item: &OffsetInstr) -> Result<Offset, IrError> {
         Mnemonic::JUMP_ABSOLUTE
         | Mnemonic::POP_JUMP_IF_FALSE
         | Mnemonic::POP_JUMP_IF_TRUE
+        | Mnemonic::JUMP_IF_FALSE_OR_POP
+        | Mnemonic::JUMP_IF_TRUE_OR_POP
         | Mnemonic::CONTINUE_LOOP => Offset(arg),
         Mnemonic::JUMP_FORWARD
         | Mnemonic::FOR_ITER

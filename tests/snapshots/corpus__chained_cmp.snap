@@ -1,0 +1,8 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def chained_cmp(a, b, c):
+    x = a <= b < c
+    return x

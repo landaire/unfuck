@@ -399,9 +399,28 @@ impl<'a> Emitter<'a> {
                     BoolKind::And => prec::AND,
                     BoolKind::Or => prec::OR,
                 };
-                let rendered: Vec<String> =
-                    operands.iter().map(|o| self.expr(*o, level + 1)).collect();
-                (rendered.join(&format!(" {} ", kind.symbol())), level)
+                // Group consecutive comparisons that share their boundary operand
+                // into the chained form `a < b < c` they were compiled from; render
+                // everything else as an ordinary operand.
+                let mut parts = Vec::new();
+                let mut i = 0;
+                while i < operands.len() {
+                    if let Some((chained, consumed)) = self.chained_comparison(*kind, &operands[i..])
+                    {
+                        parts.push(chained);
+                        i += consumed;
+                    } else {
+                        parts.push(self.expr(operands[i], level + 1));
+                        i += 1;
+                    }
+                }
+                // A single part means the whole operator folded into one chained
+                // comparison, which binds at comparison precedence, not boolean.
+                if parts.len() == 1 {
+                    (parts.pop().unwrap(), prec::COMPARE)
+                } else {
+                    (parts.join(&format!(" {} ", kind.symbol())), level)
+                }
             }
             Expr::Call { func, args, kwargs, star, kwstar } => {
                 if let Some(comp) = self.comprehension_call(*func, args, kwargs, *star, *kwstar) {
@@ -516,6 +535,38 @@ impl<'a> Emitter<'a> {
             CompKind::List => format!("[{}]", body),
             CompKind::Set | CompKind::Dict => format!("{{{}}}", body),
         })
+    }
+
+    /// If `operands` begins with two or more comparisons where each shares its
+    /// right operand with the next one's left operand (the same value id, produced
+    /// by a chained comparison's `DUP_TOP`), renders that run as `a op1 b op2 c` and
+    /// returns it with the number of operands consumed. Returns `None` otherwise, so
+    /// an ordinary `and`/`or` of comparisons is unaffected.
+    fn chained_comparison(&self, kind: BoolKind, operands: &[ValueId]) -> Option<(String, usize)> {
+        if kind != BoolKind::And {
+            return None;
+        }
+        let compare = |id: ValueId| match self.arena.get(id) {
+            Expr::Compare(op, lhs, rhs) => Some((*op, *lhs, *rhs)),
+            _ => None,
+        };
+        let mut chain = vec![compare(operands[0])?];
+        for &operand in &operands[1..] {
+            let next = compare(operand)?;
+            // The next comparison must continue the chain from the previous bound.
+            if chain.last().unwrap().2 != next.1 {
+                break;
+            }
+            chain.push(next);
+        }
+        if chain.len() < 2 {
+            return None;
+        }
+        let mut text = self.expr(chain[0].1, prec::COMPARE + 1);
+        for (op, _lhs, rhs) in &chain {
+            text.push_str(&format!(" {} {}", op.symbol(), self.expr(*rhs, prec::COMPARE + 1)));
+        }
+        Some((text, chain.len()))
     }
 
     fn varname(&self, var: VarId) -> String {

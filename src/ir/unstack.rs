@@ -6,6 +6,8 @@
 //! outside the supported set return [`IrError::Unsupported`] so coverage gaps
 //! surface instead of producing wrong output.
 
+use std::collections::HashMap;
+
 use pydis::opcode::py27::{Mnemonic, Standard};
 use pydis::prelude::*;
 
@@ -56,6 +58,10 @@ pub struct Unstacker {
     shortcircuit: Vec<ShortCircuit>,
     ternary: Option<PendingTernary>,
     from_import: Option<PendingFrom>,
+    /// Overrides the merge offset of a `JUMP_IF_FALSE_OR_POP` whose short-circuit is
+    /// a chained-comparison test: the value lands after the cleanup, not at the
+    /// jump's literal target. Keyed by the jump's offset.
+    merge_overrides: HashMap<Offset, Offset>,
     /// True when lowering a comprehension code object: its leading `BUILD_SET`/
     /// `BUILD_MAP` is the accumulator (kept off the stack), and `SET_ADD`/`MAP_ADD`
     /// become element statements instead of unsupported opcodes.
@@ -83,9 +89,15 @@ impl Unstacker {
             shortcircuit: Vec::new(),
             ternary: None,
             from_import: None,
+            merge_overrides: HashMap::new(),
             comp,
             comp_acc_seen: false,
         }
+    }
+
+    /// Records the chained-comparison merge overrides for this function.
+    pub fn set_merge_overrides(&mut self, overrides: HashMap<Offset, Offset>) {
+        self.merge_overrides = overrides;
     }
 
     /// Whether this unstacker is lowering a comprehension code object.
@@ -677,11 +689,14 @@ impl Unstacker {
                     BoolKind::Or
                 };
                 let lhs = self.pop()?;
-                self.shortcircuit.push(ShortCircuit {
-                    kind,
-                    lhs,
-                    merge: Offset(arg_u16(arg)? as u32),
-                });
+                // A chained comparison lands its value after the cleanup, not at the
+                // jump target; use the override when one was recorded.
+                let merge = self
+                    .merge_overrides
+                    .get(&offset)
+                    .copied()
+                    .unwrap_or(Offset(arg_u16(arg)? as u32));
+                self.shortcircuit.push(ShortCircuit { kind, lhs, merge });
             }
             Mnemonic::UNPACK_SEQUENCE => {
                 let arity = arg_u16(arg)? as usize;

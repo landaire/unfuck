@@ -61,6 +61,8 @@ fn cases() {
         "choose_not",
         "choose_and",
         "choose_and3",
+        "chained_cmp",
+        "chained_cmp_and",
         "aug_name",
         "aug_attr",
         "aug_subscript",
