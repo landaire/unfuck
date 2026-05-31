@@ -187,14 +187,24 @@ where
             match &tos {
                 Some(Obj::Long(right)) => match op {
                     BinaryOp::Multiply => {
-                        let value = left
-                            .read()
-                            .unwrap()
-                            .repeat(right.read().unwrap().to_usize().unwrap());
-                        stack.push((
-                            Some(Obj::String(Arc::new(RwLock::new(BString::from(value))))),
-                            tos_accesses,
-                        ));
+                        // The obfuscator feeds huge multipliers; partial execution only
+                        // tracks the value, so materializing `str * huge` would allocate
+                        // gigabytes and abort the process. Cap the result size and treat
+                        // an oversized (or out-of-range) repetition as an unknown value.
+                        const MAX_REPEAT_BYTES: usize = 1 << 20;
+                        let count = right.read().unwrap().to_usize();
+                        let len = left.read().unwrap().len();
+                        match count.filter(|c| c.checked_mul(len).is_some_and(|n| n <= MAX_REPEAT_BYTES))
+                        {
+                            Some(count) => {
+                                let value = left.read().unwrap().repeat(count);
+                                stack.push((
+                                    Some(Obj::String(Arc::new(RwLock::new(BString::from(value))))),
+                                    tos_accesses,
+                                ));
+                            }
+                            None => stack.push((None, tos_accesses)),
+                        }
                     }
                     BinaryOp::Add => {
                         let mut new_val = left.read().unwrap().clone();
