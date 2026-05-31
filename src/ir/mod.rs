@@ -221,17 +221,31 @@ fn collect_code_objects(code: &Arc<RwLock<Code>>, out: &mut Vec<Arc<Code>>) {
     }
 }
 
+/// Whether `code` is a comprehension or generator-expression body. Such objects
+/// take the synthetic single argument `.0` (not a writable identifier, so no real
+/// function has one) and are only valid inlined into their parent, where the folder
+/// recovers them. Decompiled standalone they always fail, so the module dump skips
+/// them rather than emit a noise comment for a construct that is already inlined.
+pub fn is_comprehension_body(code: &Code) -> bool {
+    code.argcount == 1
+        && code.varnames.first().map(|name| name.to_string()).as_deref() == Some(".0")
+}
+
 /// Decompiles every code object reachable from `root` (the module body and all
-/// nested functions, classes, and comprehensions) to Python source, concatenated.
-/// A code object that cannot be fully recovered is emitted as a comment naming the
-/// object and the reason, so output is always produced rather than the whole module
-/// failing on one unsupported construct. This is the whole-module entry point the
-/// deobfuscator uses in place of an external decompiler.
+/// nested functions and classes) to Python source, concatenated. Comprehension and
+/// generator-expression bodies are skipped because they are recovered inline in
+/// their parent. A code object that cannot be fully recovered is emitted as a
+/// comment naming the object and the reason, so output is always produced rather
+/// than the whole module failing on one unsupported construct. This is the
+/// whole-module entry point the deobfuscator uses in place of an external decompiler.
 pub fn decompile_module(root: &Arc<RwLock<Code>>) -> String {
     let mut all = Vec::new();
     collect_code_objects(root, &mut all);
     let mut out = String::new();
     for code in &all {
+        if is_comprehension_body(code) {
+            continue;
+        }
         match decompile_function(Arc::clone(code)) {
             Ok(source) => {
                 out.push_str(&source);

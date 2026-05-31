@@ -102,6 +102,12 @@ fn main() {
         }
 
         for code in all {
+            // Comprehension/genexpr bodies are only valid inlined in their parent
+            // (where the folder recovers them); decompiling them standalone always
+            // fails, so they are not counted as real coverage gaps.
+            if unfuck::ir::is_comprehension_body(&code) {
+                continue;
+            }
             total += 1;
             let name = code.name.to_string();
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

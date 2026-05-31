@@ -75,33 +75,9 @@ fn main() {
             );
             std::process::exit(1);
         }
-        let mut all = Vec::new();
-        collect(&root, &mut all);
-        let mut combined = String::new();
-        let mut ok = 0usize;
-        let mut failed = 0usize;
-        for code in &all {
-            let name = code.name.to_string();
-            match unfuck::ir::decompile_function(code.clone()) {
-                Ok(source) => {
-                    ok += 1;
-                    combined.push_str(&source);
-                    combined.push_str("\n\n");
-                }
-                Err(err) => {
-                    failed += 1;
-                    combined.push_str(&format!("# {}: {}\n\n", name, err));
-                }
-            }
-        }
+        let combined = unfuck::ir::decompile_module(&root);
         std::fs::write(&out_path, &combined).expect("write dump");
-        println!(
-            "dumped {} code objects ({} ok, {} failed) to {}",
-            all.len(),
-            ok,
-            failed,
-            out_path.display()
-        );
+        println!("dumped module to {}", out_path.display());
         return;
     }
 
