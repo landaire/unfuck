@@ -6,7 +6,6 @@ use pydis::prelude::{Instruction, Opcode};
 use rayon::prelude::*;
 
 use py27_marshal::{Code, Obj};
-use rayon::Scope;
 use smallvm::InstructionTracker;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
@@ -170,19 +169,15 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscator<'a, O> {
             let mut results = vec![];
             let mut mapped_names = HashMap::new();
             let mut graphs = HashMap::new();
-            let out_results = Arc::new(Mutex::new(vec![]));
-            rayon::scope(|scope| {
-                self.deobfuscate_nested_code_objects(
-                    Arc::clone(&code),
-                    scope,
-                    Arc::clone(&out_results),
-                );
-            });
+            // Process this code object and all nested ones sequentially. The
+            // caller (wowsdeob) already parallelizes across thousands of files on
+            // the rayon pool, so nesting a second rayon::scope here adds no real
+            // parallelism -- and combined with the GIL acquired in rename_vars it
+            // deadlocks the whole pool (every worker parks at an inner scope
+            // barrier while holding/awaiting the GIL).
+            let mut out_results = vec![];
+            self.deobfuscate_nested_code_objects(Arc::clone(&code), &mut out_results);
 
-            let out_results = Arc::try_unwrap(out_results)
-                .unwrap_or_else(|_| panic!("failed to unwrap mapped names"))
-                .into_inner()
-                .unwrap();
             for result in out_results {
                 let result = result?;
                 results.push((result.file_number, result.new_bytecode));
@@ -211,27 +206,22 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscator<'a, O> {
     }
 
     pub(crate) fn deobfuscate_nested_code_objects(
-        &'a self,
+        &self,
         code: Arc<Code>,
-        scope: &Scope<'a>,
-        out_results: Arc<Mutex<Vec<Result<DeobfuscatedBytecode, Error<O>>>>>,
+        out_results: &mut Vec<Result<DeobfuscatedBytecode, Error<O>>>,
     ) {
         let file_number = self.files_processed.fetch_add(1, Ordering::Relaxed);
 
-        let task_code = Arc::clone(&code);
-        let thread_results = Arc::clone(&out_results);
-        scope.spawn(move |_scope| {
-            let res = self.deobfuscate_code(task_code, file_number);
-            thread_results.lock().unwrap_or_else(|e| e.into_inner()).push(res);
-        });
+        let res = self.deobfuscate_code(Arc::clone(&code), file_number);
+        out_results.push(res);
 
         // We need to find and replace the code sections which may also be in the const data
         for c in code.consts.iter() {
             if let Obj::Code(const_code) = c {
-                let thread_results = Arc::clone(&out_results);
-                let thread_code = Arc::new(const_code.read().unwrap_or_else(|e| e.into_inner()).clone());
+                let const_code =
+                    Arc::new(const_code.read().unwrap_or_else(|e| e.into_inner()).clone());
 
-                self.deobfuscate_nested_code_objects(thread_code, scope, thread_results);
+                self.deobfuscate_nested_code_objects(const_code, out_results);
             }
         }
     }
