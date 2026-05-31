@@ -134,7 +134,8 @@ impl Cfg {
         // Inline list comprehensions are folded whole; their interior instructions
         // stay inside one block and never become block leaders or for-loops.
         let (list_comps, list_interior) = find_list_comps(instrs);
-        let leaders = block_leaders(instrs, &ternaries, &tries, &excluded, &list_interior)?;
+        let breaks = break_targets(instrs);
+        let leaders = block_leaders(instrs, &ternaries, &tries, &excluded, &list_interior, &breaks)?;
         let mut by_offset = HashMap::new();
         for (idx, leader) in leaders.iter().enumerate() {
             by_offset.insert(*leader, BlockId(idx as u32));
@@ -188,6 +189,7 @@ impl Cfg {
                 &mut for_targets,
                 &try_terminators,
                 &list_comps,
+                &breaks,
             )
             // A block that does not lower (an unsupported opcode, a stack error) is
             // kept as a poison dead-end rather than failing the whole function, so
@@ -244,6 +246,7 @@ fn block_leaders(
     tries: &[TryShape],
     excluded: &HashSet<Offset>,
     list_interior: &HashSet<Offset>,
+    breaks: &HashMap<Offset, Offset>,
 ) -> Result<Vec<Offset>, IrError> {
     let mut leaders = BTreeSet::new();
     if let Some(first) = instrs.first() {
@@ -280,6 +283,15 @@ fn block_leaders(
                     leaders.insert(next);
                 }
             }
+            // A break jumps to its loop's follow block (resolved via SETUP_LOOP).
+            TerminatorKind::BreakLoop => {
+                if let Some(&target) = breaks.get(&item.offset) {
+                    leaders.insert(target);
+                }
+                if let Some(next) = next {
+                    leaders.insert(next);
+                }
+            }
             // SETUP_EXCEPT only falls through to its protected body; its handler is
             // reached by the recovered terminator, not a layout edge.
             TerminatorKind::Try | TerminatorKind::Return | TerminatorKind::Raise => {
@@ -306,6 +318,7 @@ fn lower_block(
     for_targets: &mut HashMap<BlockId, LValue>,
     try_terminators: &HashMap<Offset, Terminator>,
     list_comps: &HashMap<Offset, Offset>,
+    breaks: &HashMap<Offset, Offset>,
 ) -> Result<Block, IrError> {
     unstacker.start_block();
 
@@ -371,6 +384,9 @@ fn lower_block(
             .cloned()
             .ok_or(IrError::Unstructurable)?,
         TerminatorKind::Jump => Terminator::Jump(branch_target(last)?),
+        TerminatorKind::BreakLoop => {
+            Terminator::Jump(breaks.get(&last.offset).copied().ok_or(IrError::Unstructurable)?)
+        }
         TerminatorKind::ForIter => Terminator::ForIter {
             body: end,
             exit: branch_target(last)?,
@@ -449,6 +465,9 @@ enum TerminatorKind {
     Return,
     Raise,
     Try,
+    /// `BREAK_LOOP`: an implicit jump out of the enclosing loop, resolved to the
+    /// loop's follow block via the `SETUP_LOOP` table.
+    BreakLoop,
 }
 
 /// Classifies an opcode's effect on control flow, rejecting constructs the
@@ -457,15 +476,18 @@ fn terminator_kind(mnemonic: Mnemonic) -> Result<TerminatorKind, IrError> {
     Ok(match mnemonic {
         Mnemonic::RETURN_VALUE => TerminatorKind::Return,
         Mnemonic::RAISE_VARARGS => TerminatorKind::Raise,
-        Mnemonic::JUMP_ABSOLUTE | Mnemonic::JUMP_FORWARD => TerminatorKind::Jump,
+        // CONTINUE_LOOP has an explicit (absolute) target, so it is an ordinary
+        // jump; the structurer recognises a jump to the loop header as `continue`.
+        Mnemonic::JUMP_ABSOLUTE | Mnemonic::JUMP_FORWARD | Mnemonic::CONTINUE_LOOP => {
+            TerminatorKind::Jump
+        }
         Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE => TerminatorKind::Branch,
         Mnemonic::FOR_ITER => TerminatorKind::ForIter,
         Mnemonic::SETUP_EXCEPT => TerminatorKind::Try,
-        Mnemonic::SETUP_FINALLY
-        | Mnemonic::SETUP_WITH
-        | Mnemonic::BREAK_LOOP
-        | Mnemonic::CONTINUE_LOOP
-        | Mnemonic::END_FINALLY => return Err(IrError::HasControlFlow(mnemonic)),
+        Mnemonic::BREAK_LOOP => TerminatorKind::BreakLoop,
+        Mnemonic::SETUP_FINALLY | Mnemonic::SETUP_WITH | Mnemonic::END_FINALLY => {
+            return Err(IrError::HasControlFlow(mnemonic))
+        }
         // JUMP_IF_*_OR_POP is a short-circuit operator handled inside a block by the
         // unstacker, not a control-flow terminator.
         _ => TerminatorKind::None,
@@ -873,16 +895,55 @@ fn disqualifies_list_comp(mnemonic: Mnemonic) -> bool {
         )
 }
 
+/// Resolves each `BREAK_LOOP` to the offset it jumps to: the block right before
+/// the enclosing `SETUP_LOOP`'s follow, which is the loop's follow as the
+/// structurer computes it (a `for` loop's `FOR_ITER` exit, a `while` loop's
+/// condition-false target). A `break` to that block becomes a `break` statement.
+fn break_targets(instrs: &[OffsetInstr]) -> HashMap<Offset, Offset> {
+    let index: HashMap<Offset, usize> = instrs
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| (item.offset, idx))
+        .collect();
+    let mut targets = HashMap::new();
+    let mut loops: Vec<Offset> = Vec::new();
+    for item in instrs {
+        while loops.last().is_some_and(|&follow| item.offset >= follow) {
+            loops.pop();
+        }
+        match item.instr.opcode.mnemonic() {
+            Mnemonic::SETUP_LOOP => {
+                if let Ok(follow) = branch_target(item) {
+                    loops.push(follow);
+                }
+            }
+            Mnemonic::BREAK_LOOP => {
+                if let Some(&follow) = loops.last() {
+                    if let Some(&idx) = index.get(&follow) {
+                        if idx > 0 {
+                            targets.insert(item.offset, instrs[idx - 1].offset);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    targets
+}
+
 /// Computes the absolute target offset of a branch instruction.
 fn branch_target(item: &OffsetInstr) -> Result<Offset, IrError> {
     let arg = item.instr.arg.ok_or(IrError::MissingOperand)? as u32;
     Ok(match item.instr.opcode.mnemonic() {
-        Mnemonic::JUMP_ABSOLUTE | Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE => {
-            Offset(arg)
-        }
-        Mnemonic::JUMP_FORWARD | Mnemonic::FOR_ITER | Mnemonic::SETUP_EXCEPT => {
-            Offset(item.offset.0 + item.instr.len() as u32 + arg)
-        }
+        Mnemonic::JUMP_ABSOLUTE
+        | Mnemonic::POP_JUMP_IF_FALSE
+        | Mnemonic::POP_JUMP_IF_TRUE
+        | Mnemonic::CONTINUE_LOOP => Offset(arg),
+        Mnemonic::JUMP_FORWARD
+        | Mnemonic::FOR_ITER
+        | Mnemonic::SETUP_EXCEPT
+        | Mnemonic::SETUP_LOOP => Offset(item.offset.0 + item.instr.len() as u32 + arg),
         other => return Err(IrError::HasControlFlow(other)),
     })
 }

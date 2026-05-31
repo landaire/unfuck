@@ -46,6 +46,8 @@ fn cases() {
         "do_raise",
         "sum_list",
         "count_down",
+        "loop_break",
+        "loop_break_while",
         "unpack",
         "make_dict",
         "both",

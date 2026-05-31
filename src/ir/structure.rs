@@ -58,7 +58,70 @@ pub fn structure(cfg: &Cfg) -> Result<Vec<Stmt>, IrError> {
         loops,
         loop_stack: Vec::new(),
     };
-    structurer.region(cfg.entry, Point::Exit, 0)
+    let mut body = structurer.region(cfg.entry, Point::Exit, 0)?;
+    cleanup(&mut body);
+    Ok(body)
+}
+
+/// Tidies the structured body: recurse into children, drop unreachable statements
+/// (anything after one that always transfers control), then strip the redundant
+/// trailing `continue` a loop body falls through to.
+fn cleanup(stmts: &mut Vec<Stmt>) {
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            Stmt::If { then, els, .. } => {
+                cleanup(then);
+                cleanup(els);
+            }
+            Stmt::While { body, .. } | Stmt::For { body, .. } => {
+                cleanup(body);
+                strip_tail_continue(body);
+            }
+            Stmt::Try { body, handlers } => {
+                cleanup(body);
+                for handler in handlers {
+                    cleanup(&mut handler.body);
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(pos) = stmts.iter().position(terminates) {
+        stmts.truncate(pos + 1);
+    }
+}
+
+/// Drops a redundant `continue` from the tail of a loop body: the last statement
+/// if it is a bare `continue`, or recursively the tail of the arms of a trailing
+/// `if` (after which control also falls through to the loop's end). Runs after
+/// unreachable statements are pruned, so a trailing dead `return` does not hide it.
+fn strip_tail_continue(stmts: &mut Vec<Stmt>) {
+    match stmts.last_mut() {
+        Some(Stmt::Continue) => {
+            stmts.pop();
+        }
+        Some(Stmt::If { then, els, .. }) => {
+            strip_tail_continue(then);
+            strip_tail_continue(els);
+        }
+        _ => {}
+    }
+}
+
+/// Whether a statement always transfers control, so nothing after it in the same
+/// suite can run.
+fn terminates(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Break | Stmt::Continue | Stmt::Return(_) | Stmt::Raise(_) => true,
+        // An if terminates only when it has both arms and each one does.
+        Stmt::If { then, els, .. } => {
+            !then.is_empty()
+                && !els.is_empty()
+                && then.last().is_some_and(terminates)
+                && els.last().is_some_and(terminates)
+        }
+        _ => false,
+    }
 }
 
 struct Structurer<'a> {

@@ -44,6 +44,23 @@ def count_down(n):
     return n
 
 
+def loop_break(items):
+    found = None
+    for x in items:
+        if x:
+            found = x
+            break
+    return found
+
+
+def loop_break_while(n):
+    while True:
+        n = n - 1
+        if n < 0:
+            break
+    return n
+
+
 def unpack(p):
     a, b = p
     return a + b
