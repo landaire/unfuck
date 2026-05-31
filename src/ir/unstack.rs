@@ -132,6 +132,14 @@ impl Unstacker {
         len >= 2 && self.stack[len - 1] == self.stack[len - 2]
     }
 
+    /// Whether the top of stack is an unpack placeholder, i.e. a multi-element
+    /// parallel assignment is already in progress.
+    fn tos_is_unpack_slot(&self) -> bool {
+        self.stack
+            .last()
+            .is_some_and(|top| matches!(self.arena.get(*top), Expr::UnpackSlot))
+    }
+
     /// Resolves any pending short-circuit or ternary whose merge point is `offset`:
     /// the remaining operand is on the stack, so combine it with what was recorded.
     pub fn resolve_pending(&mut self, offset: Offset) -> Result<(), IrError> {
@@ -583,7 +591,10 @@ impl Unstacker {
                 if len < 2 {
                     return Err(IrError::Unsupported(mnemonic));
                 }
-                if self.tos_is_inplace() {
+                if self.tos_is_unpack_slot() {
+                    // The second rotation of a three-element parallel assignment that
+                    // ROT_THREE already set up; the slots are interchangeable.
+                } else if self.tos_is_inplace() {
                     self.stack.swap(len - 1, len - 2);
                 } else {
                     // The two values are on the stack; the rotation reverses them so
@@ -600,11 +611,27 @@ impl Unstacker {
             }
             Mnemonic::ROT_THREE => {
                 let len = self.stack.len();
-                if len < 3 || !(self.tos_is_inplace() || self.tos_equals_below()) {
+                if len < 3 {
                     return Err(IrError::Unsupported(mnemonic));
                 }
-                let top = self.stack.remove(len - 1);
-                self.stack.insert(len - 3, top);
+                if self.tos_is_inplace() || self.tos_equals_below() {
+                    // Augmented assignment to a subscript, or a chained comparison's
+                    // DUP_TOP'd middle operand.
+                    let top = self.stack.remove(len - 1);
+                    self.stack.insert(len - 3, top);
+                } else {
+                    // Three-element parallel assignment `t1, t2, t3 = v1, v2, v3`
+                    // (ROT_THREE then ROT_TWO reverse the values so the stores take
+                    // them in order). Recover it as one tuple assignment.
+                    let third = self.pop()?;
+                    let second = self.pop()?;
+                    let first = self.pop()?;
+                    let rhs = self.arena.alloc(Expr::Tuple(vec![first, second, third]));
+                    self.unpack = Some(PendingUnpack { rhs, arity: 3, targets: Vec::new() });
+                    self.push(Expr::UnpackSlot);
+                    self.push(Expr::UnpackSlot);
+                    self.push(Expr::UnpackSlot);
+                }
             }
             Mnemonic::STORE_FAST => {
                 let value = self.pop()?;
