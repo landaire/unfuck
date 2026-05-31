@@ -48,31 +48,42 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
 
         code_graph.generate_dot_graph("target");
 
-        code_graph.remove_const_conditions(&mut mapped_function_names, &mut plain_imported_modules);
+        if self.minimal {
+            // Leave opaque predicates and dead code in place for the IR to fold;
+            // just produce serializable, terminating bytecode.
+            code_graph.update_bb_offsets();
+            code_graph.ensure_terminal_returns(&code);
+            code_graph.update_bb_offsets();
+            code_graph.update_branches();
+        } else {
+            code_graph
+                .remove_const_conditions(&mut mapped_function_names, &mut plain_imported_modules);
 
-        code_graph.generate_dot_graph("const_conditions_solved");
+            code_graph.generate_dot_graph("const_conditions_solved");
 
-        code_graph.join_blocks();
+            code_graph.join_blocks();
 
-        code_graph.generate_dot_graph("joined");
+            code_graph.generate_dot_graph("joined");
 
-        // update BB offsets
-        //insert_jump_0(root_node_id, &mut code_graph);
-        code_graph.update_bb_offsets();
+            // update BB offsets
+            //insert_jump_0(root_node_id, &mut code_graph);
+            code_graph.update_bb_offsets();
 
-        code_graph.generate_dot_graph("updated_bb");
+            code_graph.generate_dot_graph("updated_bb");
 
-        code_graph.massage_returns_for_decompiler();
-        code_graph.ensure_terminal_returns(&code);
+            code_graph.massage_returns_for_decompiler();
+            code_graph.ensure_terminal_returns(&code);
 
-        // Re-insert the body-terminating jumps the Python 2.7 compiler emits at the
-        // end of `if`/`elif` bodies. uncompyle6 relies on these to recover control
-        // flow; the deobfuscated CFG drops them because the body falls through. The
-        // dead `JUMP_ABSOLUTE` operands are patched once block offsets are final.
-        let decompiler_jump_fixups = code_graph.insert_decompiler_jumps();
-        code_graph.update_bb_offsets();
-        code_graph.fixup_decompiler_dead_jumps(&decompiler_jump_fixups);
-        code_graph.update_branches();
+            // Re-insert the body-terminating jumps the Python 2.7 compiler emits at
+            // the end of `if`/`elif` bodies. uncompyle6 relies on these to recover
+            // control flow; the deobfuscated CFG drops them because the body falls
+            // through. The dead `JUMP_ABSOLUTE` operands are patched once block
+            // offsets are final.
+            let decompiler_jump_fixups = code_graph.insert_decompiler_jumps();
+            code_graph.update_bb_offsets();
+            code_graph.fixup_decompiler_dead_jumps(&decompiler_jump_fixups);
+            code_graph.update_branches();
+        }
 
         // code_graph.insert_jump_0();
         // code_graph.update_bb_offsets();

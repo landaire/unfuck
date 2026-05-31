@@ -37,6 +37,17 @@ pub struct Deobfuscator<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> {
 
     /// Output to write dotviz graph to
     enable_dotviz_graphs: bool,
+    /// When set, only decode and fix bad basic blocks, leaving opaque-predicate
+    /// branches and dead code in place. Skips the partial-execution
+    /// `remove_const_conditions` pass and the uncompyle6-specific jump insertion.
+    ///
+    /// This is a diagnostic mode for inspecting the pre-pruning CFG. The raising
+    /// IR cannot decompile minimal output: its symbolic execution assumes each
+    /// basic block is stack-neutral on entry and laid out in execution order, both
+    /// of which control-flow flattening violates, so unstacking underflows before
+    /// the IR's fold pass runs. Un-flattening at the bytecode level (the default
+    /// pipeline) remains required.
+    minimal: bool,
     files_processed: AtomicUsize,
     graphviz_graphs: HashMap<String, String>,
     on_graph_generated: Option<Box<dyn Fn(&str, &str) + Send + Sync>>,
@@ -89,6 +100,7 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscator<'a, O> {
         Deobfuscator {
             input,
             enable_dotviz_graphs: false,
+            minimal: false,
             files_processed: AtomicUsize::new(0),
             graphviz_graphs: HashMap::new(),
             on_graph_generated: None,
@@ -101,6 +113,15 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscator<'a, O> {
     /// output enabled.
     pub fn enable_graphs(mut self) -> Deobfuscator<'a, O> {
         self.enable_dotviz_graphs = true;
+        self
+    }
+
+    /// Consumes the deobfuscator and returns one in minimal mode: it only decodes
+    /// and repairs basic blocks, leaving opaque predicates and dead code in place.
+    /// A diagnostic mode for inspecting the pre-pruning CFG; see the `minimal`
+    /// field for why the IR cannot decompile its output.
+    pub fn minimal(mut self) -> Deobfuscator<'a, O> {
+        self.minimal = true;
         self
     }
 
