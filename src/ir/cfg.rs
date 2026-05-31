@@ -129,12 +129,22 @@ impl Cfg {
     }
 
     fn build_with(instrs: &[OffsetInstr], comp: bool) -> Result<Cfg, IrError> {
-        let ternaries = find_ternaries(instrs);
+        let mut ternaries = find_ternaries(instrs);
         let (tries, mut excluded) = recover_tries(instrs)?;
         // A chained comparison's short-circuit lands past its cleanup; record the
         // merge override and drop the cleanup/forward-jump instructions.
         let (merge_overrides, chained_excluded) = find_chained_comparisons(instrs);
         excluded.extend(chained_excluded);
+        // A reordered ternary's else arm is excluded from block formation and fed at
+        // the merge instead, so the existing in-block ternary folding applies.
+        let (reordered_marks, reordered_excluded, else_feed_ranges) =
+            find_reordered_ternaries(instrs);
+        ternaries.extend(reordered_marks);
+        excluded.extend(reordered_excluded);
+        let else_feeds: HashMap<Offset, Vec<&OffsetInstr>> = else_feed_ranges
+            .into_iter()
+            .map(|(merge, (start, end))| (merge, instrs[start..end].iter().collect()))
+            .collect();
         // Inline list comprehensions are folded whole; their interior instructions
         // stay inside one block and never become block leaders or for-loops.
         let (list_comps, list_interior) = find_list_comps(instrs);
@@ -195,6 +205,7 @@ impl Cfg {
                 &try_terminators,
                 &list_comps,
                 &breaks,
+                &else_feeds,
             )
             // A block that does not lower (an unsupported opcode, a stack error) is
             // kept as a poison dead-end rather than failing the whole function, so
@@ -324,6 +335,7 @@ fn lower_block(
     try_terminators: &HashMap<Offset, Terminator>,
     list_comps: &HashMap<Offset, Offset>,
     breaks: &HashMap<Offset, Offset>,
+    else_feeds: &HashMap<Offset, Vec<&OffsetInstr>>,
 ) -> Result<Block, IrError> {
     unstacker.start_block();
 
@@ -369,6 +381,13 @@ fn lower_block(
             unstacker.parse_list_comp(&feed[i..span])?;
             i = span;
             continue;
+        }
+        // A reordered ternary's else arm is fed here, at the merge, so the otherwise
+        // operand is on the stack when the pending ternary resolves.
+        if let Some(else_arm) = else_feeds.get(&item.offset) {
+            for arm in else_arm {
+                unstacker.step(&arm.instr, arm.offset)?;
+            }
         }
         unstacker.resolve_pending(item.offset)?;
         unstacker.step(&item.instr, item.offset)?;
@@ -606,6 +625,90 @@ fn is_statement_or_control(mnemonic: Mnemonic) -> bool {
                 | Mnemonic::POP_BLOCK
                 | Mnemonic::LOAD_LOCALS
         )
+}
+
+/// Detects ternaries the relinearizer laid out non-contiguously: the then arm
+/// jumps forward to a merge placed immediately after it, while the else arm sits
+/// elsewhere (after the merge) and jumps back to that same merge. The contiguous
+/// [`find_ternaries`] cannot fold these because the else value is not on the stack
+/// when the merge is reached.
+///
+/// Returns the diamond jump offsets to treat as ternary (so the cond block absorbs
+/// the merge), the else-arm offsets to exclude from block formation, and a map from
+/// each merge offset to the index range of the else arm's value instructions (the
+/// trailing jump excluded), to be fed at the merge so the otherwise operand lands on
+/// the stack before resolution.
+fn find_reordered_ternaries(
+    instrs: &[OffsetInstr],
+) -> (HashSet<Offset>, HashSet<Offset>, HashMap<Offset, (usize, usize)>) {
+    let index: HashMap<Offset, usize> = instrs
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| (item.offset, idx))
+        .collect();
+    let mut marks = HashSet::new();
+    let mut excluded = HashSet::new();
+    let mut else_feeds = HashMap::new();
+    let is_jump = |idx: usize| instrs[idx].instr.opcode.is_jump();
+    for (idx, item) in instrs.iter().enumerate() {
+        if !matches!(
+            item.instr.opcode.mnemonic(),
+            Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE
+        ) {
+            continue;
+        }
+        let Ok(else_off) = branch_target(item) else {
+            continue;
+        };
+        let Some(&else_idx) = index.get(&else_off) else {
+            continue;
+        };
+        // The then arm runs from just after the test to its terminating jump.
+        let then_start = idx + 1;
+        let mut then_jump = then_start;
+        while then_jump < instrs.len() && !is_jump(then_jump) {
+            then_jump += 1;
+        }
+        if then_jump >= instrs.len()
+            || then_jump < then_start
+            || instrs[then_jump].instr.opcode.mnemonic() != Mnemonic::JUMP_FORWARD
+        {
+            continue;
+        }
+        let Ok(merge_off) = branch_target(&instrs[then_jump]) else {
+            continue;
+        };
+        // The signature of the reordered diamond: the then arm jumps to a merge that
+        // is the immediately following instruction, and the else arm is laid out
+        // after that merge (a contiguous ternary has its else before the merge).
+        let next_off =
+            Offset(instrs[then_jump].offset.0 + instrs[then_jump].instr.len() as u32);
+        if merge_off != next_off || else_off <= merge_off {
+            continue;
+        }
+        // The else arm runs from the test's target to its terminating jump, which
+        // must rejoin the same merge.
+        let mut else_jump = else_idx;
+        while else_jump < instrs.len() && !is_jump(else_jump) {
+            else_jump += 1;
+        }
+        if else_jump >= instrs.len() || branch_target(&instrs[else_jump]).ok() != Some(merge_off) {
+            continue;
+        }
+        // Both arms must be pure value expressions.
+        if !pure_expression(instrs, instrs[then_start].offset, instrs[then_jump].offset)
+            || !pure_expression(instrs, else_off, instrs[else_jump].offset)
+        {
+            continue;
+        }
+        marks.insert(item.offset);
+        marks.insert(instrs[then_jump].offset);
+        for item in &instrs[else_idx..=else_jump] {
+            excluded.insert(item.offset);
+        }
+        else_feeds.insert(merge_off, (else_idx, else_jump));
+    }
+    (marks, excluded, else_feeds)
 }
 
 /// A recovered `try`/`except` region over the raw instruction stream.
