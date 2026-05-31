@@ -8,6 +8,8 @@
 //! never decompiled. Nothing is deleted, so no live instruction can be removed by
 //! mistake (unlike taint-based bytecode removal).
 
+use std::collections::{HashMap, VecDeque};
+
 use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
 use py27_marshal::{Code, Obj};
@@ -15,9 +17,13 @@ use py27_marshal::{Code, Obj};
 use super::cfg::{Cfg, Terminator};
 use super::expr::*;
 
+/// The constants known for each local at a program point. A local absent from the
+/// map is not known to be constant.
+type Env = HashMap<VarId, ConstVal>;
+
 /// A constant value the folder can reason about. Anything it cannot represent
 /// exactly is left unevaluated so a branch is only folded when its value is known.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum ConstVal {
     None,
     Bool(bool),
@@ -59,7 +65,10 @@ impl ConstVal {
 }
 
 /// Folds every opaque-predicate `CondBranch` in `cfg` to an unconditional jump.
+/// Constants are propagated across blocks first, so a predicate that branches on a
+/// variable assigned a constant elsewhere is still folded.
 pub fn simplify(cfg: &mut Cfg, code: &Code) {
+    let entry = propagate_constants(cfg, code);
     for idx in 0..cfg.blocks.len() {
         let Terminator::CondBranch {
             cond,
@@ -69,21 +78,124 @@ pub fn simplify(cfg: &mut Cfg, code: &Code) {
         else {
             continue;
         };
-        if let Some(value) = eval_const(code, &cfg.arena, cond) {
+        // The condition is tested after the block's statements, so evaluate it in
+        // the environment at the block's exit.
+        let env = transfer(code, &cfg.arena, &cfg.blocks[idx], &entry[idx]);
+        if let Some(value) = eval_const(code, &cfg.arena, cond, &env) {
             let target = if value.truthy() { if_true } else { if_false };
             cfg.blocks[idx].terminator = Terminator::Jump(target);
         }
     }
 }
 
+/// Computes the constant environment at the entry of every block by forward
+/// dataflow to a fixed point. A local is constant at a join only when every
+/// predecessor agrees on the same value, so the result is sound for any path
+/// (including across loops).
+fn propagate_constants(cfg: &Cfg, code: &Code) -> Vec<Env> {
+    let mut entry: Vec<Option<Env>> = vec![None; cfg.blocks.len()];
+    entry[cfg.entry.0 as usize] = Some(Env::new());
+
+    let mut worklist: VecDeque<usize> = VecDeque::new();
+    worklist.push_back(cfg.entry.0 as usize);
+    // Each block can be re-queued only when an incoming environment shrinks, which
+    // can happen at most once per local; this bound is well above that.
+    let mut budget = cfg.blocks.len().saturating_mul(cfg.blocks.len()) + 16;
+
+    while let Some(idx) = worklist.pop_front() {
+        if budget == 0 {
+            break;
+        }
+        budget -= 1;
+
+        let Some(in_env) = entry[idx].clone() else {
+            continue;
+        };
+        let out_env = transfer(code, &cfg.arena, &cfg.blocks[idx], &in_env);
+        for succ in cfg.blocks[idx].successors() {
+            let Some(&succ) = cfg.by_offset.get(&succ) else {
+                continue;
+            };
+            let succ = succ.0 as usize;
+            let merged = match &entry[succ] {
+                None => out_env.clone(),
+                Some(existing) => meet(existing, &out_env),
+            };
+            if entry[succ].as_ref() != Some(&merged) {
+                entry[succ] = Some(merged);
+                worklist.push_back(succ);
+            }
+        }
+    }
+
+    entry.into_iter().map(Option::unwrap_or_default).collect()
+}
+
+/// The environment after a block runs: its entry environment updated by each
+/// statement that assigns a local.
+fn transfer(code: &Code, arena: &ExprArena, block: &super::cfg::Block, entry: &Env) -> Env {
+    let mut env = entry.clone();
+    for stmt in &block.stmts {
+        apply_stmt(code, arena, stmt, &mut env);
+    }
+    env
+}
+
+/// Updates `env` for one statement: a local assigned a constant becomes known, and
+/// any other write to a local clears it.
+fn apply_stmt(code: &Code, arena: &ExprArena, stmt: &Stmt, env: &mut Env) {
+    match stmt {
+        Stmt::Assign(LValue::Local(var), value) => match eval_const(code, arena, *value, env) {
+            Some(constant) => {
+                env.insert(*var, constant);
+            }
+            None => {
+                env.remove(var);
+            }
+        },
+        // Any other write to a local invalidates its known value.
+        Stmt::Assign(LValue::Tuple(targets), _) => clear_local_targets(targets, env),
+        Stmt::AugAssign(LValue::Local(var), ..)
+        | Stmt::FunctionDef { target: LValue::Local(var), .. }
+        | Stmt::ClassDef { target: LValue::Local(var), .. } => {
+            env.remove(var);
+        }
+        _ => {}
+    }
+}
+
+/// Clears every local named in a tuple-assignment target.
+fn clear_local_targets(targets: &[LValue], env: &mut Env) {
+    for target in targets {
+        match target {
+            LValue::Local(var) => {
+                env.remove(var);
+            }
+            LValue::Tuple(inner) => clear_local_targets(inner, env),
+            _ => {}
+        }
+    }
+}
+
+/// Meets two environments: a local is kept only when both agree on its value.
+fn meet(a: &Env, b: &Env) -> Env {
+    a.iter()
+        .filter_map(|(var, value)| match b.get(var) {
+            Some(other) if other == value => Some((*var, value.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Evaluates an expression to a constant, or `None` if it is not statically known.
 /// Conservative by construction: any operand or operation it cannot fold exactly
 /// yields `None`, so a value is never guessed.
-fn eval_const(code: &Code, arena: &ExprArena, id: ValueId) -> Option<ConstVal> {
+fn eval_const(code: &Code, arena: &ExprArena, id: ValueId, env: &Env) -> Option<ConstVal> {
     match arena.get(id) {
         Expr::Const(c) => obj_to_const(code.consts.get(c.0 as usize)?),
+        Expr::Local(var) => env.get(var).cloned(),
         Expr::Unary(op, operand) => {
-            let value = eval_const(code, arena, *operand)?;
+            let value = eval_const(code, arena, *operand, env)?;
             match op {
                 UnaryOp::Not => Some(ConstVal::Bool(!value.truthy())),
                 UnaryOp::Positive => Some(value),
@@ -97,13 +209,13 @@ fn eval_const(code: &Code, arena: &ExprArena, id: ValueId) -> Option<ConstVal> {
             }
         }
         Expr::BinOp(op, lhs, rhs) => {
-            let lhs = eval_const(code, arena, *lhs)?;
-            let rhs = eval_const(code, arena, *rhs)?;
+            let lhs = eval_const(code, arena, *lhs, env)?;
+            let rhs = eval_const(code, arena, *rhs, env)?;
             eval_binop(*op, &lhs, &rhs)
         }
         Expr::Compare(op, lhs, rhs) => {
-            let lhs = eval_const(code, arena, *lhs)?;
-            let rhs = eval_const(code, arena, *rhs)?;
+            let lhs = eval_const(code, arena, *lhs, env)?;
+            let rhs = eval_const(code, arena, *rhs, env)?;
             eval_compare(*op, &lhs, &rhs).map(ConstVal::Bool)
         }
         // `a and b` is the first falsy operand or the last; `a or b` the first
@@ -111,7 +223,7 @@ fn eval_const(code: &Code, arena: &ExprArena, id: ValueId) -> Option<ConstVal> {
         Expr::BoolOp(kind, operands) => {
             let mut last = None;
             for operand in operands {
-                let value = eval_const(code, arena, *operand)?;
+                let value = eval_const(code, arena, *operand, env)?;
                 let short_circuits = match kind {
                     BoolKind::And => !value.truthy(),
                     BoolKind::Or => value.truthy(),

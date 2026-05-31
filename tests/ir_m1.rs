@@ -356,6 +356,29 @@ fn opaque_predicate_arithmetic_false_drops_branch() {
 }
 
 #[test]
+fn opaque_predicate_constant_propagated_across_blocks() {
+    // x = 0; <jump to a new block>; if x: return a else: return b
+    // x is constant 0, propagated across the block boundary, so the branch folds.
+    let code = Builder::new("f", 2, &["a", "b", "x"], &[], vec![Obj::None, long(0)])
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::STORE_FAST, 2)
+        .jump(Standard::JUMP_FORWARD, "test")
+        .label("test")
+        .arg(Standard::LOAD_FAST, 2)
+        .jump(Standard::POP_JUMP_IF_FALSE, "else_")
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::RETURN_VALUE)
+        .label("else_")
+        .arg(Standard::LOAD_FAST, 1)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    // The dead branch is folded away; the (now-dead) store survives, as dead-store
+    // elimination is a separate pass.
+    assert_eq!(decompile(code), "def f(a, b):\n    x = 0\n    return b\n");
+}
+
+#[test]
 fn opaque_predicate_prunes_unlowerable_junk() {
     // if <const 0>: <junk> else: return a  -- the predicate is always false, so the
     // junk branch (an unsupported ROT_TWO swap that poisons its block) is unreachable
