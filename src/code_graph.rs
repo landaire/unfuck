@@ -980,6 +980,50 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
     }
 
 
+    /// Make non-adjacent fall-through edges explicit. The relinearizer can place a
+    /// block whose `NonJump` (fall-through) successor is not the physically next
+    /// block -- e.g. a ternary's else arm, which in the original sits just before the
+    /// merge that stores the result, gets laid out *after* that merge. Without a jump
+    /// the arm falls into the wrong instruction (the next `else`), leaving its value
+    /// on the stack. Only blocks that do not already end in a jump are handled (those
+    /// have a single fall-through edge); a conditional jump's fall-through is kept
+    /// adjacent by the layout itself. Returns whether anything changed, so the caller
+    /// can recompute offsets. `update_branches` resolves the inserted operands.
+    pub(crate) fn fixup_fallthrough_jumps(&mut self) -> bool {
+        let mut changed = false;
+        for nx in self.graph.node_indices().collect::<Vec<_>>() {
+            let block = &self.graph[nx];
+            let Some(last) = block.instrs.last() else {
+                continue;
+            };
+            // A block ending in a jump carries its successor explicitly already.
+            if last.unwrap().opcode.is_jump() {
+                continue;
+            }
+            let next_offset = block.end_offset + last.unwrap().len() as u64;
+            let nonjump = self
+                .graph
+                .edges_directed(nx, Direction::Outgoing)
+                .find(|edge| *edge.weight() == EdgeWeight::NonJump)
+                .map(|edge| (edge.id(), edge.target()));
+            let Some((edge_id, target)) = nonjump else {
+                continue;
+            };
+            if self.graph[target].start_offset == next_offset {
+                continue;
+            }
+            self.graph[nx]
+                .instrs
+                .push(ParsedInstr::Good(Arc::new(pydis::Instr!(
+                    Mnemonic::JUMP_ABSOLUTE.into(),
+                    0
+                ))));
+            *self.graph.edge_weight_mut(edge_id).unwrap() = EdgeWeight::Jump;
+            changed = true;
+        }
+        changed
+    }
+
     /// Re-insert the body-terminating jumps that the Python 2.7 compiler emits at the
     /// end of an `if`/`elif` body.
     ///

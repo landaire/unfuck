@@ -69,6 +69,13 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             //insert_jump_0(root_node_id, &mut code_graph);
             code_graph.update_bb_offsets();
 
+            // The relinearized layout can leave a fall-through block whose successor
+            // is not adjacent (a ternary else arm placed after its merge); make those
+            // edges explicit jumps before any further offset-dependent passes run.
+            if code_graph.fixup_fallthrough_jumps() {
+                code_graph.update_bb_offsets();
+            }
+
             code_graph.generate_dot_graph("updated_bb");
 
             code_graph.massage_returns_for_decompiler();
