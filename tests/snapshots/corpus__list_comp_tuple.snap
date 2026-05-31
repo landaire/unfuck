@@ -1,0 +1,7 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def list_comp_tuple(items):
+    return [a + func(c) for a, b, c in items if b]

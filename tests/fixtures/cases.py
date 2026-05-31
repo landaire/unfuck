@@ -358,3 +358,7 @@ def print_to_file(f, a, b):
     print >>f, a, b
     print >>f, a,
     print >>f
+
+
+def list_comp_tuple(items):
+    return [a + func(c) for a, b, c in items if b]

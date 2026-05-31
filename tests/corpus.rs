@@ -88,6 +88,7 @@ fn cases() {
         "list_comp",
         "list_comp_filtered",
         "list_comp_stored",
+        "list_comp_tuple",
         "empty_list_arg",
         "do_imports",
         "make_class",

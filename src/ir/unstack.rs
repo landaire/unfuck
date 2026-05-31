@@ -511,9 +511,23 @@ impl Unstacker {
         let loop_top = for_iter.offset;
         let iter = self.pop()?;
         i += 1;
-        // The loop target is the store immediately after FOR_ITER.
-        let target = comp_target(&region.get(i).ok_or(IrError::Decode)?.instr)?;
-        i += 1;
+        // The loop target follows FOR_ITER: a single store, or an UNPACK_SEQUENCE
+        // and one store per element for a tuple target (`for a, b, c in ...`).
+        let target = if mnemonic(i) == Some(Mnemonic::UNPACK_SEQUENCE) {
+            let arity = region[i].instr.arg.ok_or(IrError::MissingOperand)? as usize;
+            i += 1;
+            let mut targets = Vec::with_capacity(arity);
+            for _ in 0..arity {
+                let store = region.get(i).ok_or(IrError::Decode)?;
+                targets.push(comp_target(&store.instr)?);
+                i += 1;
+            }
+            LValue::Tuple(targets)
+        } else {
+            let target = comp_target(&region.get(i).ok_or(IrError::Decode)?.instr)?;
+            i += 1;
+            target
+        };
         // Filters and the element, up to LIST_APPEND.
         let mut conds = Vec::new();
         while mnemonic(i) != Some(Mnemonic::LIST_APPEND) {
@@ -1080,7 +1094,8 @@ fn reject_comp_control(item: &OffsetInstr) -> Result<(), IrError> {
 }
 
 /// Resolves a list comprehension's loop target store to an [`LValue`]. Tuple
-/// targets (an `UNPACK_SEQUENCE`) are not folded and reach the error path.
+/// Returns the assignment target for a single comprehension store opcode. A tuple
+/// target (`UNPACK_SEQUENCE` then one store per element) is assembled by the caller.
 fn comp_target(instr: &Instruction<Standard>) -> Result<LValue, IrError> {
     let arg = instr.arg.ok_or(IrError::MissingOperand)?;
     Ok(match instr.opcode.mnemonic() {
