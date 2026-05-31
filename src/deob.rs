@@ -1,12 +1,12 @@
-use cpython::{PyBytes, PyDict, PyList, PyModule, PyObject, PyResult, Python, PythonObject};
-use log::{debug, trace};
+use log::trace;
 
-use py27_marshal::{Code, CodeFlags};
+use py27_marshal::bstr::BString;
+use py27_marshal::{Code, CodeFlags, Obj};
 use pydis::opcode::py27::{self};
 use pydis::prelude::*;
 use std::collections::{HashMap, HashSet};
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::code_graph::*;
 use crate::error::Error;
@@ -82,10 +82,11 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             code_graph.ensure_terminal_returns(&code);
 
             // Re-insert the body-terminating jumps the Python 2.7 compiler emits at
-            // the end of `if`/`elif` bodies. uncompyle6 relies on these to recover
-            // control flow; the deobfuscated CFG drops them because the body falls
-            // through. The dead `JUMP_ABSOLUTE` operands are patched once block
-            // offsets are final.
+            // the end of `if`/`elif` bodies. uncompyle6 relied on these; the IR
+            // decompiler does not, but they are kept because the relinearized CFG
+            // also depends on some of them to connect blocks. The pass no longer
+            // inserts before a `FOR_ITER` loop header, which had produced a spurious
+            // `JUMP_FORWARD 0` between GET_ITER and FOR_ITER that broke list comps.
             let decompiler_jump_fixups = code_graph.insert_decompiler_jumps();
             code_graph.update_bb_offsets();
             code_graph.fixup_decompiler_dead_jumps(&decompiler_jump_fixups);
@@ -137,121 +138,156 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         })
     }
 
+    /// Rebuild the code-object tree with deobfuscated bytecode and cleaned-up
+    /// variable names, then marshal it back to bytes -- entirely in Rust, with
+    /// no Python/GIL involvement.
+    ///
+    /// `original_root` is the input code tree (used for structure and the
+    /// original names); `deob_codes` holds the deobfuscated bytecode for each
+    /// code object in DFS pre-order, matching the order `deobfuscate_nested_code_objects`
+    /// produced them, which is also the order this walk consumes them.
     pub(crate) fn rename_vars(
         &self,
-        deobfuscated_code: &'a mut impl Iterator<Item = &'a [u8]>,
+        original_root: &Code,
+        deob_codes: &[Vec<u8>],
         mapped_function_names: &HashMap<String, String>,
-    ) -> PyResult<Vec<u8>> {
-        let gil = Python::acquire_gil();
-
-        let py = gil.python();
-
-        let marshal = py.import("marshal")?;
-        let types = py.import("types")?;
-
-        let module = PyModule::new(py, "deob")?;
-        module.add(py, "__builtins__", py.eval("__builtins__", None, None)?)?;
-
-        module.add(py, "marshal", marshal)?;
-        module.add(py, "types", types)?;
-        module.add(py, "data", PyBytes::new(py, self.input))?;
-
-        let converted_objects: Vec<PyObject> = deobfuscated_code
-            .map(|code| PyBytes::new(py, code).into_object())
-            .collect();
-
-        module.add(
-            py,
-            "deobfuscated_code",
-            PyList::new(py, converted_objects.as_slice()),
-        )?;
-
-        let mapped_names = PyDict::new(py);
-
-        for (key, value) in mapped_function_names {
-            mapped_names
-                .set_item(
-                    py,
-                    cpython::PyString::new(py, key.as_ref()).into_object(),
-                    cpython::PyString::new(py, value.as_ref()).into_object(),
-                )
-                .expect("failed to set mapped function name");
-        }
-        module.add(py, "mapped_names", mapped_names)?;
-        let locals = PyDict::new(py);
-        locals.set_item(py, "deob", &module)?;
-
-        let source = r#"
-unknowns = 0
-
-def cleanup_code_obj(code):
-    global deobfuscated_code
-    global mapped_names
-    global code_obj_count
-    new_code = deobfuscated_code.pop(0)
-    new_consts = []
-    key = "{0}_{1}_{2}".format(code.co_filename, code.co_name, len(code.co_code))
-    name = code.co_name
-    if key in mapped_names:
-        #name = "co_filename:{0} co_name:{1}".format(mapped_names[key], name)
-        name = mapped_names[key]
-    else:
-        name = fix_varnames([name])[0]
-    filename = name
-    for const in code.co_consts:
-        if type(const) == types.CodeType:
-            new_consts.append(cleanup_code_obj(const))
-        else:
-            new_consts.append(const)
-
-    if '<' not in name:
-        name = "{0}_orig_{1}".format(name, code.co_name)
-
-    return types.CodeType(code.co_argcount, code.co_nlocals, code.co_stacksize, code.co_flags, new_code, tuple(new_consts), fix_varnames(code.co_names), fix_varnames(code.co_varnames), filename, name, code.co_firstlineno, code.co_lnotab, code.co_freevars, code.co_cellvars)
-
-
-def fix_varnames(varnames):
-    global unknowns
-    newvars = []
-    for var in varnames:
-        var = var.strip()
-        unallowed_chars = '=!@#$%^&*()"\'/, '
-        banned_char = False
-        banned_words = ['assert', 'in', 'continue', 'break', 'for', 'def', 'as', 'elif', 'else', 'for', 'from', 'global', 'if', 'import', 'is', 'lambda', 'not', 'or', 'pass', 'print', 'return', 'while', 'with']
-        for c in unallowed_chars:
-            if c in var:
-                banned_char = True
-
-        if not banned_char:
-            if var in banned_words:
-                banned_char = True
-
-        if banned_char:
-            newvars.append('unknown_{0}'.format(unknowns))
-            unknowns += 1
-        else:
-            newvars.append(var)
-
-    return tuple(newvars)
-
-
-code = marshal.loads(data)
-output = marshal.dumps(cleanup_code_obj(code))
-"#;
-
-        locals.set_item(py, "source", source)?;
-
-        py.run("exec source in deob.__dict__", None, Some(&locals))?;
-        debug!("{:?}", ());
-
-        let output = module
-            .get(py, "output")?
-            .cast_as::<PyBytes>(py)?
-            .data(py)
-            .to_vec();
-
-        Ok(output)
+    ) -> Vec<u8> {
+        let mut next_code = 0usize;
+        let mut unknowns = 0usize;
+        let new_root = cleanup_code_obj(
+            original_root,
+            deob_codes,
+            &mut next_code,
+            mapped_function_names,
+            &mut unknowns,
+        );
+        debug_assert_eq!(
+            next_code,
+            deob_codes.len(),
+            "every deobfuscated code object must map to exactly one tree node"
+        );
+        py27_marshal::write::marshal_dumps(&Obj::Code(Arc::new(RwLock::new(new_root))))
     }
+}
+
+/// Recursively rebuild a code object: swap in its deobfuscated bytecode (taken
+/// from `deob_codes` in DFS pre-order), recurse into nested code consts, and
+/// rename its names/varnames. This mirrors the original Python `cleanup_code_obj`.
+fn cleanup_code_obj(
+    code: &Code,
+    deob_codes: &[Vec<u8>],
+    next_code: &mut usize,
+    mapped_function_names: &HashMap<String, String>,
+    unknowns: &mut usize,
+) -> Code {
+    let new_code = deob_codes[*next_code].clone();
+    *next_code += 1;
+
+    // Resolve the display name: a recovered comprehension/lambda name from the
+    // deobfuscator's map, otherwise the cleaned-up original name.
+    let key = format!("{}_{}_{}", code.filename, code.name, code.code.len());
+    let base_name: Vec<u8> = if let Some(mapped) = mapped_function_names.get(&key) {
+        mapped.clone().into_bytes()
+    } else {
+        fix_one_varname(&code.name[..], unknowns)
+    };
+    let filename = base_name.clone();
+
+    let mut new_consts = Vec::with_capacity(code.consts.len());
+    for konst in code.consts.iter() {
+        if let Obj::Code(inner) = konst {
+            let inner = inner.read().unwrap_or_else(|e| e.into_inner());
+            let cleaned = cleanup_code_obj(
+                &inner,
+                deob_codes,
+                next_code,
+                mapped_function_names,
+                unknowns,
+            );
+            new_consts.push(Obj::Code(Arc::new(RwLock::new(cleaned))));
+        } else {
+            new_consts.push(konst.clone());
+        }
+    }
+
+    // Real functions get an `_orig_<original>` suffix so identically-named ones
+    // stay distinct; synthetic names like `<module>`/`<listcomp>` are kept as-is.
+    let name = if base_name.contains(&b'<') {
+        base_name
+    } else {
+        let mut n = base_name;
+        n.extend_from_slice(b"_orig_");
+        n.extend_from_slice(&code.name[..]);
+        n
+    };
+
+    Code {
+        argcount: code.argcount,
+        nlocals: code.nlocals,
+        stacksize: code.stacksize,
+        flags: code.flags,
+        code: Arc::new(new_code),
+        consts: Arc::new(new_consts),
+        names: fix_varnames(&code.names, unknowns),
+        varnames: fix_varnames(&code.varnames, unknowns),
+        // freevars/cellvars are passed through unchanged, as in the original.
+        freevars: code.freevars.clone(),
+        cellvars: code.cellvars.clone(),
+        filename: Arc::new(BString::from(filename)),
+        name: Arc::new(BString::from(name)),
+        firstlineno: code.firstlineno,
+        lnotab: Arc::clone(&code.lnotab),
+    }
+}
+
+fn fix_varnames(varnames: &[Arc<BString>], unknowns: &mut usize) -> Vec<Arc<BString>> {
+    varnames
+        .iter()
+        .map(|var| Arc::new(BString::from(fix_one_varname(&var[..], unknowns))))
+        .collect()
+}
+
+/// Replace a name that is unusable as a Python identifier (contains a forbidden
+/// character or is a reserved word) with a fresh `unknown_N` placeholder;
+/// otherwise return it trimmed. Operates on raw bytes to match the original
+/// Python byte-string behavior.
+fn fix_one_varname(var: &[u8], unknowns: &mut usize) -> Vec<u8> {
+    const UNALLOWED: &[u8] = b"=!@#$%^&*()\"'/, ";
+    const BANNED_WORDS: &[&[u8]] = &[
+        b"assert", b"in", b"continue", b"break", b"for", b"def", b"as", b"elif", b"else", b"from",
+        b"global", b"if", b"import", b"is", b"lambda", b"not", b"or", b"pass", b"print", b"return",
+        b"while", b"with",
+    ];
+
+    let var = trim_ascii_whitespace(var);
+    let banned =
+        var.iter().any(|b| UNALLOWED.contains(b)) || BANNED_WORDS.iter().any(|word| *word == var);
+
+    if banned {
+        let replacement = format!("unknown_{}", *unknowns).into_bytes();
+        *unknowns += 1;
+        replacement
+    } else {
+        var.to_vec()
+    }
+}
+
+fn trim_ascii_whitespace(mut s: &[u8]) -> &[u8] {
+    while let [first, rest @ ..] = s {
+        if first.is_ascii_whitespace() {
+            s = rest;
+        } else {
+            break;
+        }
+    }
+    while let [rest @ .., last] = s {
+        if last.is_ascii_whitespace() {
+            s = rest;
+        } else {
+            break;
+        }
+    }
+    s
 }
 
 #[cfg(test)]

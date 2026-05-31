@@ -185,16 +185,13 @@ impl<'a, O: Opcode<Mnemonic = py27::Mnemonic> + PartialEq> Deobfuscator<'a, O> {
                 graphs.extend(result.graphviz_graphs);
             }
 
-            // sort these items by their file number. ordering matters since our python code pulls the objects as a
-            // queue
+            // Sort by file number: rename_vars consumes the deobfuscated
+            // bytecode in DFS pre-order, the same order the code objects were
+            // assigned their file numbers.
             results.sort_by(|a, b| a.0.cmp(&b.0));
 
-            let output_data = self
-                .rename_vars(
-                    &mut results.iter().map(|result| result.1.as_slice()),
-                    &mapped_names,
-                )
-                .unwrap();
+            let deob_codes: Vec<Vec<u8>> = results.into_iter().map(|(_, bytecode)| bytecode).collect();
+            let output_data = self.rename_vars(&code, &deob_codes, &mapped_names);
 
             Ok(DeobfuscatedCodeObject {
                 data: output_data,
