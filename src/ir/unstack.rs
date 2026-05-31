@@ -882,6 +882,16 @@ impl Unstacker {
                 self.push(Expr::Import(NameId(arg_u16(arg)?)));
             }
             Mnemonic::IMPORT_FROM => {
+                // The obfuscator can push a junk constant on top of the module that
+                // IMPORT_NAME produced. A constant never legitimately sits on top at
+                // an IMPORT_FROM, so discard any before reading the module; a non-junk
+                // value left here is a shape we do not handle and is left to fail.
+                while matches!(
+                    self.stack.last().map(|top| self.arena.get(*top)),
+                    Some(Expr::Const(_))
+                ) {
+                    self.pop()?;
+                }
                 let module = match self.arena.get(*self.stack.last().ok_or(IrError::StackUnderflow)?) {
                     Expr::Import(module) => *module,
                     _ => return Err(IrError::Unsupported(mnemonic)),
