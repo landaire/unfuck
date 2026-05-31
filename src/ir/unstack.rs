@@ -874,8 +874,20 @@ impl Unstacker {
                 }
             }
             Mnemonic::JUMP_FORWARD => {
-                let then = self.pop()?;
                 let merge = Offset(offset.0 + instr.len() as u32 + arg_u16(arg)? as u32);
+                // When the ternary then-arm is a short-circuit value (`(a or b) if c
+                // else d`), the and/or operators short-circuit to this same merge and
+                // are still pending here, with their final operand on the stack. This
+                // JUMP_FORWARD is the arm's fall-through exit, so fold them now: the
+                // resulting boolean is the arm value. Without this the pending
+                // short-circuits would capture only the tail operand as `then`.
+                while self.shortcircuit.last().map(|s| s.merge) == Some(merge) {
+                    let sc = self.shortcircuit.pop().unwrap();
+                    let rhs = self.pop()?;
+                    let combined = self.combine_bool(sc.kind, sc.lhs, rhs);
+                    self.stack.push(combined);
+                }
+                let then = self.pop()?;
                 match self.ternary.as_mut() {
                     Some(pending) if pending.then.is_none() => {
                         pending.then = Some(then);

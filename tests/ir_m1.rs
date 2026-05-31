@@ -466,6 +466,28 @@ fn short_circuit_chain() {
 }
 
 #[test]
+fn ternary_shortcircuit_then() {
+    // A ternary whose then-arm is a short-circuit value: the and/or operators
+    // short-circuit to the ternary merge, so they must fold into the arm at the
+    // closing JUMP_FORWARD rather than each block boundary capturing the tail.
+    // def f(a, b, c, d): return (a or b) if c else d
+    let code = Builder::new("f", 4, &["a", "b", "c", "d"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 2)
+        .jump(Standard::POP_JUMP_IF_FALSE, "else")
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::JUMP_IF_TRUE_OR_POP, "merge")
+        .arg(Standard::LOAD_FAST, 1)
+        .jump(Standard::JUMP_FORWARD, "merge")
+        .label("else")
+        .arg(Standard::LOAD_FAST, 3)
+        .label("merge")
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(a, b, c, d):\n    return a or b if c else d\n");
+}
+
+#[test]
 fn ternary() {
     // def f(c, a, b): x = a if c else b; return x
     let code = Builder::new("f", 3, &["c", "a", "b", "x"], &[], vec![Obj::None])

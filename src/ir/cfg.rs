@@ -908,8 +908,8 @@ fn find_ternaries(instrs: &[OffsetInstr]) -> HashSet<Offset> {
             continue;
         }
         let then_start = Offset(item.offset.0 + item.instr.len() as u32);
-        if pure_expression(instrs, then_start, jump.offset)
-            && pure_expression(instrs, else_target, merge)
+        if pure_ternary_arm(instrs, then_start, jump.offset, merge)
+            && pure_ternary_arm(instrs, else_target, merge, merge)
         {
             ternaries.insert(item.offset);
             ternaries.insert(jump.offset);
@@ -945,6 +945,30 @@ fn pure_expression(instrs: &[OffsetInstr], start: Offset, end: Offset) -> bool {
         .iter()
         .filter(|item| item.offset >= start && item.offset < end)
         .all(|item| !is_statement_or_control(item.instr.opcode.mnemonic()))
+}
+
+/// Whether `[start, end)` is a value-producing ternary arm. Like `pure_expression`,
+/// but a short-circuit `JUMP_IF_FALSE_OR_POP`/`JUMP_IF_TRUE_OR_POP` is allowed when it
+/// jumps to `merge` (the ternary's merge): such a jump is part of an `and`/`or` value
+/// that short-circuits straight to the arm's result, e.g. the `a or b and c` of
+/// `(a or b and c) if cond else d`. The unstacker folds these into the arm value at
+/// the closing JUMP_FORWARD (see its handler). A short-circuit to any other target is
+/// a nested boolean with its own internal merge that this in-block folding does not
+/// model, so it is treated as impure and the diamond structures as an ordinary `if`.
+fn pure_ternary_arm(instrs: &[OffsetInstr], start: Offset, end: Offset, merge: Offset) -> bool {
+    instrs
+        .iter()
+        .filter(|item| item.offset >= start && item.offset < end)
+        .all(|item| {
+            let mnemonic = item.instr.opcode.mnemonic();
+            if matches!(
+                mnemonic,
+                Mnemonic::JUMP_IF_FALSE_OR_POP | Mnemonic::JUMP_IF_TRUE_OR_POP
+            ) {
+                return branch_target(item).ok() == Some(merge);
+            }
+            !is_statement_or_control(mnemonic)
+        })
 }
 
 /// Whether a mnemonic has a statement-level or control-flow effect, as opposed to
