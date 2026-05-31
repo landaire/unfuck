@@ -84,7 +84,14 @@ pub struct StructuredFunction {
 impl DecodedFunction {
     /// Decodes a code object's bytecode into offset-tagged instructions.
     pub fn decode(code: Arc<Code>) -> Result<DecodedFunction, IrError> {
-        let instrs = cfg::decode(code.code.as_slice())?;
+        let mut instrs = cfg::decode(code.code.as_slice())?;
+        // Neutralize the obfuscator's opaque-predicate stack injections before the
+        // CFG is built, so the buried operands of imports/class/function defs are
+        // exposed to the unstacker. The strip is a heuristic, so a caller can disable
+        // it (see `decompile_function_with_defaults`'s fallback).
+        if STRIP_OPAQUE.with(|flag| flag.get()) {
+            cfg::strip_opaque_predicates(&mut instrs, &code);
+        }
         Ok(DecodedFunction { code, instrs })
     }
 
@@ -204,9 +211,38 @@ pub fn decompile_function_with_defaults(
     code: Arc<Code>,
     defaults: &[String],
 ) -> Result<String, IrError> {
-    let source = DecodedFunction::decode(code)?.structure()?.to_source(defaults);
-    if source.contains(emit::UNRECOVERED) {
-        return Err(IrError::Incomplete);
-    }
-    Ok(source)
+    // The opaque-predicate stripper is a heuristic that can, in rare interleaved
+    // cases, hand the unstacker a code object it cannot balance. Decompile with the
+    // strip first (it fixes operands the obfuscator buried, and corrects functions
+    // the strip-free path would render wrongly); only if that fails fall back to
+    // decompiling without it, so the strip never regresses a function below what the
+    // strip-free pipeline already recovered.
+    decompile_attempt(Arc::clone(&code), defaults, true)
+        .or_else(|_| decompile_attempt(code, defaults, false))
+}
+
+/// Runs the decode/structure/emit pipeline for one code object with opaque-predicate
+/// stripping toggled. The flag is saved and restored so nested comprehensions decoded
+/// during emission inherit this attempt's choice without disturbing the caller's.
+fn decompile_attempt(
+    code: Arc<Code>,
+    defaults: &[String],
+    strip: bool,
+) -> Result<String, IrError> {
+    let previous = STRIP_OPAQUE.with(|flag| flag.replace(strip));
+    let result = (|| {
+        let source = DecodedFunction::decode(code)?.structure()?.to_source(defaults);
+        if source.contains(emit::UNRECOVERED) {
+            return Err(IrError::Incomplete);
+        }
+        Ok(source)
+    })();
+    STRIP_OPAQUE.with(|flag| flag.set(previous));
+    result
+}
+
+thread_local! {
+    /// Whether [`DecodedFunction::decode`] should strip opaque-predicate injections
+    /// for the code object currently being decoded. Toggled per decompile attempt.
+    static STRIP_OPAQUE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }

@@ -8,6 +8,8 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+use num_traits::ToPrimitive;
+use py27_marshal::{Code, Obj};
 use pydis::opcode::py27::{Mnemonic, Standard};
 use pydis::prelude::*;
 
@@ -271,6 +273,225 @@ pub fn decode(code: &[u8]) -> Result<Vec<OffsetInstr>, IrError> {
         }
     }
     Ok(instrs)
+}
+
+/// Neutralizes the obfuscator's opaque-predicate stack injections.
+///
+/// The obfuscator splices a block of the shape `LOAD_CONST <5-int tuple ending in
+/// 255>; UNPACK_SEQUENCE 5; STORE_NAME x5` followed by pure set/comparison
+/// arithmetic over those temps in between a producer (an `IMPORT_NAME`, a
+/// `LOAD_CONST <code>`, a `BUILD_CLASS`) and its consumer (`IMPORT_FROM`,
+/// `MAKE_FUNCTION`, `STORE_NAME`, ...). The block leaves junk on the stack that
+/// buries the consumer's real operand, so the bytecode cannot run in CPython -- it
+/// is pure dead injection meant to defeat decompilation.
+///
+/// Each matched block is overwritten with `NOP`s, which preserves every byte offset
+/// and jump target (so the surrounding control flow is untouched). A block is only
+/// neutralized when a stack simulation proves it self-contained: measured from the
+/// block's entry, the simulated depth never drops below zero, so the block only ever
+/// manipulates values it itself pushed and removing it cannot disturb the real
+/// operand sitting beneath it. The very specific head (a random-looking 5-int tuple
+/// ending in 255 unpacked straight into set arithmetic) does not occur in real code.
+pub fn strip_opaque_predicates(instrs: &mut [OffsetInstr], code: &Code) {
+    let mut i = 0;
+    while i < instrs.len() {
+        if let Some(end) = opaque_block_end(instrs, i, code) {
+            for slot in &mut instrs[i..end] {
+                slot.instr.opcode = Standard::NOP;
+                slot.instr.arg = None;
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// Returns the exclusive end index of an opaque-predicate block starting at `start`,
+/// or `None` if `start` is not the head of one or it is not provably safe to remove.
+fn opaque_block_end(instrs: &[OffsetInstr], start: usize, code: &Code) -> Option<usize> {
+    if instrs[start].instr.opcode.mnemonic() != Mnemonic::LOAD_CONST {
+        return None;
+    }
+    let const_idx = instrs[start].instr.arg? as usize;
+    if !is_obfuscation_tuple(code.consts.get(const_idx)?) {
+        return None;
+    }
+    if instrs.get(start + 1)?.instr.opcode.mnemonic() != Mnemonic::UNPACK_SEQUENCE {
+        return None;
+    }
+
+    let mut junk_temps: HashSet<u16> = HashSet::new();
+    let mut pending_unpack: u16 = 0;
+    let mut depth: isize = 0;
+    let mut saw_op = false;
+    let mut end = start;
+    // How the scan terminated: a below-entry consumer (an instruction reaching down
+    // past the block into the buried operand) is always a safe boundary; otherwise
+    // the boundary is safe only if the stopping opcode is a recognized non-arithmetic
+    // consumer (see `is_safe_consumer`). Stopping at an unrecognized arithmetic op
+    // would mean an incomplete junk block, so it is rejected rather than half-removed.
+    let mut stopped_below_entry = false;
+    for (idx, item) in instrs.iter().enumerate().skip(start) {
+        let mnemonic = item.instr.opcode.mnemonic();
+        // `pops` is how many stack values the instruction consumes, or `None` if it is
+        // not a junk-block opcode (so it terminates the block).
+        let pops: Option<isize> = if let Some(p) = pure_value_pops(&item.instr) {
+            saw_op |= mnemonic != Mnemonic::LOAD_CONST;
+            Some(p)
+        } else {
+            match mnemonic {
+                Mnemonic::UNPACK_SEQUENCE => {
+                    pending_unpack = item.instr.arg.unwrap_or(0);
+                    Some(1)
+                }
+                // The unpack targets become known junk temps; later stores are part
+                // of the block only when they re-store one of those temps.
+                Mnemonic::STORE_NAME => match item.instr.arg {
+                    Some(name) if pending_unpack > 0 => {
+                        junk_temps.insert(name);
+                        pending_unpack -= 1;
+                        Some(1)
+                    }
+                    Some(name) if junk_temps.contains(&name) => Some(1),
+                    _ => None,
+                },
+                Mnemonic::LOAD_NAME if item.instr.arg.is_some_and(|n| junk_temps.contains(&n)) => {
+                    Some(0)
+                }
+                _ => None,
+            }
+        };
+        match pops {
+            // A junk opcode that stays within the block's own pushed values.
+            Some(pops) if depth >= pops => {
+                depth += item.instr.stack_adjustment_after();
+                end = idx + 1;
+            }
+            // A junk-class opcode that reaches below the block entry: this is the real
+            // consumer of the buried operand (e.g. a `BUILD_TUPLE` combining the junk
+            // with a value pushed before the block). A safe place to end.
+            Some(_) => {
+                stopped_below_entry = true;
+                end = idx;
+                break;
+            }
+            None => {
+                end = idx;
+                break;
+            }
+        }
+    }
+
+    // The block must leave junk behind (the buried operand sits below it), and that
+    // junk must come from real opaque work: either arithmetic/set grinding over the
+    // temps, or an incomplete unpack (more values produced than stored -- a shape
+    // real code never emits). This rejects an ordinary `a, b, c, d, e = (..., 255)`
+    // unpack whose values are then used, which leaves no junk and stores every one.
+    if depth < 1 || !(saw_op || pending_unpack > 0) {
+        return None;
+    }
+    // The boundary must be trustworthy: either a below-entry consumer, or a known
+    // non-arithmetic consumer opcode. If the scan stopped at some opcode we do not
+    // model (an arithmetic op missing from `pure_value_pops`), the block would be
+    // only partially recognized and removing it could corrupt the stack, so bail.
+    let safe_boundary =
+        stopped_below_entry || (end < instrs.len() && is_safe_consumer(instrs[end].instr.opcode.mnemonic()));
+    if !safe_boundary {
+        return None;
+    }
+    // Trailing constant loads belong to the consumer that follows the block, not to
+    // the junk: when the obfuscator splices its block into the middle of an operand
+    // setup (e.g. between an import's level and its fromlist), the trailing
+    // `LOAD_CONST` is the next real operand. A constant load pushes without consuming,
+    // so leaving it in place is always safe; removing it would underflow the consumer.
+    while end > start && instrs[end - 1].instr.opcode.mnemonic() == Mnemonic::LOAD_CONST {
+        end -= 1;
+        depth -= 1;
+    }
+    // After trimming, the block must still leave junk behind (depth >= 1) and end on a
+    // junk-consuming op, not have collapsed to bare setup.
+    if depth < 1 {
+        return None;
+    }
+    // The temps it computes must be dead: if any is read outside the block, it is a
+    // real variable and removing its stores would change behavior. Together with the
+    // self-containment proof above, a block read by nothing outside itself is dead
+    // code that only ever left junk on the stack, so neutralizing it is sound.
+    let read_outside = instrs.iter().enumerate().any(|(idx, item)| {
+        (idx < start || idx >= end)
+            && item.instr.opcode.mnemonic() == Mnemonic::LOAD_NAME
+            && item.instr.arg.is_some_and(|n| junk_temps.contains(&n))
+    });
+    if read_outside {
+        return None;
+    }
+    Some(end)
+}
+
+/// The number of stack values a pure value-producing opcode consumes, or `None` if
+/// the opcode is not one of these. "Pure" here means it computes a value purely from
+/// the stack and constants -- the building blocks of an opaque-predicate block.
+/// Constants and loads pop nothing; unary ops and `DUP_TOP` pop one; binary,
+/// in-place, and comparison ops pop two; `BUILD_*` pops its operand count.
+fn pure_value_pops(instr: &Instruction<Standard>) -> Option<isize> {
+    use Mnemonic::*;
+    Some(match instr.opcode.mnemonic() {
+        LOAD_CONST => 0,
+        UNARY_POSITIVE | UNARY_NEGATIVE | UNARY_NOT | UNARY_INVERT | UNARY_CONVERT | DUP_TOP => 1,
+        BINARY_POWER | BINARY_MULTIPLY | BINARY_DIVIDE | BINARY_MODULO | BINARY_ADD
+        | BINARY_SUBTRACT | BINARY_SUBSC | BINARY_FLOOR_DIVIDE | BINARY_TRUE_DIVIDE
+        | BINARY_LSHIFT | BINARY_RSHIFT | BINARY_AND | BINARY_XOR | BINARY_OR | INPLACE_POWER
+        | INPLACE_MULTIPLY | INPLACE_DIVIDE | INPLACE_MODULO | INPLACE_ADD | INPLACE_SUBTRACT
+        | INPLACE_FLOOR_DIVIDE | INPLACE_TRUE_DIVIDE | INPLACE_LSHIFT | INPLACE_RSHIFT
+        | INPLACE_AND | INPLACE_XOR | INPLACE_OR | COMPARE_OP | ROT_TWO => 2,
+        ROT_THREE => 3,
+        BUILD_TUPLE | BUILD_LIST | BUILD_SET => instr.arg.unwrap_or(0) as isize,
+        _ => return None,
+    })
+}
+
+/// Whether `mnemonic` is a non-arithmetic opcode that may legitimately consume an
+/// opaque block's junk (or follow it). These are the operand-burial victims and
+/// plain terminators; crucially none of them is a pure value op, so if the block
+/// scan stops here it has not been cut short in the middle of junk arithmetic.
+fn is_safe_consumer(mnemonic: Mnemonic) -> bool {
+    use Mnemonic::*;
+    matches!(
+        mnemonic,
+        IMPORT_NAME
+            | IMPORT_FROM
+            | IMPORT_STAR
+            | MAKE_FUNCTION
+            | MAKE_CLOSURE
+            | BUILD_CLASS
+            | CALL_FUNCTION
+            | CALL_FUNCTION_VAR
+            | CALL_FUNCTION_KW
+            | CALL_FUNCTION_VAR_KW
+            | STORE_NAME
+            | STORE_FAST
+            | STORE_GLOBAL
+            | STORE_DEREF
+            | POP_TOP
+            | RETURN_VALUE
+            | PRINT_ITEM
+            | PRINT_NEWLINE
+            | YIELD_VALUE
+    )
+}
+
+/// Whether `obj` is the obfuscator's marker constant: a 5-element tuple of integers
+/// ending in 255. Real code essentially never feeds such a tuple straight into the
+/// `UNPACK_SEQUENCE`/set-arithmetic shape these blocks take.
+fn is_obfuscation_tuple(obj: &Obj) -> bool {
+    let Obj::Tuple(items) = obj else {
+        return false;
+    };
+    let items = items.read().unwrap();
+    items.len() == 5
+        && items.iter().all(|o| matches!(o, Obj::Long(_)))
+        && matches!(items.last(), Some(Obj::Long(v)) if v.read().unwrap().to_i64() == Some(255))
 }
 
 /// Computes the set of block-leader offsets: offset 0, every branch target, and
