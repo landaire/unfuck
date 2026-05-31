@@ -507,7 +507,7 @@ fn find_ternaries(instrs: &[OffsetInstr]) -> HashSet<Offset> {
         .map(|(idx, item)| (item.offset, idx))
         .collect();
     let mut ternaries = HashSet::new();
-    for item in instrs {
+    for (idx, item) in instrs.iter().enumerate() {
         // A ternary diamond branches on either POP_JUMP form; the unstacker negates
         // the condition for the true form so both render `then if cond else other`.
         if !matches!(
@@ -541,6 +541,26 @@ fn find_ternaries(instrs: &[OffsetInstr]) -> HashSet<Offset> {
         {
             ternaries.insert(item.offset);
             ternaries.insert(jump.offset);
+            // Extend backward over an `and`-chain condition: preceding
+            // POP_JUMP_IF_FALSE that also branch to the else, with only
+            // value-producing code between, are the earlier `a and b and ...`
+            // conditions of a compound test. Marking them keeps the whole diamond
+            // (and its merge) in one block so the unstacker can fold it.
+            if item.instr.opcode.mnemonic() == Mnemonic::POP_JUMP_IF_FALSE {
+                let mut k = idx;
+                while k > 0 {
+                    k -= 1;
+                    let prev = &instrs[k];
+                    let prev_mnemonic = prev.instr.opcode.mnemonic();
+                    if prev_mnemonic == Mnemonic::POP_JUMP_IF_FALSE
+                        && branch_target(prev).ok() == Some(else_target)
+                    {
+                        ternaries.insert(prev.offset);
+                    } else if is_statement_or_control(prev_mnemonic) {
+                        break;
+                    }
+                }
+            }
         }
     }
     ternaries

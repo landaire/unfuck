@@ -1,0 +1,8 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def choose_and(c1, c2, a, b):
+    x = a if c1 and c2 else b
+    return x

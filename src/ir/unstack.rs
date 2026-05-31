@@ -213,6 +213,17 @@ impl Unstacker {
         }
     }
 
+    /// Appends a condition to a flat `and` chain, keeping `a and b and c` as one
+    /// `BoolOp` rather than nesting.
+    fn and_chain(&mut self, existing: ValueId, new: ValueId) -> ValueId {
+        let mut operands = match self.arena.get(existing) {
+            Expr::BoolOp(BoolKind::And, items) => items.clone(),
+            _ => vec![existing],
+        };
+        operands.push(new);
+        self.arena.alloc(Expr::BoolOp(BoolKind::And, operands))
+    }
+
     fn push(&mut self, expr: Expr) {
         let id = self.arena.alloc(expr);
         self.stack.push(id);
@@ -622,19 +633,31 @@ impl Unstacker {
             // POP_JUMP_IF_FALSE/TRUE reach the unstacker only as a ternary diamond's
             // test (find_ternaries keeps it in-block). The true form takes the else
             // branch when the condition holds, so the recovered condition is negated.
+            // A run of POP_JUMP_IF_FALSE before the then is a compound `and`
+            // condition; each one is folded into the pending test.
             Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE => {
-                if self.ternary.is_some() {
-                    return Err(IrError::Unsupported(mnemonic));
-                }
                 let mut cond = self.pop()?;
                 if mnemonic == Mnemonic::POP_JUMP_IF_TRUE {
                     cond = self.arena.alloc(Expr::Unary(UnaryOp::Not, cond));
                 }
-                self.ternary = Some(PendingTernary {
-                    cond,
-                    then: None,
-                    merge: Offset(0),
-                });
+                match self.ternary.take() {
+                    None => {
+                        self.ternary = Some(PendingTernary {
+                            cond,
+                            then: None,
+                            merge: Offset(0),
+                        });
+                    }
+                    Some(pending) if pending.then.is_none() => {
+                        let cond = self.and_chain(pending.cond, cond);
+                        self.ternary = Some(PendingTernary {
+                            cond,
+                            then: None,
+                            merge: pending.merge,
+                        });
+                    }
+                    Some(_) => return Err(IrError::Unsupported(mnemonic)),
+                }
             }
             Mnemonic::JUMP_FORWARD => {
                 let then = self.pop()?;

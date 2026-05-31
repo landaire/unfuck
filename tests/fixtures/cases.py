@@ -123,6 +123,16 @@ def choose_not(c, a, b):
     return x
 
 
+def choose_and(c1, c2, a, b):
+    x = a if c1 and c2 else b
+    return x
+
+
+def choose_and3(c1, c2, c3, a, b):
+    x = a if c1 and c2 and c3 else b
+    return x
+
+
 def aug_name(x):
     x += 1
     x *= 2
