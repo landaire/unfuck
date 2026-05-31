@@ -3,7 +3,6 @@ use crate::partial_execution::*;
 use crate::smallvm::{InstructionTracker, ParsedInstr};
 use bitflags::bitflags;
 
-use crossbeam::channel::unbounded;
 
 use log::{error, trace};
 
@@ -545,56 +544,49 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         mapped_function_names: &mut HashMap<String, String>,
         _plain_loaded_modules: &mut HashSet<String>,
     ) -> Vec<ExecutionPath> {
-        // create our thread communication channels
-        let (completed_paths_sender, completed_paths_receiver) = unbounded();
-
         let new_mapped_function_names: Mutex<HashMap<String, String>> = Default::default();
         let plain_loaded_modules: Mutex<HashSet<String>> = Default::default();
 
+        let mut completed_paths: Vec<ExecutionPath> = Vec::new();
         {
-            // we could use atomic bools here, but that would introduce a problem if
-            // threads transition while we're examining them
             let code = Arc::clone(&self.code);
             let root = self.root;
             let graph = std::sync::RwLock::new(self);
             let graph = &graph;
             let new_mapped_function_names = &new_mapped_function_names;
             let new_plain_loaded_modules = &plain_loaded_modules;
-            let completed_paths_sender = &completed_paths_sender;
 
-            let running_tasks = Arc::new(AtomicUsize::new(0));
-            rayon::scope(|s| {
-                let code = Arc::clone(&code);
-
-                running_tasks.fetch_add(1, Ordering::SeqCst);
-
-                s.spawn(move |s| {
+            // Explore the CFG with an explicit worklist rather than a recursive rayon
+            // fan-out: nesting that inner pool inside the outer per-file/per-code-object
+            // scopes could exhaust and deadlock the shared thread pool. The outer scopes
+            // still provide parallelism; one code object's path walk is sequential.
+            let mut worklist: Vec<(NodeIndex, ExecutionPath)> =
+                vec![(root, ExecutionPath::default())];
+            while let Some((node, path)) = worklist.pop() {
+                // A panic on one hostile path (a bad instruction, an unhandled VM
+                // state) must not abort the whole code object; contain it so the
+                // remaining paths still run. The driver is single-threaded here, so
+                // there is no lock to poison and no sibling to wedge.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     perform_partial_execution(
-                        root,
+                        node,
                         graph,
-                        Mutex::new(ExecutionPath::default()),
+                        path,
                         new_mapped_function_names,
                         new_plain_loaded_modules,
                         Arc::clone(&code),
-                        s,
-                        completed_paths_sender,
+                        &mut worklist,
+                        &mut completed_paths,
                     );
-
-                    running_tasks.fetch_sub(1, Ordering::SeqCst);
-                });
-            });
+                }));
+            }
         }
 
-        drop(completed_paths_sender);
-
         // copy the mapped function names
-        *mapped_function_names = new_mapped_function_names.lock().unwrap().clone();
+        *mapped_function_names =
+            new_mapped_function_names.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
-        // Get the completed paths
-        completed_paths_receiver
-            .iter()
-            .map(|path| path.into_inner().unwrap())
-            .collect()
+        completed_paths
     }
 
     /// Removes conditions that can be statically evaluated to be constant.
@@ -993,14 +985,17 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         let mut changed = false;
         for nx in self.graph.node_indices().collect::<Vec<_>>() {
             let block = &self.graph[nx];
-            let Some(last) = block.instrs.last() else {
-                continue;
+            // A block ending in a bad (unrepaired) instruction cannot be reasoned
+            // about; leave it untouched rather than panicking on unwrap.
+            let last = match block.instrs.last() {
+                Some(ParsedInstr::Good(instr) | ParsedInstr::GoodDoNotRemove(instr)) => instr,
+                _ => continue,
             };
             // A block ending in a jump carries its successor explicitly already.
-            if last.unwrap().opcode.is_jump() {
+            if last.opcode.is_jump() {
                 continue;
             }
-            let next_offset = block.end_offset + last.unwrap().len() as u64;
+            let next_offset = block.end_offset + last.len() as u64;
             let nonjump = self
                 .graph
                 .edges_directed(nx, Direction::Outgoing)
@@ -1215,8 +1210,12 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             }
             let bb = &self.graph[nx];
             let needs_return = match bb.instrs.last() {
-                Some(instr) => instr.unwrap().opcode.mnemonic() != Mnemonic::RETURN_VALUE,
-                None => true,
+                Some(ParsedInstr::Good(instr) | ParsedInstr::GoodDoNotRemove(instr)) => {
+                    instr.opcode.mnemonic() != Mnemonic::RETURN_VALUE
+                }
+                // A trailing Bad instruction (or empty leaf) has no readable
+                // terminator, so it needs an implicit `return None` appended.
+                _ => true,
             };
             if needs_return {
                 let const_idx = code
@@ -1979,7 +1978,7 @@ pub(crate) mod tests {
 
             let _files_processed = 0;
             while let Some(py27_marshal::Obj::Code(obj_mutex)) = code_objects.pop() {
-                let obj = obj_mutex.read().unwrap();
+                let obj = obj_mutex.read().unwrap_or_else(|e| e.into_inner());
                 output.push(obj.code.as_ref().clone());
 
                 for c in obj
@@ -2269,7 +2268,7 @@ pub(crate) mod tests {
 
         let mut files_processed = 0;
         while let Some(py27_marshal::Obj::Code(obj_mutex)) = code_objects.pop() {
-            let obj = obj_mutex.read().unwrap();
+            let obj = obj_mutex.read().unwrap_or_else(|e| e.into_inner());
             let code_arc = Arc::new(obj.clone());
             let mut code_graph = CodeGraph::<TargetOpcode>::from_code(
                 Arc::clone(&code_arc),
