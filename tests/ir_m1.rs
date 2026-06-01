@@ -661,6 +661,35 @@ fn bare_except() {
 }
 
 #[test]
+fn try_except_body_falls_through_to_merge() {
+    // The body's normal exit is `POP_BLOCK; JUMP merge`, but the deob drops the jump
+    // when the merge is the next instruction: the body falls straight through
+    // POP_BLOCK into the post-try code (here the `return None` epilogue).
+    // def f(): try: g() except: raise
+    let code = Builder::new("f", 0, &[], &["g"], vec![Obj::None])
+        .jump(Standard::SETUP_EXCEPT, "handler")
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_BLOCK)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .label("handler")
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .arg(Standard::RAISE_VARARGS, 0)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f():\n    try:\n        g()\n    except:\n        raise\n\n    return None\n"
+    );
+}
+
+#[test]
 fn typed_except_as_name() {
     // def f(): try: x = g() except Exception as e: log(e)
     let code = Builder::new("f", 0, &["x", "e"], &["g", "Exception", "log"], vec![Obj::None])

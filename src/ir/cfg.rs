@@ -1477,7 +1477,11 @@ fn recover_try(
                         skip_nops(instrs, *index.get(&merge).ok_or(IrError::BadOperand)?);
                     Some(instrs.get(merge_idx).ok_or(IrError::Unstructurable)?.offset)
                 }
-                _ => return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT)),
+                // The deob drops the body's `JUMP merge` when the merge is physically
+                // the next instruction -- the body falls straight through POP_BLOCK
+                // into the post-try code (often the function epilogue, `LOAD_CONST
+                // None; RETURN_VALUE`). The merge is then that instruction itself.
+                _ => Some(jump.offset),
             }
         }
         // Merge-less: the body always raises or returns. A handler that falls through
