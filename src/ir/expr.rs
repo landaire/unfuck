@@ -232,8 +232,14 @@ pub enum Expr {
         conds: Vec<ValueId>,
     },
     /// The module object produced by `IMPORT_NAME`. Consumed by a following store
-    /// (an `import` statement) or by `IMPORT_FROM`/`IMPORT_STAR`.
-    Import(NameId),
+    /// (an `import` statement) or by `IMPORT_FROM`/`IMPORT_STAR`. `level` is the
+    /// `IMPORT_NAME` relative-import level operand (the `LOAD_CONST` below the
+    /// from-list): a positive value is the leading-dot count of a relative import,
+    /// `-1`/`0` an absolute one. `None` when that operand was not a plain constant.
+    Import {
+        module: NameId,
+        level: Option<ConstId>,
+    },
     /// A name pulled from an imported module by `IMPORT_FROM`, awaiting its store.
     ImportFrom(NameId),
     /// The class namespace dict produced by `LOAD_LOCALS` at the end of a class
@@ -340,17 +346,21 @@ pub enum Stmt {
         finalbody: Vec<Stmt>,
     },
     /// `import module [as target]`. `target` is the bound name; when it matches the
-    /// module's top component no `as` clause is emitted.
+    /// module's top component no `as` clause is emitted. `level` carries the
+    /// `IMPORT_NAME` relative-import operand (see [`Expr::Import`]).
     Import {
         module: NameId,
         target: LValue,
+        level: Option<ConstId>,
     },
     /// `from module import name [as target], ...`, or `from module import *` when
-    /// `star` is set (and `names` is empty).
+    /// `star` is set (and `names` is empty). `level` carries the `IMPORT_NAME`
+    /// relative-import operand: a positive value prepends that many leading dots.
     FromImport {
         module: NameId,
         names: Vec<(NameId, LValue)>,
         star: bool,
+        level: Option<ConstId>,
     },
     /// `SET_ADD`: appends an element to a set comprehension's accumulator. Only
     /// produced when lowering a comprehension code object, where it is folded into

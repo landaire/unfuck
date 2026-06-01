@@ -220,6 +220,37 @@ fn keyword_arguments() {
 }
 
 #[test]
+fn relative_imports() {
+    // from . import x; from ..bar import z, w
+    // The IMPORT_NAME level operand (LOAD_CONST 1 / 2) supplies the leading dots;
+    // the from-list const is popped and ignored.
+    let consts = vec![Obj::None, long(1), long(2)];
+    let code = Builder::new("f", 0, &[], &["", "x", "bar", "z", "w"], consts)
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::LOAD_CONST, 0)
+        .arg(Standard::IMPORT_NAME, 0)
+        .arg(Standard::IMPORT_FROM, 1)
+        .arg(Standard::STORE_NAME, 1)
+        .op(Standard::POP_TOP)
+        .arg(Standard::LOAD_CONST, 2)
+        .arg(Standard::LOAD_CONST, 0)
+        .arg(Standard::IMPORT_NAME, 2)
+        .arg(Standard::IMPORT_FROM, 3)
+        .arg(Standard::STORE_NAME, 3)
+        .arg(Standard::IMPORT_FROM, 4)
+        .arg(Standard::STORE_NAME, 4)
+        .op(Standard::POP_TOP)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f():\n    from . import x\n    from ..bar import z, w\n    return None\n"
+    );
+}
+
+#[test]
 fn raise_statement() {
     // def f(): raise Boom
     let code = Builder::new("f", 0, &[], &["Boom"], vec![Obj::None])

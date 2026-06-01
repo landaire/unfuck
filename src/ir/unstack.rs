@@ -50,6 +50,8 @@ struct PendingTernary {
 struct PendingFrom {
     module: NameId,
     names: Vec<(NameId, LValue)>,
+    /// The `IMPORT_NAME` relative-import level operand (see [`Expr::Import`]).
+    level: Option<ConstId>,
 }
 
 /// Symbolic stack machine for one basic block.
@@ -144,7 +146,7 @@ impl Unstacker {
     fn tops_import(&self) -> bool {
         self.stack
             .last()
-            .is_some_and(|top| matches!(self.arena.get(*top), Expr::Import(_)))
+            .is_some_and(|top| matches!(self.arena.get(*top), Expr::Import { .. }))
     }
 
     /// Whether the top of the stack is an in-place result (an augmented-assignment
@@ -363,9 +365,9 @@ impl Unstacker {
         while let Expr::Attr(obj, _) = self.arena.get(base) {
             base = *obj;
         }
-        if let Expr::Import(module) = self.arena.get(base) {
-            let module = *module;
-            self.emit(Stmt::Import { module, target });
+        if let Expr::Import { module, level } = self.arena.get(base) {
+            let (module, level) = (*module, *level);
+            self.emit(Stmt::Import { module, target, level });
             return;
         }
         if let Expr::ImportFrom(name) = self.arena.get(value) {
@@ -1004,11 +1006,21 @@ impl Unstacker {
                 self.push(Expr::BuildClass { name, bases, code });
             }
             Mnemonic::IMPORT_NAME => {
-                // Pops the from-list and relative-import level; the import form is
-                // determined by the opcodes that follow, not these operands.
+                // Pops the from-list and the relative-import level; the import form is
+                // determined by the opcodes that follow, not these operands. The level
+                // (`LOAD_CONST` below the from-list) is kept so a relative import can
+                // restore its leading dots; the compiler always emits it as a constant
+                // int, so a non-constant here just means no level info is available.
                 let _fromlist = self.pop()?;
-                let _level = self.pop()?;
-                self.push(Expr::Import(NameId(arg_u16(arg)?)));
+                let level = self.pop()?;
+                let level = match self.arena.get(level) {
+                    Expr::Const(c) => Some(*c),
+                    _ => None,
+                };
+                self.push(Expr::Import {
+                    module: NameId(arg_u16(arg)?),
+                    level,
+                });
             }
             Mnemonic::IMPORT_FROM => {
                 // The obfuscator can push a junk constant on top of the module that
@@ -1021,21 +1033,24 @@ impl Unstacker {
                 ) {
                     self.pop()?;
                 }
-                let module = match self.arena.get(*self.stack.last().ok_or(IrError::StackUnderflow)?) {
-                    Expr::Import(module) => *module,
+                let (module, level) = match self.arena.get(*self.stack.last().ok_or(IrError::StackUnderflow)?) {
+                    Expr::Import { module, level } => (*module, *level),
                     _ => return Err(IrError::Unsupported(mnemonic)),
                 };
-                self.from_import
-                    .get_or_insert_with(|| PendingFrom { module, names: Vec::new() });
+                self.from_import.get_or_insert_with(|| PendingFrom {
+                    module,
+                    names: Vec::new(),
+                    level,
+                });
                 self.push(Expr::ImportFrom(NameId(arg_u16(arg)?)));
             }
             Mnemonic::IMPORT_STAR => {
                 let top = self.pop()?;
-                let module = match self.arena.get(top) {
-                    Expr::Import(module) => *module,
+                let (module, level) = match self.arena.get(top) {
+                    Expr::Import { module, level } => (*module, *level),
                     _ => return Err(IrError::Unsupported(mnemonic)),
                 };
-                self.emit(Stmt::FromImport { module, names: Vec::new(), star: true });
+                self.emit(Stmt::FromImport { module, names: Vec::new(), star: true, level });
             }
             // The trailing POP_TOP of a `from module import ...` discards the module
             // and completes the statement; otherwise it is an expression statement.
@@ -1046,6 +1061,7 @@ impl Unstacker {
                     module: pending.module,
                     names: pending.names,
                     star: false,
+                    level: pending.level,
                 });
             }
             // A `print >>f, a,` with a suppressed newline ends in POP_TOP of the base

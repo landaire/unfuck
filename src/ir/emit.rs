@@ -484,9 +484,11 @@ impl<'a> Emitter<'a> {
                 self.line("finally:");
                 self.block(finalbody);
             }
-            Stmt::Import { module, target } => self.line(&self.import_line(*module, target)),
-            Stmt::FromImport { module, names, star } => {
-                self.line(&self.from_import_line(*module, names, *star))
+            Stmt::Import { module, target, level } => {
+                self.line(&self.import_line(*module, target, *level))
+            }
+            Stmt::FromImport { module, names, star, level } => {
+                self.line(&self.from_import_line(*module, names, *star, *level))
             }
             // These appear only inside a comprehension code object, where the
             // comprehension folder consumes them; reaching emission means a shape
@@ -707,7 +709,7 @@ impl<'a> Emitter<'a> {
             // Import values are consumed by the store or POP_TOP that completes the
             // statement; one reaching here is an import shape the unstacker did not
             // fully match (e.g. `import a.b as c`), so reject the function.
-            Expr::Import(_) | Expr::ImportFrom(_) => (UNRECOVERED.to_string(), prec::ATOM),
+            Expr::Import { .. } | Expr::ImportFrom(_) => (UNRECOVERED.to_string(), prec::ATOM),
             // `LOAD_LOCALS` is the class namespace a class body returns. Inline
             // class recovery drops the trailing `return locals()`, so this is only
             // reached when a class body is decompiled on its own; render the builtin.
@@ -816,12 +818,31 @@ impl<'a> Emitter<'a> {
         self.code.names.get(name.0 as usize).map(|n| n.to_string())
     }
 
+    /// The leading-dot prefix of a relative import. The `IMPORT_NAME` level operand
+    /// is a positive int for an explicit relative import (the dot count) and `-1`/`0`
+    /// for an absolute one; a missing or non-int level yields no dots, preserving the
+    /// prior absolute-only behaviour. A level outside the plausible package-nesting
+    /// range is treated as no dots too: it cannot be a real relative import, and the
+    /// bound keeps a corrupt operand from driving an unbounded `repeat` allocation.
+    fn import_dots(&self, level: Option<ConstId>) -> String {
+        let count = match level.and_then(|c| self.code.consts.get(c.0 as usize)) {
+            Some(Obj::Long(v)) => v.read().unwrap().to_i64().unwrap_or(0),
+            _ => 0,
+        };
+        if (1..=32).contains(&count) {
+            ".".repeat(count as usize)
+        } else {
+            String::new()
+        }
+    }
+
     /// Renders an `import module [as target]` statement. No `as` clause is emitted
     /// when the bound name matches the module's top-level component.
-    fn import_line(&self, module: NameId, target: &LValue) -> String {
+    fn import_line(&self, module: NameId, target: &LValue, level: Option<ConstId>) -> String {
         let Some(module) = self.raw_name(module) else {
             return UNRECOVERED.to_string();
         };
+        let module = format!("{}{}", self.import_dots(level), module);
         let head = module.split('.').next().unwrap_or(&module);
         match self.import_binding(target) {
             Some(bind) if bind == head => format!("import {}", module),
@@ -831,18 +852,25 @@ impl<'a> Emitter<'a> {
     }
 
     /// Renders a `from module import ...` statement (or `from module import *`).
-    fn from_import_line(&self, module: NameId, names: &[(NameId, LValue)], star: bool) -> String {
+    fn from_import_line(
+        &self,
+        module: NameId,
+        names: &[(NameId, LValue)],
+        star: bool,
+        level: Option<ConstId>,
+    ) -> String {
         let Some(module) = self.raw_name(module) else {
             return UNRECOVERED.to_string();
         };
-        // An empty module name is a relative import (`from . import x`) whose dot
-        // count comes from the discarded `IMPORT_NAME` level operand, which the IR
-        // does not yet track. Rendering `from  import x` is a syntax error, so reject
-        // the function rather than emit invalid source (a graceful fallback until the
-        // level is threaded through).
-        if module.is_empty() {
+        let dots = self.import_dots(level);
+        // An empty module name with no leading dots is an unrecoverable relative
+        // import (the level operand was lost), and `from  import x` is a syntax
+        // error -- reject rather than emit invalid source. `from . import x` has the
+        // empty name but a positive level, so the dots supply a valid module path.
+        if module.is_empty() && dots.is_empty() {
             return UNRECOVERED.to_string();
         }
+        let module = format!("{}{}", dots, module);
         if star {
             return format!("from {} import *", module);
         }
