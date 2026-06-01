@@ -97,16 +97,20 @@ pub type LoadedNames = Arc<Mutex<Vec<Arc<BString>>>>;
 #[derive(Debug)]
 pub struct InstructionTracker<T>(pub Arc<Mutex<Vec<T>>>);
 
-/// We implement a custom Clone routine since, in some scenarios, we want to share
-/// the taint tracking across multiple objects in different locations. e.g. we may
-/// want to share taint tracking state between our saved objects in our tables (vm vars, names, etc.)
-/// and variables on the stack.
+/// Cloning a tracker copies its tracked set so each value owns its own provenance.
+/// An earlier design shared the `Vec` by `Arc` so a push to one value was seen by
+/// every value cloned from it; that pollutes a value's producer set with the
+/// instructions of unrelated values (a load of a var leaking into every other use
+/// of that var, a sibling fork's instructions leaking back into this path). Precise
+/// per-value provenance is what lets `remove_const_conditions` delete a folded
+/// predicate's operand closure -- cross-block included -- without touching live code.
+/// Combining values (binary ops, `extend`) unions the operand sets explicitly.
 impl<T> Clone for InstructionTracker<T>
 where
     T: Clone,
 {
     fn clone(&self) -> Self {
-        InstructionTracker(Arc::clone(&self.0))
+        self.deep_clone()
     }
 }
 
@@ -473,8 +477,13 @@ where
             let name = &code.names[instr.arg.unwrap() as usize];
             names_loaded.lock().unwrap().push(Arc::clone(name));
             if let Some((val, accesses)) = names.get(name) {
-                accesses.push(access_tracking);
-                stack.push((val.clone(), accesses.clone()));
+                // The loaded value's provenance is the stored value's producers plus
+                // this load. Copy rather than mutate the table entry: the load is a
+                // consumer, not a producer of the stored binding, so recording it on
+                // the table entry would leak this use into every later load of the name.
+                let loaded = accesses.deep_clone();
+                loaded.push(access_tracking);
+                stack.push((val.clone(), loaded));
             } else {
                 let tracking = InstructionTracker::new();
                 tracking.push(access_tracking);
@@ -483,8 +492,13 @@ where
         }
         Mnemonic::LOAD_FAST => {
             if let Some((var, accesses)) = vars.get(&instr.arg.unwrap()) {
-                accesses.push(access_tracking);
-                stack.push((var.clone(), accesses.clone()));
+                // Copy the stored value's producers and add this load; do not mutate
+                // the table entry (see LOAD_NAME). Keeping the load off the stored
+                // var's set is what makes a later folded predicate's operand closure
+                // exact instead of accumulating every prior load of the same var.
+                let loaded = accesses.deep_clone();
+                loaded.push(access_tracking);
+                stack.push((var.clone(), loaded));
             } else {
                 let tracking = InstructionTracker::new();
                 tracking.push(access_tracking);
