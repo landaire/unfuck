@@ -177,15 +177,23 @@ impl StructuredFunction {
         format!("def {}({}):", self.display_name(), self.params(defaults).join(", "))
     }
 
-    /// Whether the body contains a top-level `from __future__ import ...`. Such an
-    /// import is only legal at the start of a module, so a code object holding one
-    /// cannot be rendered as a `def` (the module-as-function fallback); the caller
-    /// rejects that emission and falls back to a comment instead of invalid source.
-    fn imports_future(&self) -> bool {
+    /// Whether the body holds a statement only legal at module scope, so it cannot be
+    /// rendered as a `def` (the module-as-function fallback): a `from __future__
+    /// import ...` (must lead the module) or a `from m import *`. `import *` inside a
+    /// function is a SyntaxError whenever the function has a nested function that
+    /// closes over one of its bindings -- which a module body wrapped in a `def`
+    /// routinely does, since its classes and functions reference module-level names
+    /// that become the wrapper's locals. The bytecode's own `co_freevars` are empty
+    /// (those references are globals until the wrap), so the closure cannot be
+    /// detected cheaply; reject any `import *` rather than emit source that may not
+    /// compile. The module dump then falls back to a comment plus the recoverable
+    /// nested leaves, which is more useful than a non-runnable `def` wrapper anyway.
+    fn requires_module_scope(&self) -> bool {
         self.body.iter().any(|stmt| match stmt {
-            Stmt::FromImport { module, .. } => {
-                self.code.names.get(module.0 as usize).map(|n| n.to_string()).as_deref()
-                    == Some("__future__")
+            Stmt::FromImport { module, star, .. } => {
+                *star
+                    || self.code.names.get(module.0 as usize).map(|n| n.to_string()).as_deref()
+                        == Some("__future__")
             }
             _ => false,
         })
@@ -407,10 +415,10 @@ fn decompile_attempt(
         let source = if as_module {
             structured.to_module_source().ok_or(IrError::Incomplete)?
         } else {
-            // A `from __future__` import is only valid at module top level, so a body
-            // holding one cannot be wrapped in a `def`; reject so the module dump
-            // falls back to a comment rather than emitting invalid source.
-            if structured.imports_future() {
+            // `from __future__` and `import *` are only valid at module top level, so
+            // a body holding one cannot be wrapped in a `def`; reject so the module
+            // dump falls back to a comment rather than emitting invalid source.
+            if structured.requires_module_scope() {
                 return Err(IrError::Incomplete);
             }
             structured.to_source(defaults)

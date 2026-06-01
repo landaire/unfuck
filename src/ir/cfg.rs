@@ -1569,21 +1569,44 @@ fn recover_try(
 
     // The compiler closes a handler chain with an END_FINALLY that re-raises an
     // unmatched exception. A bare `except:` leaves it unreachable rather than
-    // removing it. END_FINALLY has no source form, so drop every one in the
-    // handler span.
-    // Drop every END_FINALLY in the handler span. The relinearizer can place the
-    // merge before the handler, so clamp the scan to a forward span (when the merge
-    // is earlier, the handler's END_FINALLY, if any, lies past it and the bare-except
-    // forms reaching here have none). A merge-less try has no merge to clamp at, so
-    // scan to the end of the stream; END_FINALLY is always structural, so excluding
-    // one that belongs to a later sibling is idempotent with that sibling's recovery.
-    let end_idx = match end {
-        Some(end) => *index.get(&end).ok_or(IrError::BadOperand)?,
+    // removing it. END_FINALLY has no source form, so drop every one in the handler
+    // span. The handler's END_FINALLY follows the handler dispatch, so normally
+    // [handler_idx, merge) covers it. But when the body and every handler `continue`
+    // an enclosing loop, the merge is the loop header -- placed before the handler --
+    // and that span is empty, leaving the handler's own END_FINALLY behind. Scan to
+    // the end of the stream whenever the merge does not sit after the handler (the
+    // merge-less case has no merge at all); END_FINALLY is always structural, so
+    // excluding one that belongs to a later sibling is idempotent with that sibling's
+    // own recovery.
+    let scan_end = match end {
+        Some(end) => {
+            let end_idx = *index.get(&end).ok_or(IrError::BadOperand)?;
+            if end_idx >= handler_idx {
+                end_idx
+            } else {
+                instrs.len()
+            }
+        }
         None => instrs.len(),
     };
-    for item in &instrs[handler_idx..end_idx.max(handler_idx)] {
-        if item.instr.opcode.mnemonic() == Mnemonic::END_FINALLY {
-            excluded.insert(item.offset);
+    for i in handler_idx..scan_end {
+        if instrs[i].instr.opcode.mnemonic() != Mnemonic::END_FINALLY {
+            continue;
+        }
+        excluded.insert(instrs[i].offset);
+        // An END_FINALLY re-raises an unmatched exception, so it never falls through.
+        // When the handlers continue an enclosing loop the merge is the loop header,
+        // and the compiler emits a `JUMP merge` right after the END_FINALLY for the
+        // re-raise path -- which is dead. Excluding the END_FINALLY drops the block
+        // boundary the preceding block's jump relied on, so leaving this dead jump
+        // would fold it into that block as a mid-block terminator; exclude it too.
+        if let (Some(merge), Some(next)) = (end, instrs.get(i + 1)) {
+            let m = next.instr.opcode.mnemonic();
+            if matches!(m, Mnemonic::JUMP_ABSOLUTE | Mnemonic::JUMP_FORWARD)
+                && branch_target(next).ok() == Some(merge)
+            {
+                excluded.insert(next.offset);
+            }
         }
     }
 
