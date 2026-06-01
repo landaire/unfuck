@@ -57,8 +57,11 @@ fn main() {
 
     let mut total = 0usize;
     let mut ok = 0usize;
-    let mut by_error: BTreeMap<String, (usize, String)> = BTreeMap::new();
-    let mut by_panic: BTreeMap<String, (usize, String)> = BTreeMap::new();
+    // Per bucket: (count, smallest example's bytecode length, that example). Keeping
+    // the smallest example surfaces a minimal repro for diagnosis rather than just
+    // whichever object happened to fail first.
+    let mut by_error: BTreeMap<String, (usize, usize, String)> = BTreeMap::new();
+    let mut by_panic: BTreeMap<String, (usize, usize, String)> = BTreeMap::new();
     let mut panic_files: usize = 0;
     let mut read_failures: usize = 0;
 
@@ -87,8 +90,8 @@ fn main() {
                 let loc = LAST_PANIC.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default();
                 let entry = by_panic.entry(format!("marshal {}", loc)).or_default();
                 entry.0 += 1;
-                if entry.1.is_empty() {
-                    entry.1 = fname;
+                if entry.2.is_empty() {
+                    entry.2 = fname;
                 }
                 continue;
             }
@@ -110,25 +113,23 @@ fn main() {
             }
             total += 1;
             let name = code.name.to_string();
+            let code_len = code.code.len();
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 unfuck::ir::decompile_function(code.clone())
             }));
+            let record = |entry: &mut (usize, usize, String)| {
+                entry.0 += 1;
+                if entry.2.is_empty() || code_len < entry.1 {
+                    entry.1 = code_len;
+                    entry.2 = format!("{} in {} ({}B)", name, fname, code_len);
+                }
+            };
             match res {
                 Ok(Ok(_)) => ok += 1,
-                Ok(Err(err)) => {
-                    let entry = by_error.entry(format!("{}", err)).or_default();
-                    entry.0 += 1;
-                    if entry.1.is_empty() {
-                        entry.1 = format!("{} in {}", name, fname);
-                    }
-                }
+                Ok(Err(err)) => record(by_error.entry(format!("{}", err)).or_default()),
                 Err(_) => {
                     let loc = LAST_PANIC.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default();
-                    let entry = by_panic.entry(loc).or_default();
-                    entry.0 += 1;
-                    if entry.1.is_empty() {
-                        entry.1 = format!("{} in {}", name, fname);
-                    }
+                    record(by_panic.entry(loc).or_default());
                 }
             }
         }
@@ -146,13 +147,13 @@ fn main() {
     println!("--- IR errors (graceful) ---");
     let mut errs: Vec<_> = by_error.into_iter().collect();
     errs.sort_by(|a, b| b.1.0.cmp(&a.1.0));
-    for (err, (count, example)) in errs {
-        println!("  {:>6}  {:50}  e.g. {}", count, err, example);
+    for (err, (count, _len, example)) in errs {
+        println!("  {:>6}  {:50}  smallest: {}", count, err, example);
     }
     println!("--- PANICS (must be eliminated) ---");
     let mut panics: Vec<_> = by_panic.into_iter().collect();
     panics.sort_by(|a, b| b.1.0.cmp(&a.1.0));
-    for (loc, (count, example)) in panics {
-        println!("  {:>6}  {:50}  e.g. {}", count, loc, example);
+    for (loc, (count, _len, example)) in panics {
+        println!("  {:>6}  {:50}  smallest: {}", count, loc, example);
     }
 }
