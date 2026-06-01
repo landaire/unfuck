@@ -690,6 +690,55 @@ fn try_except_body_falls_through_to_merge() {
 }
 
 #[test]
+fn loop_typed_except_end_finally_past_merge() {
+    // for x in items: try: g(x) except ValueError: pass
+    // The body and handler both continue the loop through a shared merge (a
+    // JUMP_ABSOLUTE back to FOR_ITER), and the relinearizer places the handler's
+    // re-raise END_FINALLY *after* that merge -- where the merge-clamped scan would
+    // miss it. recover_try must still exclude it (and its dead trailing jump).
+    let code = Builder::new("f", 1, &["items", "x"], &["g", "ValueError"], vec![Obj::None])
+        .jump(Standard::SETUP_LOOP, "exit")
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::GET_ITER)
+        .label("loop")
+        .jump(Standard::FOR_ITER, "loopexit")
+        .arg(Standard::STORE_FAST, 1)
+        .jump(Standard::SETUP_EXCEPT, "handler")
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_BLOCK)
+        .jump(Standard::JUMP_FORWARD, "merge")
+        .label("handler")
+        .op(Standard::DUP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::COMPARE_OP, 10)
+        .jump(Standard::POP_JUMP_IF_FALSE, "endf")
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_FORWARD, "merge")
+        .label("merge")
+        .jump(Standard::JUMP_ABSOLUTE, "loop")
+        .label("endf")
+        .op(Standard::END_FINALLY)
+        .jump(Standard::JUMP_ABSOLUTE, "loop")
+        .label("loopexit")
+        .op(Standard::POP_BLOCK)
+        .label("exit")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(items):\n    for x in items:\n        try:\n            g(x)\n        \
+         except ValueError:\n            pass\n\n    return None\n"
+    );
+}
+
+#[test]
 fn typed_except_as_name() {
     // def f(): try: x = g() except Exception as e: log(e)
     let code = Builder::new("f", 0, &["x", "e"], &["g", "Exception", "log"], vec![Obj::None])

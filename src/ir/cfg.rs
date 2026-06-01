@@ -1561,8 +1561,12 @@ fn recover_try(
 
                 let next_idx = *index.get(&next_off).ok_or(IrError::BadOperand)?;
                 // An unmatched typed chain re-raises through END_FINALLY; that is
-                // the absence of a catch-all, not another clause.
+                // the absence of a catch-all, not another clause. Exclude that
+                // END_FINALLY directly: the relinearizer can place it past the merge
+                // (when the handlers continue an enclosing loop), where the merge-
+                // clamped scan below would miss it.
                 if mnemonic_at(instrs, next_idx)? == Mnemonic::END_FINALLY {
+                    exclude_end_finally_tail(instrs, next_idx, excluded);
                     break;
                 }
                 clause_idx = next_idx;
@@ -1594,27 +1598,39 @@ fn recover_try(
         None => instrs.len(),
     };
     for i in handler_idx..scan_end {
-        if instrs[i].instr.opcode.mnemonic() != Mnemonic::END_FINALLY {
-            continue;
-        }
-        excluded.insert(instrs[i].offset);
-        // An END_FINALLY re-raises an unmatched exception, so it never falls through.
-        // When the handlers continue an enclosing loop the merge is the loop header,
-        // and the compiler emits a `JUMP merge` right after the END_FINALLY for the
-        // re-raise path -- which is dead. Excluding the END_FINALLY drops the block
-        // boundary the preceding block's jump relied on, so leaving this dead jump
-        // would fold it into that block as a mid-block terminator; exclude it too.
-        if let (Some(merge), Some(next)) = (end, instrs.get(i + 1)) {
-            let m = next.instr.opcode.mnemonic();
-            if matches!(m, Mnemonic::JUMP_ABSOLUTE | Mnemonic::JUMP_FORWARD)
-                && branch_target(next).ok() == Some(merge)
-            {
-                excluded.insert(next.offset);
-            }
+        if instrs[i].instr.opcode.mnemonic() == Mnemonic::END_FINALLY {
+            exclude_end_finally_tail(instrs, i, excluded);
         }
     }
 
     Ok(TryShape { setup: setup.offset, body_entry, end, clauses })
+}
+
+/// Excludes the `END_FINALLY` at `idx` and, when present, the dead jump right after
+/// it. An `END_FINALLY` re-raises an unmatched exception and never falls through, so
+/// a jump immediately after it -- the re-raise path's tail the compiler emits when
+/// the handlers continue an enclosing loop or return to a merge -- is unreachable
+/// (unless some other instruction jumps to it). Excluding the END_FINALLY removes the
+/// block boundary the preceding block's jump relied on, so leaving that dead jump
+/// would fold it into the preceding block as a mid-block terminator; drop it too.
+fn exclude_end_finally_tail(instrs: &[OffsetInstr], idx: usize, excluded: &mut HashSet<Offset>) {
+    excluded.insert(instrs[idx].offset);
+    let Some(next) = instrs.get(idx + 1) else {
+        return;
+    };
+    if !matches!(
+        next.instr.opcode.mnemonic(),
+        Mnemonic::JUMP_ABSOLUTE | Mnemonic::JUMP_FORWARD
+    ) {
+        return;
+    }
+    let tail = next.offset;
+    let is_target = instrs
+        .iter()
+        .any(|item| branch_target(item).ok() == Some(tail));
+    if !is_target {
+        excluded.insert(tail);
+    }
 }
 
 /// Marks the instruction offsets in `[start, end)` as handler dispatch to drop.
