@@ -351,6 +351,15 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Whether `id` is an integer (`Obj::Long`) literal. Such a value needs
+    /// parentheses as an attribute target, since `6.attr` lexes `6.` as a float.
+    fn is_int_literal(&self, id: ValueId) -> bool {
+        match self.arena.get(id) {
+            Expr::Const(c) => matches!(self.code.consts.get(c.0 as usize), Some(Obj::Long(_))),
+            _ => false,
+        }
+    }
+
     /// The value of a string constant, if it is one.
     fn const_string(&self, c: ConstId) -> Option<String> {
         match self.code.consts.get(c.0 as usize) {
@@ -604,10 +613,17 @@ impl<'a> Emitter<'a> {
             Expr::Local(var) => (self.varname(*var), prec::ATOM),
             Expr::Deref(deref) => (self.derefname(*deref), prec::ATOM),
             Expr::Global(name) | Expr::Name(name) => (self.name(*name), prec::ATOM),
-            Expr::Attr(obj, name) => (
-                format!("{}.{}", self.expr(*obj, prec::ATOM), self.name(*name)),
-                prec::ATOM,
-            ),
+            Expr::Attr(obj, name) => {
+                // A bare integer literal as the attribute target lexes as a float
+                // (`6.__index__` scans `6.` then `__index__`), so parenthesise it:
+                // `(6).__index__()`.
+                let obj_text = if self.is_int_literal(*obj) {
+                    format!("({})", self.expr(*obj, prec::ATOM))
+                } else {
+                    self.expr(*obj, prec::ATOM)
+                };
+                (format!("{}.{}", obj_text, self.name(*name)), prec::ATOM)
+            }
             Expr::Subscript(container, key) => (
                 format!("{}[{}]", self.expr(*container, prec::ATOM), self.expr(*key, 0)),
                 prec::ATOM,

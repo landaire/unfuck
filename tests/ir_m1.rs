@@ -280,6 +280,21 @@ fn list_comp_negated_filter() {
 }
 
 #[test]
+fn int_literal_attribute_is_parenthesized() {
+    // def f(): return (6).__index__()
+    // A bare `6.__index__` would lex `6.` as a float, so the integer literal needs
+    // parentheses as the attribute target.
+    let code = Builder::new("f", 0, &[], &["__index__"], vec![Obj::None, long(6)])
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::LOAD_ATTR, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f():\n    return (6).__index__()\n");
+}
+
+#[test]
 fn for_loop_try_except_continue() {
     // def f(xs):
     //     for x in xs:
