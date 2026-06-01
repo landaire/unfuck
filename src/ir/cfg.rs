@@ -1167,7 +1167,11 @@ fn recover_with(
 ) -> Result<WithShape, IrError> {
     let setup = &instrs[setup_idx];
     let cleanup_off = branch_target(setup)?;
-    let cleanup_idx = *index.get(&cleanup_off).ok_or(IrError::BadOperand)?;
+    // The SETUP_WITH target is the cleanup, but the relinearizer can interpose
+    // NOP trampolines (former `JUMP_FORWARD 0`s) before the real WITH_CLEANUP, so
+    // skip them.
+    let cleanup_target_idx = *index.get(&cleanup_off).ok_or(IrError::BadOperand)?;
+    let cleanup_idx = skip_nops(instrs, cleanup_target_idx);
     // The `as` binding (or a discarding POP_TOP) immediately follows SETUP_WITH.
     let bind_idx = setup_idx + 1;
     let target = match mnemonic_at(instrs, bind_idx)? {
@@ -1205,15 +1209,39 @@ fn recover_with(
     {
         return Err(IrError::HasControlFlow(Mnemonic::SETUP_WITH));
     }
+    // The normal exit is `POP_BLOCK; LOAD_CONST None; <filler>` where <filler> is the
+    // relinearizer's trampoline jumps/NOPs to the cleanup (possibly empty in the
+    // contiguous CPython layout). Drop POP_BLOCK and everything up to the cleanup so
+    // the body falls through to the merge; require that span to be only filler so an
+    // unexpected layout rejects rather than mis-structures.
     if let Some(pop_idx) = pop_idx {
-        if mnemonic_at(instrs, pop_idx + 1)? != Mnemonic::LOAD_CONST || pop_idx + 2 != cleanup_idx
-        {
+        if mnemonic_at(instrs, pop_idx + 1)? != Mnemonic::LOAD_CONST {
             return Err(IrError::HasControlFlow(Mnemonic::SETUP_WITH));
         }
-        excluded.insert(instrs[pop_idx].offset);
-        excluded.insert(instrs[pop_idx + 1].offset);
+        for i in (pop_idx + 1)..cleanup_idx {
+            if !is_exit_filler(mnemonic_at(instrs, i)?) {
+                return Err(IrError::HasControlFlow(Mnemonic::SETUP_WITH));
+            }
+        }
+        // Keep the POP_BLOCK itself: the relinearizer can make it a join point that
+        // body branches jump to, so dropping it would orphan those jumps. As a no-op
+        // it forms an empty block that falls through to the merge. Drop everything
+        // after it up to the cleanup (the LOAD_CONST None and trampoline jumps).
+        for i in (pop_idx + 1)..cleanup_idx {
+            excluded.insert(instrs[i].offset);
+        }
+    } else {
+        // No normal POP_BLOCK exit (the body always raises/returns): only the target
+        // trampoline NOPs precede the cleanup. Drop them.
+        for i in cleanup_target_idx..cleanup_idx {
+            excluded.insert(instrs[i].offset);
+        }
     }
-    let end = instrs.get(cleanup_idx + 2).ok_or(IrError::Unstructurable)?.offset;
+    // The merge follows END_FINALLY, again possibly past trampoline NOPs.
+    let end = instrs
+        .get(skip_nops(instrs, cleanup_idx + 2))
+        .ok_or(IrError::Unstructurable)?
+        .offset;
     // Drop the binding and the cleanup machinery so they never form blocks.
     for off in [
         instrs[bind_idx].offset,
@@ -1281,7 +1309,11 @@ fn recover_finally(
 ) -> Result<FinallyShape, IrError> {
     let setup = &instrs[setup_idx];
     let finalbody_off = branch_target(setup)?;
-    let finalbody_idx = *index.get(&finalbody_off).ok_or(IrError::BadOperand)?;
+    // The SETUP_FINALLY target can land on a relinearizer trampoline before the real
+    // finally body, so skip NOPs/no-op jumps.
+    let finalbody_target_idx = *index.get(&finalbody_off).ok_or(IrError::BadOperand)?;
+    let finalbody_idx = skip_nops(instrs, finalbody_target_idx);
+    let finalbody_off = instrs[finalbody_idx].offset;
     let body_entry = instrs.get(setup_idx + 1).ok_or(IrError::Unstructurable)?.offset;
     // The body exits through its `POP_BLOCK` at block-nesting depth 0.
     let mut depth = 0i32;
@@ -1305,9 +1337,18 @@ fn recover_finally(
     // the finally is the correct flow whether the body falls through or exits
     // abnormally, so a missing POP_BLOCK is sound without further checks.
     if let Some(pop_idx) = pop_idx {
-        if mnemonic_at(instrs, pop_idx + 1)? != Mnemonic::LOAD_CONST || pop_idx + 2 != finalbody_idx
-        {
+        if mnemonic_at(instrs, pop_idx + 1)? != Mnemonic::LOAD_CONST {
             return Err(IrError::HasControlFlow(Mnemonic::SETUP_FINALLY));
+        }
+        // The span between the LOAD_CONST sentinel and the finally body is the
+        // relinearizer's trampoline filler (jumps/NOPs); require it and drop it so it
+        // forms no spurious block. POP_BLOCK and LOAD_CONST stay (a nested try merge
+        // may target the POP_BLOCK).
+        for i in (pop_idx + 2)..finalbody_idx {
+            if !is_exit_filler(mnemonic_at(instrs, i)?) {
+                return Err(IrError::HasControlFlow(Mnemonic::SETUP_FINALLY));
+            }
+            excluded.insert(instrs[i].offset);
         }
     }
     // The finally clause ends at its own `END_FINALLY` at depth 0.
@@ -1326,7 +1367,10 @@ fn recover_finally(
         }
     }
     let end_idx = end_idx.ok_or(IrError::HasControlFlow(Mnemonic::SETUP_FINALLY))?;
-    let end = instrs.get(end_idx + 1).ok_or(IrError::Unstructurable)?.offset;
+    let end = instrs
+        .get(skip_nops(instrs, end_idx + 1))
+        .ok_or(IrError::Unstructurable)?
+        .offset;
     excluded.insert(instrs[end_idx].offset);
     Ok(FinallyShape { setup: setup.offset, body_entry, finalbody: finalbody_off, end })
 }
@@ -1352,6 +1396,34 @@ fn mnemonic_at(instrs: &[OffsetInstr], idx: usize) -> Result<Mnemonic, IrError> 
         .ok_or(IrError::Unstructurable)
 }
 
+/// Advances `idx` past no-op trampolines: a `NOP` (a `JUMP_FORWARD 0` that
+/// `strip_noop_jumps` rewrote) or a still-raw `JUMP_FORWARD 0`. The relinearizer
+/// leaves these so a region's cleanup/merge target can land on one instead of the
+/// real instruction; both fall straight through to the next instruction.
+fn skip_nops(instrs: &[OffsetInstr], mut idx: usize) -> usize {
+    while let Some(item) = instrs.get(idx) {
+        let mnemonic = item.instr.opcode.mnemonic();
+        let is_noop_jump = mnemonic == Mnemonic::JUMP_FORWARD && item.instr.arg == Some(0);
+        if mnemonic == Mnemonic::NOP || is_noop_jump {
+            idx += 1;
+        } else {
+            break;
+        }
+    }
+    idx
+}
+
+/// Whether `mnemonic` is the kind of instruction the relinearizer leaves between a
+/// `with`/`try` body's exit and its cleanup: the `LOAD_CONST None` pushed for the
+/// normal exit, a `NOP` trampoline, or an unconditional jump to the cleanup. Such a
+/// span is dropped (excluded) so the body falls through to the merge.
+fn is_exit_filler(mnemonic: Mnemonic) -> bool {
+    matches!(
+        mnemonic,
+        Mnemonic::LOAD_CONST | Mnemonic::NOP | Mnemonic::JUMP_FORWARD | Mnemonic::JUMP_ABSOLUTE
+    )
+}
+
 /// Recovers a single `try`/`except` rooted at the `SETUP_EXCEPT` at `setup_idx`.
 fn recover_try(
     instrs: &[OffsetInstr],
@@ -1362,7 +1434,9 @@ fn recover_try(
     let setup = &instrs[setup_idx];
     let handler_off = branch_target(setup)?;
     let body_entry = instrs.get(setup_idx + 1).ok_or(IrError::Unstructurable)?.offset;
-    let handler_idx = *index.get(&handler_off).ok_or(IrError::BadOperand)?;
+    // The SETUP_EXCEPT target can land on a relinearizer trampoline before the real
+    // handler dispatch, so skip NOPs/no-op jumps to reach it.
+    let handler_idx = skip_nops(instrs, *index.get(&handler_off).ok_or(IrError::BadOperand)?);
     // The protected body exits through `POP_BLOCK; JUMP end`. The relinearizer does
     // not always place this immediately before the handler -- post-try code, or a
     // folded ternary's else arm, can sit between the body exit and the handler -- so
@@ -1396,7 +1470,13 @@ fn recover_try(
         Some(pop_idx) => {
             let jump = instrs.get(pop_idx + 1).ok_or(IrError::Unstructurable)?;
             match jump.instr.opcode.mnemonic() {
-                Mnemonic::JUMP_FORWARD | Mnemonic::JUMP_ABSOLUTE => Some(branch_target(jump)?),
+                Mnemonic::JUMP_FORWARD | Mnemonic::JUMP_ABSOLUTE => {
+                    // The merge target may go through a relinearizer trampoline.
+                    let merge = branch_target(jump)?;
+                    let merge_idx =
+                        skip_nops(instrs, *index.get(&merge).ok_or(IrError::BadOperand)?);
+                    Some(instrs.get(merge_idx).ok_or(IrError::Unstructurable)?.offset)
+                }
                 _ => return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT)),
             }
         }
