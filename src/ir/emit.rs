@@ -55,6 +55,18 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Like [`Self::new`] but renders at module scope: statements start at column 0
+    /// rather than indented under an enclosing `def`. Used for a module's root code
+    /// object, whose statements are the module's own top-level code.
+    pub fn new_module(code: &'a Code, arena: &'a ExprArena) -> Emitter<'a> {
+        Emitter {
+            code,
+            arena,
+            out: String::new(),
+            indent: 0,
+        }
+    }
+
     /// Renders a single expression at statement precedence. Used to recover a
     /// lambda body in the enclosing scope.
     pub(crate) fn expr_text(&self, id: ValueId) -> String {
@@ -823,6 +835,14 @@ impl<'a> Emitter<'a> {
         let Some(module) = self.raw_name(module) else {
             return UNRECOVERED.to_string();
         };
+        // An empty module name is a relative import (`from . import x`) whose dot
+        // count comes from the discarded `IMPORT_NAME` level operand, which the IR
+        // does not yet track. Rendering `from  import x` is a syntax error, so reject
+        // the function rather than emit invalid source (a graceful fallback until the
+        // level is threaded through).
+        if module.is_empty() {
+            return UNRECOVERED.to_string();
+        }
         if star {
             return format!("from {} import *", module);
         }
@@ -1168,17 +1188,25 @@ pub(crate) fn sanitize_identifier(name: &str) -> String {
     out
 }
 
-/// Strips the deobfuscator's `_orig_<id>` suffix from a nested code object name.
-/// The renamer rewrites a code object's `co_name` to `<name>_orig_<co_name>` while
-/// leaving the binding at the clean `<name>`; this recovers that clean name so a
-/// decorated `def` can be matched to its store target.
-fn strip_orig_suffix(name: &str) -> &str {
+/// Splits the deobfuscator's `<name>_orig_<id>` co_name into the recovered name and
+/// the original (pre-rename) name. The renamer rewrites a code object's `co_name` to
+/// `<recovered>_orig_<original>` (carrying the original through marshalling, which
+/// has no spare field for it) while leaving the binding at the clean `<recovered>`.
+/// Returns `(recovered, Some(original))` when the suffix is present, else
+/// `(name, None)` -- so a non-obfuscated input (no suffix) is returned unchanged.
+pub(crate) fn split_orig_suffix(name: &str) -> (&str, Option<&str>) {
     if let Some(index) = name.rfind("_orig_") {
-        if index > 0 && name[index + "_orig_".len()..].chars().all(|c| c.is_ascii_digit()) {
-            return &name[..index];
+        let original = &name[index + "_orig_".len()..];
+        if index > 0 && !original.is_empty() && original.bytes().all(|b| b.is_ascii_digit()) {
+            return (&name[..index], Some(original));
         }
     }
-    name
+    (name, None)
+}
+
+/// The recovered name only (see [`split_orig_suffix`]).
+fn strip_orig_suffix(name: &str) -> &str {
+    split_orig_suffix(name).0
 }
 
 /// Renders a constant object as a Python literal.

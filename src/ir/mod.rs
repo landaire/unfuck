@@ -131,18 +131,82 @@ impl StructuredFunction {
     /// are the rendered default values for the trailing positional parameters,
     /// supplied by the enclosing scope's `MAKE_FUNCTION`.
     pub fn to_source(&self, defaults: &[String]) -> String {
-        let mut source = self.signature(defaults);
+        let mut source = String::new();
+        if let Some(comment) = self.original_name_comment() {
+            source.push_str(&comment);
+            source.push('\n');
+        }
+        source.push_str(&self.signature(defaults));
         source.push('\n');
         let body = emit::Emitter::new(&self.code, &self.arena).render_body(&self.body);
         source.push_str(&body);
         source
     }
 
+    /// Renders this code object as a module: its statements at top level, with no
+    /// enclosing `def` wrapper. The root of a module is the module's own bytecode
+    /// (imports, `def` statements, a trailing implicit `return None`); emitting it
+    /// here recovers a real module instead of a function named after the body's
+    /// co_name. The trailing `return None` is dropped (a bare `return` is illegal at
+    /// module scope).
+    ///
+    /// Returns `None` when the body cannot be a module: a generator, or one that
+    /// still contains a module-scope `return` (deobfuscation residue, or a code
+    /// object that is really a function). The caller then keeps the `def` form.
+    pub fn to_module_source(&self) -> Option<String> {
+        if self.code.flags.contains(CodeFlags::GENERATOR) {
+            return None;
+        }
+        let mut stmts: Vec<Stmt> = self.body.clone();
+        if matches!(stmts.last(), Some(Stmt::Return(_))) {
+            stmts.pop();
+        }
+        if has_module_scope_return(&stmts) {
+            return None;
+        }
+        let body = emit::Emitter::new_module(&self.code, &self.arena).render_body(&stmts);
+        Some(match self.original_name_comment() {
+            Some(comment) => format!("{}\n{}", comment, body),
+            None => body,
+        })
+    }
+
     /// Builds the `def name(args):` line from the code object's metadata, with
     /// identifiers sanitized so deobfuscator-mangled names still parse.
     fn signature(&self, defaults: &[String]) -> String {
-        let ident = |name: &str| emit::sanitize_identifier(name);
-        format!("def {}({}):", ident(&self.code.name.to_string()), self.params(defaults).join(", "))
+        format!("def {}({}):", self.display_name(), self.params(defaults).join(", "))
+    }
+
+    /// Whether the body contains a top-level `from __future__ import ...`. Such an
+    /// import is only legal at the start of a module, so a code object holding one
+    /// cannot be rendered as a `def` (the module-as-function fallback); the caller
+    /// rejects that emission and falls back to a comment instead of invalid source.
+    fn imports_future(&self) -> bool {
+        self.body.iter().any(|stmt| match stmt {
+            Stmt::FromImport { module, .. } => {
+                self.code.names.get(module.0 as usize).map(|n| n.to_string()).as_deref()
+                    == Some("__future__")
+            }
+            _ => false,
+        })
+    }
+
+    /// The recovered display name: the deobfuscator's `_orig_<id>` suffix removed,
+    /// then sanitized to a legal identifier.
+    fn display_name(&self) -> String {
+        emit::sanitize_identifier(emit::split_orig_suffix(&self.code.name.to_string()).0)
+    }
+
+    /// `# original name: <id>` when the deobfuscator recovered a name different from
+    /// the original, surfacing the pre-rename name `co_name` carries without keeping
+    /// it in the emitted identifier. `None` for unrenamed input (no suffix), so a
+    /// non-obfuscated code object gets no comment.
+    fn original_name_comment(&self) -> Option<String> {
+        let name = self.code.name.to_string();
+        let (recovered, original) = emit::split_orig_suffix(&name);
+        original
+            .filter(|orig| *orig != recovered)
+            .map(|orig| format!("# original name: {}", orig))
     }
 
     /// Builds the parameter list (positional with defaults, then `*args`/`**kwargs`)
@@ -211,6 +275,30 @@ pub fn decompile_function(code: Arc<Code>) -> Result<String, IrError> {
 
 /// Collects `code` and every code object nested in its consts (functions, class
 /// bodies, comprehensions) into `out`, parents before children.
+/// Whether `stmts` contain a `return` at module scope -- in the body itself or any
+/// nested control-flow block, but not inside a nested `def`/`class` (whose bodies
+/// are separate code objects, where `return` is legal). A module emitted at top
+/// level cannot contain such a return, so its presence forces the `def`-wrapped form.
+fn has_module_scope_return(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|stmt| match stmt {
+        Stmt::Return(_) => true,
+        Stmt::If { then, els, .. } => {
+            has_module_scope_return(then) || has_module_scope_return(els)
+        }
+        Stmt::While { body, .. } | Stmt::For { body, .. } | Stmt::With { body, .. } => {
+            has_module_scope_return(body)
+        }
+        Stmt::Try { body, handlers } => {
+            has_module_scope_return(body)
+                || handlers.iter().any(|handler| has_module_scope_return(&handler.body))
+        }
+        Stmt::TryFinally { body, finalbody } => {
+            has_module_scope_return(body) || has_module_scope_return(finalbody)
+        }
+        _ => false,
+    })
+}
+
 fn collect_code_objects(code: &Arc<RwLock<Code>>, out: &mut Vec<Arc<Code>>) {
     let guard = code.read().unwrap_or_else(|e| e.into_inner());
     out.push(Arc::new(guard.clone()));
@@ -241,6 +329,25 @@ pub fn is_comprehension_body(code: &Code) -> bool {
 pub fn decompile_module(root: &Arc<RwLock<Code>>) -> String {
     let mut all = Vec::new();
     collect_code_objects(root, &mut all);
+
+    // The root code object is the module's own body (imports, `def` statements, the
+    // implicit `return None`). When it fully decompiles it has inlined every nested
+    // function, so emit it at module level -- no `def` wrapper, no extra indent --
+    // which recovers a real, runnable module instead of a function named after the
+    // body's co_name (and avoids re-emitting every nested function a second time
+    // standalone).
+    if let Some(root_code) = all.first()
+        && let Ok(mut body) = decompile_module_body(Arc::clone(root_code))
+    {
+        if !body.ends_with('\n') {
+            body.push('\n');
+        }
+        return body;
+    }
+
+    // Fallback: some nested object is unrecoverable, so the module body could not be
+    // emitted whole. Dump every code object standalone (each failure as a comment) so
+    // the recoverable leaves still appear.
     let mut out = String::new();
     for code in &all {
         if is_comprehension_body(code) {
@@ -271,21 +378,43 @@ pub fn decompile_function_with_defaults(
     // the strip-free path would render wrongly); only if that fails fall back to
     // decompiling without it, so the strip never regresses a function below what the
     // strip-free pipeline already recovered.
-    decompile_attempt(Arc::clone(&code), defaults, true)
-        .or_else(|_| decompile_attempt(code, defaults, false))
+    decompile_attempt(Arc::clone(&code), defaults, true, false)
+        .or_else(|_| decompile_attempt(code, defaults, false, false))
+}
+
+/// Decompiles a module's root code object as a module body: its statements emitted
+/// at top level rather than wrapped in a `def`. Succeeds only when the whole module
+/// recovers (every nested object inlined without an `__unrecovered__` marker), in
+/// which case the result is a real, top-level Python module.
+fn decompile_module_body(code: Arc<Code>) -> Result<String, IrError> {
+    decompile_attempt(Arc::clone(&code), &[], true, true)
+        .or_else(|_| decompile_attempt(code, &[], false, true))
 }
 
 /// Runs the decode/structure/emit pipeline for one code object with opaque-predicate
 /// stripping toggled. The flag is saved and restored so nested comprehensions decoded
 /// during emission inherit this attempt's choice without disturbing the caller's.
+/// `as_module` renders the body at top level (no `def` wrapper) instead of as a `def`.
 fn decompile_attempt(
     code: Arc<Code>,
     defaults: &[String],
     strip: bool,
+    as_module: bool,
 ) -> Result<String, IrError> {
     let previous = STRIP_OPAQUE.with(|flag| flag.replace(strip));
     let result = (|| {
-        let source = DecodedFunction::decode(code)?.structure()?.to_source(defaults);
+        let structured = DecodedFunction::decode(code)?.structure()?;
+        let source = if as_module {
+            structured.to_module_source().ok_or(IrError::Incomplete)?
+        } else {
+            // A `from __future__` import is only valid at module top level, so a body
+            // holding one cannot be wrapped in a `def`; reject so the module dump
+            // falls back to a comment rather than emitting invalid source.
+            if structured.imports_future() {
+                return Err(IrError::Incomplete);
+            }
+            structured.to_source(defaults)
+        };
         if source.contains(emit::UNRECOVERED) {
             return Err(IrError::Incomplete);
         }
