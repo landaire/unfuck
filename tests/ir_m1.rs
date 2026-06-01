@@ -739,6 +739,24 @@ fn mergeless_with() {
 }
 
 #[test]
+fn call_with_non_string_keyword_key_is_rejected() {
+    // A keyword argument's key is always a string constant in valid CPython 2.7.
+    // Corrupted/obfuscated residue can leave a non-string there; emitting it would be
+    // invalid source (`g(**{2}=None)`), so the function is rejected rather than emitted.
+    // def f(): return g(<2>=None)  (a non-string keyword key)
+    let code = Builder::new("f", 0, &[], &["g"], vec![Obj::None, long(2)])
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::LOAD_CONST, 0)
+        .arg(Standard::CALL_FUNCTION, 0x0100)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    let result = unfuck::ir::decompile_function(code);
+    assert!(matches!(result, Err(unfuck::ir::IrError::Incomplete)));
+}
+
+#[test]
 fn malformed_except_is_rejected() {
     // A SETUP_EXCEPT whose handler offset is not a real handler dispatch (here a
     // bare RETURN_VALUE, neither the POP_TOP of a bare clause nor the DUP_TOP of a

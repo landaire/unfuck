@@ -879,7 +879,11 @@ impl<'a> Emitter<'a> {
                 return String::from_utf8_lossy(s.read().unwrap().as_slice()).into_owned();
             }
         }
-        format!("**{{{}}}", self.expr(key, 0))
+        // A keyword argument's key is always a string constant in valid CPython 2.7.
+        // Corrupted/obfuscated residue can leave a non-string here; emitting it would
+        // produce invalid source like `f(**{2}=x)`, so surface it as unrecoverable
+        // (the caller rejects a body containing this marker).
+        UNRECOVERED.to_string()
     }
 
     fn render_const(&self, c: ConstId) -> String {
