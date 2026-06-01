@@ -98,8 +98,12 @@ fn cleanup(stmts: &mut Vec<Stmt>) {
 
 /// Drops a redundant `continue` from the tail of a loop body: the last statement
 /// if it is a bare `continue`, or recursively the tail of the arms of a trailing
-/// `if` (after which control also falls through to the loop's end). Runs after
-/// unreachable statements are pruned, so a trailing dead `return` does not hide it.
+/// compound statement that falls through to the loop's end -- an `if`, a `try`
+/// (its body and each handler), or a `with`. After any of these, control reaches
+/// the loop end and iterates anyway, so a trailing `continue` in an arm is
+/// redundant. Nested loops are not descended into: a `continue` at their tail binds
+/// to the inner loop. Runs after unreachable statements are pruned, so a trailing
+/// dead `return` does not hide it.
 fn strip_tail_continue(stmts: &mut Vec<Stmt>) {
     match stmts.last_mut() {
         Some(Stmt::Continue) => {
@@ -109,6 +113,13 @@ fn strip_tail_continue(stmts: &mut Vec<Stmt>) {
             strip_tail_continue(then);
             strip_tail_continue(els);
         }
+        Some(Stmt::Try { body, handlers }) => {
+            strip_tail_continue(body);
+            for handler in handlers.iter_mut() {
+                strip_tail_continue(&mut handler.body);
+            }
+        }
+        Some(Stmt::With { body, .. }) => strip_tail_continue(body),
         _ => {}
     }
 }

@@ -280,6 +280,56 @@ fn list_comp_negated_filter() {
 }
 
 #[test]
+fn for_loop_try_except_continue() {
+    // def f(xs):
+    //     for x in xs:
+    //         try: g(x)
+    //         except OSError: pass
+    // Both the try body and the handler exit by jumping to the FOR_ITER (continue),
+    // so the try's merge is the loop header rather than post-try code, and the
+    // handler's END_FINALLY (re-raise) sits after that merge. recover_try must drop
+    // that END_FINALLY and its dead trailing back-jump; the redundant tail
+    // `continue`s are then stripped.
+    let code = Builder::new("f", 1, &["xs", "x"], &["g", "OSError"], vec![Obj::None])
+        .jump(Standard::SETUP_LOOP, "end")
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::GET_ITER)
+        .label("loop")
+        .jump(Standard::FOR_ITER, "exit")
+        .arg(Standard::STORE_FAST, 1)
+        .jump(Standard::SETUP_EXCEPT, "handler")
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_BLOCK)
+        .jump(Standard::JUMP_ABSOLUTE, "loop")
+        .label("handler")
+        .op(Standard::DUP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::COMPARE_OP, 10)
+        .jump(Standard::POP_JUMP_IF_FALSE, "endf")
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_ABSOLUTE, "loop")
+        .label("endf")
+        .op(Standard::END_FINALLY)
+        .jump(Standard::JUMP_ABSOLUTE, "loop")
+        .label("exit")
+        .op(Standard::POP_BLOCK)
+        .label("end")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(xs):\n    for x in xs:\n        try:\n            g(x)\n        except OSError:\n            pass\n\n    return None\n"
+    );
+}
+
+#[test]
 fn raise_statement() {
     // def f(): raise Boom
     let code = Builder::new("f", 0, &[], &["Boom"], vec![Obj::None])
