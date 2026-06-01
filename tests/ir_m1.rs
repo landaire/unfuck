@@ -251,6 +251,35 @@ fn relative_imports() {
 }
 
 #[test]
+fn list_comp_negated_filter() {
+    // def f(self): return [x for x in self._actions if not x.option_strings]
+    // The compiler emits a negated filter as `<cond>; POP_JUMP_IF_TRUE loop_top`
+    // (skip the element when the value is true), which folds to `if not <cond>`.
+    let code = Builder::new("f", 1, &["self", "x"], &["_actions", "option_strings"], vec![Obj::None])
+        .arg(Standard::BUILD_LIST, 0)
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::LOAD_ATTR, 0)
+        .op(Standard::GET_ITER)
+        .label("top")
+        .jump(Standard::FOR_ITER, "exit")
+        .arg(Standard::STORE_FAST, 1)
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::LOAD_ATTR, 1)
+        .jump(Standard::POP_JUMP_IF_TRUE, "top")
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::LIST_APPEND, 2)
+        .jump(Standard::JUMP_ABSOLUTE, "top")
+        .label("exit")
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(self):\n    return [x for x in self._actions if not x.option_strings]\n"
+    );
+}
+
+#[test]
 fn raise_statement() {
     // def f(): raise Boom
     let code = Builder::new("f", 0, &[], &["Boom"], vec![Obj::None])

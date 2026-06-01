@@ -534,14 +534,25 @@ impl Unstacker {
         let mut conds = Vec::new();
         while mnemonic(i) != Some(Mnemonic::LIST_APPEND) {
             let item = region.get(i).ok_or(IrError::Decode)?;
-            if item.instr.opcode.mnemonic() == Mnemonic::POP_JUMP_IF_FALSE {
-                // A filter jumps back to the loop top; a forward jump would be
-                // branching inside the element, which this shape does not handle.
+            let m = item.instr.opcode.mnemonic();
+            if m == Mnemonic::POP_JUMP_IF_FALSE || m == Mnemonic::POP_JUMP_IF_TRUE {
+                // A filter jumps back to the loop top when the element is to be
+                // skipped; a forward jump would be branching inside the element,
+                // which this shape does not handle. POP_JUMP_IF_FALSE keeps the
+                // element when the value is true (`if cond`); POP_JUMP_IF_TRUE skips
+                // when it is true, so the kept condition is the negation (`if not
+                // cond`, the form the compiler emits for a negated filter).
                 let dest = Offset(item.instr.arg.ok_or(IrError::MissingOperand)? as u32);
                 if dest != loop_top {
-                    return Err(IrError::Unsupported(Mnemonic::POP_JUMP_IF_FALSE));
+                    return Err(IrError::Unsupported(m));
                 }
-                conds.push(self.pop()?);
+                let cond = self.pop()?;
+                let cond = if m == Mnemonic::POP_JUMP_IF_TRUE {
+                    self.arena.alloc(Expr::Unary(UnaryOp::Not, cond))
+                } else {
+                    cond
+                };
+                conds.push(cond);
             } else {
                 reject_comp_control(item)?;
                 self.step(&item.instr, item.offset)?;
