@@ -65,6 +65,12 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
 
             code_graph.generate_dot_graph("joined");
 
+            // Strip the obfuscator's dead-store junk between an IMPORT_FROM and its
+            // STORE_NAME. Runs after remove_const_conditions has folded the opaque
+            // predicates that may consume those junk stores; offsets are fixed by the
+            // update_bb_offsets below.
+            code_graph.strip_import_store_junk();
+
             // update BB offsets
             //insert_jump_0(root_node_id, &mut code_graph);
             code_graph.update_bb_offsets();

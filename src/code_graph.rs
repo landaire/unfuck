@@ -1230,6 +1230,111 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
     }
 
 
+    /// Strips the obfuscator's dead-store junk inserted between an `IMPORT_FROM` and
+    /// its real `STORE_NAME`. In clean CPython 2.7 a `from m import a` lowers to
+    /// `IMPORT_FROM a; STORE_NAME a` with nothing between, so any instructions between
+    /// an `IMPORT_FROM n` and the matching `STORE_NAME n` are obfuscation: a run of
+    /// `LOAD_CONST k; STORE_NAME junk` pairs and a trailing value-shadowing
+    /// `LOAD_CONST` that makes the real store bind the constant instead of the imported
+    /// attribute (which is then discarded). Removing them restores `IMPORT_FROM n;
+    /// STORE_NAME n` so the store consumes the attribute.
+    ///
+    /// Conservative by construction: it only fires when every instruction between is a
+    /// `LOAD_CONST` or `STORE_NAME`, and it refuses to drop a `STORE_NAME` whose name is
+    /// loaded anywhere in the code object (so a store that is actually read is never
+    /// removed). Must run after `remove_const_conditions`, which folds the opaque
+    /// predicates that may consume those junk stores; the offsets are stale after
+    /// removal, so a `update_bb_offsets` pass must follow.
+    pub(crate) fn strip_import_store_junk(&mut self) {
+        // Name indices read anywhere in the code object; a junk store to one of these
+        // is not provably dead, so it is left in place.
+        let mut loaded_names: HashSet<u16> = HashSet::new();
+        for node in self.graph.node_indices() {
+            for instr in &self.graph[node].instrs {
+                if let Some(instr) = instr.get() {
+                    if matches!(
+                        instr.opcode.mnemonic(),
+                        Mnemonic::LOAD_NAME
+                            | Mnemonic::LOAD_GLOBAL
+                            | Mnemonic::DELETE_NAME
+                            | Mnemonic::DELETE_GLOBAL
+                    ) {
+                        if let Some(arg) = instr.arg {
+                            loaded_names.insert(arg);
+                        }
+                    }
+                }
+            }
+        }
+
+        for node in self.graph.node_indices().collect::<Vec<_>>() {
+            let instrs = &self.graph[node].instrs;
+            let mut remove: HashSet<usize> = HashSet::new();
+            let mut i = 0;
+            while i < instrs.len() {
+                let Some(instr) = instrs[i].get() else {
+                    i += 1;
+                    continue;
+                };
+                if instr.opcode.mnemonic() != Mnemonic::IMPORT_FROM {
+                    i += 1;
+                    continue;
+                }
+                let name = instr.arg;
+                // Find the matching STORE_NAME for this import name, requiring every
+                // instruction between to be removable junk (LOAD_CONST or a STORE_NAME
+                // of an unread name). Anything else aborts this import untouched.
+                let mut j = i + 1;
+                let mut ok = true;
+                let mut matched = None;
+                while j < instrs.len() {
+                    let Some(between) = instrs[j].get() else {
+                        ok = false;
+                        break;
+                    };
+                    let mnemonic = between.opcode.mnemonic();
+                    if mnemonic == Mnemonic::STORE_NAME && between.arg == name {
+                        matched = Some(j);
+                        break;
+                    }
+                    match mnemonic {
+                        Mnemonic::LOAD_CONST => {}
+                        Mnemonic::STORE_NAME => {
+                            if between.arg.is_some_and(|arg| loaded_names.contains(&arg)) {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        _ => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    j += 1;
+                }
+                if let (true, Some(store_idx)) = (ok, matched) {
+                    if store_idx > i + 1 {
+                        for between in (i + 1)..store_idx {
+                            remove.insert(between);
+                        }
+                    }
+                    i = store_idx + 1;
+                } else {
+                    i += 1;
+                }
+            }
+            if !remove.is_empty() {
+                let block = &mut self.graph[node];
+                let mut idx = 0;
+                block.instrs.retain(|_| {
+                    let keep = !remove.contains(&idx);
+                    idx += 1;
+                    keep
+                });
+            }
+        }
+    }
+
     /// Ensure every leaf node (no outgoing edges) ends with RETURN_VALUE.
     /// Python's compiler always emits an implicit 'return None' at the end of
     /// every code object.  If the deobfuscator removes dead code that contained
