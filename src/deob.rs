@@ -12,6 +12,35 @@ use crate::code_graph::*;
 use crate::error::Error;
 use crate::{DeobfuscatedBytecode, Deobfuscator};
 
+/// Linearly decodes `bytecode` and checks that every jump lands on an instruction
+/// boundary (or the end). A bad cross-block dead-operand removal can shift a live
+/// jump so it points into the middle of an instruction or past the end; that
+/// bytecode no longer decodes, so the caller falls back to the conservative
+/// own-block-only removal. Returns true when the bytecode is structurally sound.
+fn bytecode_structurally_valid<O: Opcode<Mnemonic = py27::Mnemonic>>(bytecode: &[u8]) -> bool {
+    let mut boundaries = HashSet::new();
+    let mut targets = Vec::new();
+    let mut cursor = std::io::Cursor::new(bytecode);
+    let len = bytecode.len() as u64;
+    while cursor.position() < len {
+        boundaries.insert(cursor.position());
+        let instr = match decode_py27::<O, _>(&mut cursor) {
+            Ok(instr) => instr,
+            Err(_) => return false,
+        };
+        let next = cursor.position();
+        if let Some(arg) = instr.arg {
+            if instr.opcode.is_absolute_jump() {
+                targets.push(arg as u64);
+            } else if instr.opcode.is_relative_jump() {
+                targets.push(next + arg as u64);
+            }
+        }
+    }
+    boundaries.insert(len);
+    targets.iter().all(|target| boundaries.contains(target))
+}
+
 impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
     Deobfuscator<'a, TargetOpcode>
 {
@@ -21,10 +50,28 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
     ///
     /// The returned HashMap is keyed by the code object's `$filename_$name` with a value of
     /// what the suspected function name is.
+    ///
+    /// Runs the deobfuscation with cross-block dead-operand removal enabled and, if
+    /// that yields structurally invalid bytecode (a jump landing mid-instruction --
+    /// possible when a removed closure shifted a live jump's layout), retries once
+    /// with the conservative own-block-only removal, which is always sound.
     pub(crate) fn deobfuscate_code(
         &self,
         code: Arc<Code>,
         file_identifier: usize,
+    ) -> Result<DeobfuscatedBytecode, Error<TargetOpcode>> {
+        let result = self.deobfuscate_code_inner(Arc::clone(&code), file_identifier, true)?;
+        if self.minimal || bytecode_structurally_valid::<TargetOpcode>(&result.new_bytecode) {
+            return Ok(result);
+        }
+        self.deobfuscate_code_inner(code, file_identifier, false)
+    }
+
+    fn deobfuscate_code_inner(
+        &self,
+        code: Arc<Code>,
+        file_identifier: usize,
+        enable_cross_block: bool,
     ) -> Result<DeobfuscatedBytecode, Error<TargetOpcode>> {
         let debug = !true;
 
@@ -56,8 +103,11 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             code_graph.update_bb_offsets();
             code_graph.update_branches();
         } else {
-            code_graph
-                .remove_const_conditions(&mut mapped_function_names, &mut plain_imported_modules);
+            code_graph.remove_const_conditions(
+                &mut mapped_function_names,
+                &mut plain_imported_modules,
+                enable_cross_block,
+            );
 
             code_graph.generate_dot_graph("const_conditions_solved");
 

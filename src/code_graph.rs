@@ -600,10 +600,16 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
     }
 
     /// Removes conditions that can be statically evaluated to be constant.
+    ///
+    /// When `enable_cross_block` is false the cross-block dead-operand removal is
+    /// skipped and only each folded predicate's own-block slice is removed. The
+    /// caller uses this as a fallback when the aggressive cross-block removal yields
+    /// structurally invalid bytecode (see `deobfuscate_code`).
     pub(crate) fn remove_const_conditions(
         &mut self,
         mapped_function_names: &mut HashMap<String, String>,
         plain_loaded_modules: &mut HashSet<String>,
+        enable_cross_block: bool,
     ) {
         self.generate_dot_graph("before_dead");
 
@@ -613,6 +619,9 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
 
         let mut nodes_to_remove = std::collections::BTreeSet::<NodeIndex>::new();
         let mut insns_to_remove = HashMap::<NodeIndex, std::collections::BTreeSet<usize>>::new();
+        // Full def-use closure of each folded predicate, collected for cross-block
+        // dead-operand removal after a global liveness check (see below).
+        let mut condition_closures = Vec::<Vec<(NodeIndex, usize)>>::new();
 
         // We want to pre-compute which nodes were used by each path. This will allow us to determine the
         // set of paths not taken which can be removed.
@@ -665,28 +674,28 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                     }
                 }
 
-                // We've found that all nodes agree on this value. The access tracker
-                // accumulates every instruction that ever touched the operands, so it
-                // is polluted with live instructions from other blocks (a call whose
-                // result feeds an unrelated variable, comparisons on other paths).
-                // Removing those corrupts the function. The instructions that actually
-                // compute this jump's condition are the local slice in the jump's own
-                // block; only those are safe to remove. A tainted instruction in
-                // another block is left in place (it may be dead, but the IR's own
-                // simplification drops genuinely dead code without risking corruption).
+                // We've found that all nodes agree on this value. With precise
+                // per-value provenance (each VmStack value carries only its own
+                // producers) `path_instructions` is exactly the def-use closure that
+                // computes this jump's condition. The local slice in the jump's own
+                // block is always safe to remove; the cross-block remainder is removed
+                // too, but only after a global liveness check (below), because
+                // control-flow flattening splits an opaque predicate's COMPARE/operands
+                // into predecessor blocks and removing just the local slice would
+                // orphan the value they push on the stack.
                 let condition_node = *node;
-                for (instr_node, idx) in path_instructions {
-                    self.graph[instr_node].flags |= BasicBlockFlags::USED_IN_EXECUTION;
-                    if instr_node == condition_node {
-                        insns_to_remove.entry(instr_node).or_default().insert(idx);
+                for (instr_node, idx) in &path_instructions {
+                    self.graph[*instr_node].flags |= BasicBlockFlags::USED_IN_EXECUTION;
+                    if *instr_node == condition_node {
+                        insns_to_remove.entry(*instr_node).or_default().insert(*idx);
                     }
                 }
+                condition_closures.push(path_instructions);
 
                 node_branch_direction.insert(*node, branch_taken);
 
                 // We know which branch all of these nodes took, so therefore we also know
-                // which branch they *did not* take. Let's remove the edge
-                // for the untaken paths.
+                // which branch they *did not* take. Remove the edge for the untaken path.
                 let unused_path = self
                     .graph
                     .edges_directed(*node, Direction::Outgoing)
@@ -775,6 +784,135 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         }
 
         self.generate_dot_graph("unused_all_removed_edges");
+
+        // Cross-block dead-operand removal. Stage 1 made provenance precise, so each
+        // entry of `condition_closures` is exactly the def-use closure that computes a
+        // folded predicate's condition. Removing the whole closure -- not just its
+        // own-block slice -- eliminates the operands the flattener pushed in
+        // predecessor blocks, which would otherwise orphan on the stack and corrupt
+        // the next real construct. Two guards keep it sound:
+        //   1. Purity: every instruction in the closure must be a side-effect-free
+        //      bind/read/arith/compare/build. A closure touching a call, attribute or
+        //      subscript store, import, etc. is left to the safe own-block-only path.
+        //   2. Liveness: a closure that binds a name read by any instruction *outside*
+        //      every closure is feeding live code, so it is not removed. Opaque-
+        //      predicate temps are read only by predicates and pass; a store the real
+        //      program reads does not. This is what the old coarse tracker could not do
+        //      (it over-removed live binds, e.g. processConsoleCommand's
+        //      validateAndParseCmd unpack) and why the precise pass had to land first.
+        if enable_cross_block {
+            // Control-flow opcodes are left wherever they sit (a closure may include
+            // jumps that wire the flattened junk blocks together, including other
+            // folded predicates' jumps); they are not removed here, only tolerated.
+            let is_control_flow = |m: Mnemonic| -> bool {
+                use Mnemonic::*;
+                matches!(
+                    m,
+                    JUMP_FORWARD | JUMP_ABSOLUTE | POP_JUMP_IF_FALSE | POP_JUMP_IF_TRUE
+                        | JUMP_IF_FALSE_OR_POP | JUMP_IF_TRUE_OR_POP | CONTINUE_LOOP
+                        | BREAK_LOOP | SETUP_LOOP | POP_BLOCK
+                )
+            };
+            // A data instruction we can delete: side-effect-free, pops a fixed number
+            // of operands and pushes one or more results. UNPACK_SEQUENCE (multi-
+            // output) is included because the junk always binds all its outputs to
+            // predicate temps, so the closure carries every consumer; the structural
+            // validator in `deobfuscate_code` is the backstop if a rarer split slips
+            // through. DUP_TOP/DUP_TOPX stay out (their duplicate frequently feeds
+            // live code).
+            let pure_data = |m: Mnemonic| -> bool {
+                use Mnemonic::*;
+                matches!(
+                    m,
+                    LOAD_CONST | LOAD_NAME | LOAD_FAST | LOAD_GLOBAL | LOAD_DEREF | LOAD_ATTR
+                        | STORE_NAME | STORE_FAST | STORE_GLOBAL | STORE_DEREF | POP_TOP
+                        | UNPACK_SEQUENCE
+                        | ROT_TWO | ROT_THREE | ROT_FOUR | COMPARE_OP | UNARY_POSITIVE
+                        | UNARY_NEGATIVE | UNARY_NOT | UNARY_CONVERT | UNARY_INVERT
+                        | GET_ITER | BUILD_TUPLE | BUILD_LIST | BUILD_SET | BUILD_MAP
+                        | BUILD_SLICE | BINARY_POWER | BINARY_MULTIPLY | BINARY_DIVIDE
+                        | BINARY_FLOOR_DIVIDE | BINARY_TRUE_DIVIDE | BINARY_MODULO
+                        | BINARY_ADD | BINARY_SUBTRACT | BINARY_SUBSC | BINARY_LSHIFT
+                        | BINARY_RSHIFT | BINARY_AND | BINARY_XOR | BINARY_OR
+                        | INPLACE_POWER | INPLACE_MULTIPLY | INPLACE_DIVIDE
+                        | INPLACE_FLOOR_DIVIDE | INPLACE_TRUE_DIVIDE | INPLACE_MODULO
+                        | INPLACE_ADD | INPLACE_SUBTRACT | INPLACE_LSHIFT | INPLACE_RSHIFT
+                        | INPLACE_AND | INPLACE_XOR | INPLACE_OR
+                )
+            };
+            // Namespace key so STORE_FAST/LOAD_FAST share a slot distinct from the
+            // STORE_NAME/GLOBAL and STORE_DEREF/LOAD_DEREF spaces.
+            let store_key = |m: Mnemonic, arg: Option<u16>| -> Option<(u8, u16)> {
+                match m {
+                    Mnemonic::STORE_FAST => arg.map(|a| (0, a)),
+                    Mnemonic::STORE_NAME | Mnemonic::STORE_GLOBAL => arg.map(|a| (1, a)),
+                    Mnemonic::STORE_DEREF => arg.map(|a| (2, a)),
+                    _ => None,
+                }
+            };
+            let load_key = |m: Mnemonic, arg: Option<u16>| -> Option<(u8, u16)> {
+                match m {
+                    Mnemonic::LOAD_FAST => arg.map(|a| (0, a)),
+                    Mnemonic::LOAD_NAME | Mnemonic::LOAD_GLOBAL => arg.map(|a| (1, a)),
+                    Mnemonic::LOAD_DEREF | Mnemonic::LOAD_CLOSURE => arg.map(|a| (2, a)),
+                    _ => None,
+                }
+            };
+
+            let in_closure: BTreeSet<(NodeIndex, usize)> =
+                condition_closures.iter().flatten().copied().collect();
+
+            // Names read anywhere outside every closure are live and must not be unbound.
+            let mut loaded_outside = BTreeSet::<(u8, u16)>::new();
+            for nx in self.graph.node_indices() {
+                for (i, instr) in self.graph[nx].instrs.iter().enumerate() {
+                    if in_closure.contains(&(nx, i)) {
+                        continue;
+                    }
+                    if let Some(instr) = instr.get()
+                        && let Some(k) = load_key(instr.opcode.mnemonic(), instr.arg)
+                    {
+                        loaded_outside.insert(k);
+                    }
+                }
+            }
+
+            for closure in &condition_closures {
+                let safe = closure.iter().all(|&(nx, i)| {
+                    let Some(parsed) = self.graph[nx].instrs.get(i) else {
+                        return false;
+                    };
+                    if matches!(parsed, ParsedInstr::GoodDoNotRemove(_)) {
+                        return false;
+                    }
+                    let Some(instr) = parsed.get() else {
+                        return false;
+                    };
+                    let m = instr.opcode.mnemonic();
+                    if is_control_flow(m) {
+                        return true; // tolerated, not removed
+                    }
+                    if !pure_data(m) {
+                        return false;
+                    }
+                    match store_key(m, instr.arg) {
+                        Some(k) => !loaded_outside.contains(&k),
+                        None => true,
+                    }
+                });
+                if safe {
+                    // Remove only the data instructions of the closure; leave its jumps
+                    // in place (they wire the CFG and are folded by their own pass).
+                    for &(nx, i) in closure {
+                        if let Some(instr) = self.graph[nx].instrs.get(i).and_then(|x| x.get())
+                            && pure_data(instr.opcode.mnemonic())
+                        {
+                            insns_to_remove.entry(nx).or_default().insert(i);
+                        }
+                    }
+                }
+            }
+        }
 
         for (nx, insns_to_remove) in insns_to_remove {
             for ins_idx in insns_to_remove.iter().rev().cloned() {
