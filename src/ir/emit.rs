@@ -95,15 +95,53 @@ impl<'a> Emitter<'a> {
     /// Renders a body and returns the accumulated source, prefixed with the
     /// function's docstring when it has one.
     pub fn render_body(mut self, stmts: &[Stmt]) -> String {
-        let docstring = self.docstring();
-        if let Some(doc) = &docstring {
-            self.line(doc);
+        let mut had_doc = false;
+        if let Some(doc) = self.docstring() {
+            self.line(&doc);
+            had_doc = true;
         }
-        if stmts.is_empty() && docstring.is_none() {
+        // A module body stores its docstring as a leading `__doc__ = <str>` rather
+        // than via the function docstring convention; render that as a bare docstring
+        // literal so it stays a docstring. A non-docstring statement before a
+        // `from __future__ import ...` is a syntax error, so this also keeps a
+        // module's future imports legal.
+        let stmts = match (had_doc, self.module_docstring(stmts)) {
+            (false, Some((doc, rest))) => {
+                self.line(&doc);
+                had_doc = true;
+                rest
+            }
+            _ => stmts,
+        };
+        if stmts.is_empty() && !had_doc {
             self.line("pass");
         }
         self.emit_stmts(stmts);
         self.out
+    }
+
+    /// If `stmts` begins with a module-scope docstring assignment (`__doc__ = <string
+    /// literal>`), returns the rendered docstring and the remaining statements. Only
+    /// fires at module scope (indent 0): a module stores its docstring with a
+    /// `STORE_NAME __doc__` rather than the `co_consts[0]` convention functions use.
+    fn module_docstring<'b>(&self, stmts: &'b [Stmt]) -> Option<(String, &'b [Stmt])> {
+        if self.indent != 0 {
+            return None;
+        }
+        let (first, rest) = stmts.split_first()?;
+        let Stmt::Assign(LValue::Name(name), value) = first else {
+            return None;
+        };
+        if self.code.names.get(name.0 as usize)?.to_string() != "__doc__" {
+            return None;
+        }
+        let Expr::Const(c) = self.arena.get(*value) else {
+            return None;
+        };
+        let Some(Obj::String(s)) = self.code.consts.get(c.0 as usize) else {
+            return None;
+        };
+        Some((docstring_literal(s.read().unwrap().as_slice()), rest))
     }
 
     /// The function's docstring literal, if any. A docstring is `co_consts[0]` when
@@ -987,8 +1025,37 @@ fn class_body_source(body_code: Arc<Code>) -> Result<String, super::IrError> {
     if matches!(stmts.last(), Some(Stmt::Return(_))) {
         stmts.pop();
     }
+    // A class body cannot legally contain a `return` (its methods are separate code
+    // objects, not inlined here), so the only one is the implicit `return locals()`
+    // namespace return, dropped above. A `return` surviving anywhere in the tree
+    // means the relinearizer split that return into a branch and the body was not
+    // soundly recovered; reject rather than emit invalid `return locals()`.
+    if contains_return(&stmts) {
+        return Err(super::IrError::Incomplete);
+    }
     stmts.retain(|stmt| !is_class_boilerplate(&structured.code, stmt));
     Ok(Emitter::new(&structured.code, &structured.arena).render_body(&stmts))
+}
+
+/// Whether any statement in the tree is a `return`. Used to reject a class body
+/// whose implicit namespace return the relinearizer hoisted into a branch (see
+/// [`class_body_source`]). Nested `def`/`class` bodies are separate code objects,
+/// not inlined statements, so their returns are not visited here.
+fn contains_return(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|stmt| match stmt {
+        Stmt::Return(_) => true,
+        Stmt::If { then, els, .. } => contains_return(then) || contains_return(els),
+        Stmt::While { body, .. } | Stmt::For { body, .. } | Stmt::With { body, .. } => {
+            contains_return(body)
+        }
+        Stmt::Try { body, handlers } => {
+            contains_return(body) || handlers.iter().any(|h| contains_return(&h.body))
+        }
+        Stmt::TryFinally { body, finalbody } => {
+            contains_return(body) || contains_return(finalbody)
+        }
+        _ => false,
+    })
 }
 
 /// Whether a statement unconditionally leaves its enclosing block, so a following
