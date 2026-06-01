@@ -361,6 +361,17 @@ pub fn decompile_module(root: &Arc<RwLock<Code>>) -> String {
         if is_comprehension_body(code) {
             continue;
         }
+        // A class or module body is not a function. Rendering it as a standalone
+        // `def` wrapper turns its methods into nested functions and its module-level
+        // names into the wrapper's locals, which makes `exec`, `import *`, and
+        // `from __future__` inside it illegal (a SyntaxError on recompile). Its
+        // methods are genuine functions dumped on their own below, so emit only a
+        // marker for the body itself. Real functions carry CO_OPTIMIZED; class and
+        // module bodies do not.
+        if !code.flags.contains(CodeFlags::OPTIMIZED) {
+            out.push_str(&format!("# {}: class or module body, not recovered\n\n", code.name));
+            continue;
+        }
         match decompile_function(Arc::clone(code)) {
             Ok(source) => {
                 out.push_str(&source);
