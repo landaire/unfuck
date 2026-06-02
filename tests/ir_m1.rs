@@ -1196,6 +1196,41 @@ fn ternary() {
 }
 
 #[test]
+fn ternary_arm_with_make_function() {
+    // x = (lambda: 1) if c else 0
+    // The then-arm pushes a function value via MAKE_FUNCTION. Previously
+    // is_statement_or_control flagged MAKE_* as a statement, so pure_ternary_arm
+    // rejected the diamond and it structured as an `if` that drops the arm value off
+    // the stack (symbolic stack underflow). A MAKE_FUNCTION inside a ternary arm is
+    // always an expression (a lambda value, or the function half of an inlined
+    // comprehension call), never a `def` -- a def stores the function, and that STORE
+    // keeps the arm impure. This is the resetState shape `self.x = ({..} if c else {})`.
+    let lam = Builder::new("<lambda>", 0, &[], &[], vec![long(1)])
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+    let lam_obj = Obj::Code(Arc::new(RwLock::new((*lam).clone())));
+    let code = Builder::new("f", 1, &["c", "x"], &[], vec![Obj::None, lam_obj, long(0)])
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::POP_JUMP_IF_FALSE, "else_")
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::MAKE_FUNCTION, 0)
+        .jump(Standard::JUMP_FORWARD, "merge")
+        .label("else_")
+        .arg(Standard::LOAD_CONST, 2)
+        .label("merge")
+        .arg(Standard::STORE_FAST, 1)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    let out = decompile(code);
+    assert!(!out.contains("__unrecovered__"), "should be fully recovered:\n{}", out);
+    assert!(out.contains("if c else"), "should fold as a ternary:\n{}", out);
+    assert!(out.contains("lambda"), "then-arm should be the lambda value:\n{}", out);
+}
+
+#[test]
 fn bare_except() {
     // def f(): try: g() except: h()
     let code = Builder::new("f", 0, &[], &["g", "h"], vec![Obj::None])

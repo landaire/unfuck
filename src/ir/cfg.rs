@@ -1196,6 +1196,15 @@ fn pure_ternary_arm(instrs: &[OffsetInstr], start: Offset, end: Offset, merge: O
             ) {
                 return branch_target(item).ok() == Some(merge);
             }
+            // A MAKE_FUNCTION / MAKE_CLOSURE inside a ternary arm is an expression -- a
+            // lambda value or the function half of an inlined comprehension call (`{k: v
+            // for ..}` compiles to `(<code>)(iter)`) -- never a `def`/decorated-def
+            // statement, which would consume the function with a STORE (rejected below).
+            // Allow it so `{..} if cond else {}` folds as a ternary instead of
+            // mis-structuring as an `if` that drops the arm value off the stack.
+            if matches!(mnemonic, Mnemonic::MAKE_FUNCTION | Mnemonic::MAKE_CLOSURE) {
+                return true;
+            }
             !is_statement_or_control(mnemonic)
         })
 }
