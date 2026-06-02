@@ -102,6 +102,19 @@ impl DecodedFunction {
 
     /// Builds the CFG, lowers each block, and recovers control flow.
     pub fn structure(self) -> Result<StructuredFunction, IrError> {
+        // A function whose whole body is a returned boolean expression compiled to
+        // cross-block short-circuit control flow does not reduce to blocks the
+        // unstacker can fold (it clears the stack at boundaries). Recover it directly
+        // as one expression, verified against the control flow; on any mismatch this
+        // returns None and the normal block-structuring path runs (and rejects).
+        let mut us = unstack::Unstacker::new();
+        if let Some(value) = us.recover_returned_bool(&self.instrs) {
+            return Ok(StructuredFunction {
+                code: self.code,
+                arena: us.into_arena(),
+                body: vec![Stmt::Return(Some(value))],
+            });
+        }
         let cfg = Cfg::build(&self.instrs)?;
         self.structure_with(cfg)
     }

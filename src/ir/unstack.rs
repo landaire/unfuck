@@ -6,7 +6,7 @@
 //! outside the supported set return [`IrError::Unsupported`] so coverage gaps
 //! surface instead of producing wrong output.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use pydis::opcode::py27::{Mnemonic, Standard};
 use pydis::prelude::*;
@@ -564,6 +564,219 @@ impl Unstacker {
         Ok(())
     }
 
+    /// Recovers a function whose whole body is `return <boolean expression>` built
+    /// from cross-block short-circuit control flow (`return (a or b) and not c`).
+    /// The unstacker clears the stack at block boundaries, so such an expression --
+    /// split into blocks by its `POP_JUMP_IF_TRUE/FALSE` jumps -- otherwise fails.
+    ///
+    /// Each short-circuit jump translates faithfully to a conditional expression:
+    /// `POP_JUMP_IF_TRUE T` is `eval(T) if v else eval(continue)` (the value `v` is
+    /// consumed; the result comes from whichever side runs), and `JUMP_IF_*_OR_POP`
+    /// to the merge keeps `v` as `v or/and eval(continue)`. The translation is sound
+    /// by construction, and is additionally checked against the original control flow
+    /// by truth-table equivalence (same result operand and same evaluation order for
+    /// every assignment of the leaf operands) -- a mismatch returns `None` so the
+    /// function falls back to the existing graceful rejection rather than emit a
+    /// wrong-but-compilable boolean. Returns the recovered value, or `None` when the
+    /// body is not a pure returned boolean of this shape.
+    pub fn recover_returned_bool(&mut self, instrs: &[OffsetInstr]) -> Option<ValueId> {
+        let n = instrs.len();
+        if n < 3 || instrs[n - 1].instr.opcode.mnemonic() != Mnemonic::RETURN_VALUE {
+            return None;
+        }
+        let merge = instrs[n - 1].offset;
+        let index: HashMap<Offset, usize> =
+            instrs.iter().enumerate().map(|(i, it)| (it.offset, i)).collect();
+        // Every non-final instruction must be a value op or a forward short-circuit
+        // jump; anything else (a store, a loop, an unconditional jump) is not a pure
+        // returned boolean of this shape.
+        let mut has_short = false;
+        for (i, it) in instrs[..n - 1].iter().enumerate() {
+            let m = it.instr.opcode.mnemonic();
+            if is_bool_jump(m) {
+                has_short = true;
+                let ti = *index.get(&Offset(it.instr.arg? as u32))?;
+                if ti <= i {
+                    return None;
+                }
+            } else if super::cfg::is_statement_or_control(m) {
+                return None;
+            }
+        }
+        if !has_short {
+            return None;
+        }
+
+        // Lower every leaf (a maximal run of value ops between jumps) once, keyed by
+        // its start offset, recording the jump (or return) that ends it.
+        let mut leaf_starts: Vec<Offset> = vec![instrs[0].offset];
+        for it in &instrs[..n - 1] {
+            if is_bool_jump(it.instr.opcode.mnemonic()) {
+                let target = Offset(it.instr.arg? as u32);
+                if target != merge {
+                    leaf_starts.push(target);
+                }
+                let after = instrs[index[&it.offset] + 1].offset;
+                if after != merge {
+                    leaf_starts.push(after);
+                }
+            }
+        }
+        leaf_starts.sort();
+        leaf_starts.dedup();
+        let mut recs: HashMap<Offset, LeafRec> = HashMap::new();
+        let mut leaf_index: HashMap<ValueId, usize> = HashMap::new();
+        let mut leaf_order: Vec<ValueId> = Vec::new();
+        for &start in &leaf_starts {
+            let start_idx = *index.get(&start)?;
+            self.start_block();
+            let mut j = start_idx;
+            loop {
+                let m = instrs.get(j)?.instr.opcode.mnemonic();
+                if is_bool_jump(m) || m == Mnemonic::RETURN_VALUE {
+                    break;
+                }
+                self.step(&instrs[j].instr, instrs[j].offset).ok()?;
+                j += 1;
+            }
+            let value = self.pop_value().ok()?;
+            if !self.stack_is_empty() {
+                return None; // the leaf left more than one value: not this shape
+            }
+            leaf_index.entry(value).or_insert_with(|| {
+                leaf_order.push(value);
+                leaf_order.len() - 1
+            });
+            let term = if instrs[j].instr.opcode.mnemonic() == Mnemonic::RETURN_VALUE {
+                LeafTerm::Return
+            } else {
+                LeafTerm::Jump {
+                    kind: instrs[j].instr.opcode.mnemonic(),
+                    target: Offset(instrs[j].instr.arg? as u32),
+                    after: instrs[j + 1].offset,
+                }
+            };
+            recs.insert(start, LeafRec { value, term });
+        }
+
+        // Build the expression by recursive translation, memoised by leaf start.
+        let mut memo: HashMap<Offset, ValueId> = HashMap::new();
+        let mut structure: HashSet<ValueId> = HashSet::new();
+        let value = self.eval_bool(instrs[0].offset, merge, &recs, &mut memo, &mut structure)?;
+
+        // Verify the translation against the original control flow.
+        let k = leaf_order.len();
+        if k > 16 {
+            return None; // 2^k enumeration would be too large; reject conservatively
+        }
+        for bits in 0..(1u32 << k) {
+            let assign: Vec<bool> = (0..k).map(|b| (bits >> b) & 1 == 1).collect();
+            let cfg = cfg_sim(instrs, &index, merge, &leaf_index, &recs, &assign)?;
+            let exp = self.expr_sim(value, &leaf_index, &structure, &assign)?;
+            if cfg != exp {
+                return None;
+            }
+        }
+        Some(value)
+    }
+
+    /// Recursive translation of the boolean region rooted at the leaf starting at
+    /// `start` (see [`Self::recover_returned_bool`]).
+    fn eval_bool(
+        &mut self,
+        start: Offset,
+        merge: Offset,
+        recs: &HashMap<Offset, LeafRec>,
+        memo: &mut HashMap<Offset, ValueId>,
+        structure: &mut HashSet<ValueId>,
+    ) -> Option<ValueId> {
+        if let Some(&v) = memo.get(&start) {
+            return Some(v);
+        }
+        let rec = recs.get(&start)?;
+        let value = match rec.term {
+            LeafTerm::Return => rec.value,
+            LeafTerm::Jump { kind, target, after } => {
+                let cond = rec.value;
+                match kind {
+                    Mnemonic::POP_JUMP_IF_TRUE | Mnemonic::POP_JUMP_IF_FALSE => {
+                        let t = self.eval_bool(target, merge, recs, memo, structure)?;
+                        let e = self.eval_bool(after, merge, recs, memo, structure)?;
+                        let (then, otherwise) = if kind == Mnemonic::POP_JUMP_IF_TRUE {
+                            (t, e)
+                        } else {
+                            (e, t)
+                        };
+                        let id = self.arena.alloc(Expr::Ternary { cond, then, otherwise });
+                        structure.insert(id);
+                        id
+                    }
+                    Mnemonic::JUMP_IF_TRUE_OR_POP | Mnemonic::JUMP_IF_FALSE_OR_POP => {
+                        if target != merge {
+                            return None; // a kept short-circuit to a non-merge target
+                        }
+                        let rest = self.eval_bool(after, merge, recs, memo, structure)?;
+                        let bk = if kind == Mnemonic::JUMP_IF_TRUE_OR_POP {
+                            BoolKind::Or
+                        } else {
+                            BoolKind::And
+                        };
+                        let id = self.combine_bool(bk, cond, rest);
+                        structure.insert(id);
+                        id
+                    }
+                    _ => return None,
+                }
+            }
+        };
+        memo.insert(start, value);
+        Some(value)
+    }
+
+    /// Evaluates the reconstructed expression under a leaf-truthiness assignment,
+    /// returning `(result leaf index, leaves evaluated in order)`. Used by the
+    /// truth-table verification gate. A `BoolOp`/`Ternary` is a structure node built
+    /// by [`Self::eval_bool`]; anything else is an opaque leaf operand.
+    fn expr_sim(
+        &self,
+        value: ValueId,
+        leaf_index: &HashMap<ValueId, usize>,
+        structure: &HashSet<ValueId>,
+        assign: &[bool],
+    ) -> Option<(usize, Vec<usize>)> {
+        if !structure.contains(&value) {
+            let idx = *leaf_index.get(&value)?;
+            return Some((idx, vec![idx]));
+        }
+        match self.arena.get(value) {
+            Expr::Ternary { cond, then, otherwise } => {
+                let (rc, mut order) = self.expr_sim(*cond, leaf_index, structure, assign)?;
+                let next = if assign[rc] { *then } else { *otherwise };
+                let (rn, rest) = self.expr_sim(next, leaf_index, structure, assign)?;
+                order.extend(rest);
+                Some((rn, order))
+            }
+            Expr::BoolOp(kind, ops) => {
+                let mut order = Vec::new();
+                let mut last = 0;
+                for &op in ops {
+                    let (r, o) = self.expr_sim(op, leaf_index, structure, assign)?;
+                    order.extend(o);
+                    last = r;
+                    let short = match kind {
+                        BoolKind::Or => assign[r],
+                        BoolKind::And => !assign[r],
+                    };
+                    if short {
+                        return Some((r, order));
+                    }
+                }
+                Some((last, order))
+            }
+            _ => None,
+        }
+    }
+
     /// Folds one instruction into the symbolic state. `offset` is the instruction's
     /// byte offset, needed to resolve a relative `JUMP_FORWARD` target.
     pub fn step(&mut self, instr: &Instruction<Standard>, offset: Offset) -> Result<(), IrError> {
@@ -1105,6 +1318,76 @@ fn arg_u16(arg: Option<u16>) -> Result<u16, IrError> {
 
 /// Rejects any control-flow opcode inside a list comprehension's sub-expressions,
 /// so only the straight-line single-`for` shape is folded.
+/// How a boolean-region leaf ends: the function's `return`, or a short-circuit jump
+/// to `target` with the fall-through at `after` (see [`Unstacker::recover_returned_bool`]).
+enum LeafTerm {
+    Return,
+    Jump { kind: Mnemonic, target: Offset, after: Offset },
+}
+
+/// One lowered leaf of a boolean region: its value and how it ends.
+struct LeafRec {
+    value: ValueId,
+    term: LeafTerm,
+}
+
+/// Whether a mnemonic is a short-circuit jump connecting boolean-expression operands.
+fn is_bool_jump(m: Mnemonic) -> bool {
+    matches!(
+        m,
+        Mnemonic::POP_JUMP_IF_TRUE
+            | Mnemonic::POP_JUMP_IF_FALSE
+            | Mnemonic::JUMP_IF_TRUE_OR_POP
+            | Mnemonic::JUMP_IF_FALSE_OR_POP
+    )
+}
+
+/// Simulates the original boolean region's control flow under a leaf-truthiness
+/// assignment, returning `(result leaf index, leaves evaluated in order)`. Compared
+/// against [`Unstacker::expr_sim`] to verify the reconstruction.
+fn cfg_sim(
+    instrs: &[OffsetInstr],
+    index: &HashMap<Offset, usize>,
+    merge: Offset,
+    leaf_index: &HashMap<ValueId, usize>,
+    recs: &HashMap<Offset, LeafRec>,
+    assign: &[bool],
+) -> Option<(usize, Vec<usize>)> {
+    let _ = (index, merge);
+    let mut cur = instrs[0].offset;
+    let mut order = Vec::new();
+    // The region is finite and every jump moves strictly forward, so this terminates.
+    for _ in 0..=instrs.len() {
+        let rec = recs.get(&cur)?;
+        let li = *leaf_index.get(&rec.value)?;
+        order.push(li);
+        match rec.term {
+            LeafTerm::Return => return Some((li, order)),
+            LeafTerm::Jump { kind, target, after } => {
+                let t = assign[li];
+                cur = match kind {
+                    Mnemonic::POP_JUMP_IF_TRUE => if t { target } else { after },
+                    Mnemonic::POP_JUMP_IF_FALSE => if t { after } else { target },
+                    Mnemonic::JUMP_IF_TRUE_OR_POP => {
+                        if t {
+                            return Some((li, order));
+                        }
+                        after
+                    }
+                    Mnemonic::JUMP_IF_FALSE_OR_POP => {
+                        if !t {
+                            return Some((li, order));
+                        }
+                        after
+                    }
+                    _ => return None,
+                };
+            }
+        }
+    }
+    None
+}
+
 fn reject_comp_control(item: &OffsetInstr) -> Result<(), IrError> {
     let mnemonic = item.instr.opcode.mnemonic();
     if matches!(

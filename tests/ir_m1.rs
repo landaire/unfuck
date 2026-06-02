@@ -383,6 +383,30 @@ fn for_loop_try_except_continue() {
 }
 
 #[test]
+fn cross_block_boolean_return() {
+    // def f(a, b, c): return (a or b) and not c
+    // The boolean is compiled to cross-block short-circuit control flow: a's
+    // POP_JUMP_IF_TRUE and b's JUMP_IF_FALSE_OR_POP. recover_returned_bool folds it
+    // back (as a faithful, gate-verified ternary translation).
+    let code = Builder::new("f", 3, &["a", "b", "c"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::POP_JUMP_IF_TRUE, "notc")
+        .arg(Standard::LOAD_FAST, 1)
+        .jump(Standard::JUMP_IF_FALSE_OR_POP, "ret")
+        .label("notc")
+        .arg(Standard::LOAD_FAST, 2)
+        .op(Standard::UNARY_NOT)
+        .label("ret")
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(a, b, c):\n    return not c if a else b and not c\n"
+    );
+}
+
+#[test]
 fn raise_statement() {
     // def f(): raise Boom
     let code = Builder::new("f", 0, &[], &["Boom"], vec![Obj::None])

@@ -973,7 +973,7 @@ fn pure_ternary_arm(instrs: &[OffsetInstr], start: Offset, end: Offset, merge: O
 
 /// Whether a mnemonic has a statement-level or control-flow effect, as opposed to
 /// just pushing a value.
-fn is_statement_or_control(mnemonic: Mnemonic) -> bool {
+pub(crate) fn is_statement_or_control(mnemonic: Mnemonic) -> bool {
     let name = format!("{:?}", mnemonic);
     name.starts_with("STORE_")
         || name.starts_with("DELETE_")
