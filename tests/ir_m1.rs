@@ -510,6 +510,45 @@ fn invalid_utf8_string_stays_hex_escaped() {
 }
 
 #[test]
+fn decorated_class() {
+    // @deco
+    // class Foo(Base):
+    //     x = 1
+    // A decorated class compiles to deco(<build_class>) stored at the class name.
+    // try_decorated_def peels the decorator call down to the BuildClass and emits the
+    // `@deco` line plus the class.
+    let body = Builder::new("Foo", 0, &[], &["__name__", "__module__", "x"], vec![Obj::None, long(1)])
+        .arg(Standard::LOAD_NAME, 0)
+        .arg(Standard::STORE_NAME, 1)
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::STORE_NAME, 2)
+        .op(Standard::LOAD_LOCALS)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+    let body_obj = Obj::Code(Arc::new(RwLock::new((*body).clone())));
+    let code = Builder::new("f", 0, &[], &["deco", "Base", "Foo"], vec![Obj::None, pystr("Foo"), body_obj])
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::BUILD_TUPLE, 1)
+        .arg(Standard::LOAD_CONST, 2)
+        .arg(Standard::MAKE_FUNCTION, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::BUILD_CLASS)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .arg(Standard::STORE_NAME, 2)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    let out = decompile(code);
+    assert!(out.contains("@deco\n"), "missing decorator:\n{}", out);
+    assert!(out.contains("class Foo(Base):"), "missing class header:\n{}", out);
+    assert!(out.contains("x = 1"), "missing class body:\n{}", out);
+    assert!(!out.contains("__unrecovered__"), "should be fully recovered:\n{}", out);
+}
+
+#[test]
 fn method_misnamed_as_comprehension_uses_store_name() {
     // The obfuscator renamed a real method's code object to `<dictcomp>`, but it has a
     // normal signature (`self`), not the comprehension `.0` argument, and is stored at

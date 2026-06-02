@@ -16,6 +16,12 @@ use super::expr::*;
 /// return source that is invalid or incomplete.
 pub(crate) const UNRECOVERED: &str = "__unrecovered__";
 
+/// The def or class at the bottom of a decorator chain (see `try_decorated_def`).
+enum Decorated {
+    Func(ConstId, Vec<ValueId>),
+    Class(ValueId, ValueId, ConstId),
+}
+
 /// Binding precedence levels, lowest to highest.
 mod prec {
     pub const TERNARY: u8 = 0;
@@ -207,16 +213,19 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// Recognises `name = deco(... (make_function))` where the function's own name
-    /// matches the store target: the bytecode shape of a decorated `def`. Emits the
-    /// `@deco` lines and the def, and returns `true`. Returns `false` for any other
-    /// assignment, which the caller renders normally.
+    /// Recognises `name = deco(...(make_function|build_class))` where the def/class's
+    /// own name matches the store target: the bytecode shape of a decorated `def` or
+    /// `class`. Emits the `@deco` lines and the def/class, and returns `true`. Returns
+    /// `false` for any other assignment, which the caller renders normally.
     fn try_decorated_def(&mut self, target: &LValue, value: ValueId) -> bool {
         let mut decorators = Vec::new();
         let mut cur = value;
-        let (code, defaults) = loop {
+        let bottom = loop {
             match self.arena.get(cur) {
-                // Each decorator wraps the function in a single-positional call.
+                // Each decorator wraps the def/class in a single-positional call. A
+                // decorator factory (`@register(x)`) puts its own arguments on an inner
+                // call, which becomes the `@...` expression; the wrapping call that
+                // applies it to the def/class is the single-positional one peeled here.
                 Expr::Call { func, args, kwargs, star, kwstar }
                     if args.len() == 1
                         && kwargs.is_empty()
@@ -226,32 +235,66 @@ impl<'a> Emitter<'a> {
                     decorators.push(*func);
                     cur = args[0];
                 }
-                Expr::MakeFunction { code, defaults } => break (*code, defaults.clone()),
+                Expr::MakeFunction { code, defaults } => {
+                    break Decorated::Func(*code, defaults.clone());
+                }
+                Expr::BuildClass { name, bases, code } => {
+                    break Decorated::Class(*name, *bases, *code);
+                }
                 _ => return false,
             }
         };
         if decorators.is_empty() {
             return false;
         }
-        let Some(nested) = self.nested_code(code) else {
-            return false;
-        };
-        let name = nested.name.to_string();
-        // A `<lambda>`/`<genexpr>` has no `def` form, and the target must name the
-        // function for `@deco def name` to be the original source. The deobfuscator
-        // renames the nested code object to `<name>_orig_<id>` while leaving the
-        // store at the clean name, so compare against the de-mangled form.
-        if name.starts_with('<') || self.lvalue(target) != strip_orig_suffix(&sanitize_identifier(&name)) {
-            return false;
+        match bottom {
+            Decorated::Func(code, defaults) => {
+                let Some(nested) = self.nested_code(code) else {
+                    return false;
+                };
+                let name = nested.name.to_string();
+                // A `<lambda>`/`<genexpr>` has no `def` form, and the target must name
+                // the function for `@deco def name` to be the original source. The
+                // deobfuscator renames the nested code object to `<name>_orig_<id>`
+                // while leaving the store at the clean name, so compare against the
+                // de-mangled form.
+                if name.starts_with('<')
+                    || self.lvalue(target) != strip_orig_suffix(&sanitize_identifier(&name))
+                {
+                    return false;
+                }
+                self.emit_decorators(&decorators);
+                self.function_def(target, code, &defaults);
+                true
+            }
+            Decorated::Class(name, bases, code) => {
+                // A decorated class binds to its own name; require the store target to
+                // match the class name so an ordinary `x = deco(SomeClass)` is not
+                // mis-rendered as a class definition.
+                let Expr::Const(name_const) = self.arena.get(name) else {
+                    return false;
+                };
+                let Some(class_name) = self.const_string(*name_const) else {
+                    return false;
+                };
+                if self.lvalue(target) != sanitize_identifier(&class_name) {
+                    return false;
+                }
+                self.emit_decorators(&decorators);
+                self.class_def(name, bases, code);
+                true
+            }
         }
-        // Decorators are listed outermost-first, which is top-to-bottom order.
+    }
+
+    /// Emits the `@decorator` lines for a decorated def/class. Decorators are listed
+    /// outermost-first, which is top-to-bottom source order.
+    fn emit_decorators(&mut self, decorators: &[ValueId]) {
         let lines: Vec<String> =
             decorators.iter().map(|d| format!("@{}", self.expr(*d, 0))).collect();
         for line in lines {
             self.line(&line);
         }
-        self.function_def(target, code, &defaults);
-        true
     }
 
     /// Emits a nested `def` by recursively decompiling its code constant and
@@ -299,7 +342,7 @@ impl<'a> Emitter<'a> {
                     self.line(text);
                 }
             }
-            Err(_) => self.line(UNRECOVERED),
+            Err(_) => {self.line(UNRECOVERED) }
         }
     }
 
@@ -327,7 +370,7 @@ impl<'a> Emitter<'a> {
                     self.line(text);
                 }
             }
-            Err(_) => self.line(UNRECOVERED),
+            Err(_) => {self.line(UNRECOVERED) }
         }
     }
 
@@ -571,7 +614,7 @@ impl<'a> Emitter<'a> {
             // These appear only inside a comprehension code object, where the
             // comprehension folder consumes them; reaching emission means a shape
             // the folder did not recognise, so mark it unrecovered.
-            Stmt::SetAdd(_) | Stmt::DictAdd { .. } => self.line(UNRECOVERED),
+            Stmt::SetAdd(_) | Stmt::DictAdd { .. } => {self.line(UNRECOVERED) }
             Stmt::Break => self.line("break"),
             Stmt::Continue => self.line("continue"),
             Stmt::If { cond, then, els } => {
@@ -786,7 +829,7 @@ impl<'a> Emitter<'a> {
             }
             // An unconsumed unpack slot indicates a tuple-assignment shape the
             // unstacker did not fully match; mark it so the function is rejected.
-            Expr::UnpackSlot | Expr::ClosureCell(_) => (UNRECOVERED.to_string(), prec::ATOM),
+            Expr::UnpackSlot | Expr::ClosureCell(_) => {(UNRECOVERED.to_string(), prec::ATOM) }
             // A `<lambda>` renders inline; a named function used as a value (an
             // undetected decorator) cannot, and is marked unrecovered.
             Expr::MakeFunction { code, defaults } => (self.lambda_expr(*code, defaults), prec::ATOM),
@@ -794,14 +837,14 @@ impl<'a> Emitter<'a> {
             // Import values are consumed by the store or POP_TOP that completes the
             // statement; one reaching here is an import shape the unstacker did not
             // fully match (e.g. `import a.b as c`), so reject the function.
-            Expr::Import { .. } | Expr::ImportFrom(_) => (UNRECOVERED.to_string(), prec::ATOM),
+            Expr::Import { .. } | Expr::ImportFrom(_) => {(UNRECOVERED.to_string(), prec::ATOM) }
             // `LOAD_LOCALS` is the class namespace a class body returns. Inline
             // class recovery drops the trailing `return locals()`, so this is only
             // reached when a class body is decompiled on its own; render the builtin.
             Expr::Locals => ("locals()".to_string(), prec::ATOM),
             // The class object is consumed by its store; one reaching here is a class
             // shape that was not fully matched.
-            Expr::BuildClass { .. } => (UNRECOVERED.to_string(), prec::ATOM),
+            Expr::BuildClass { .. } => {(UNRECOVERED.to_string(), prec::ATOM) }
             Expr::ListComp { element, clauses } => {
                 let mut text = format!("[{}", self.expr(*element, 0));
                 for clause in clauses {
