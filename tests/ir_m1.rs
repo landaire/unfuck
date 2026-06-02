@@ -461,6 +461,31 @@ fn for_loop_try_except_continue() {
 }
 
 #[test]
+fn method_misnamed_as_comprehension_uses_store_name() {
+    // The obfuscator renamed a real method's code object to `<dictcomp>`, but it has a
+    // normal signature (`self`), not the comprehension `.0` argument, and is stored at
+    // its real name `m`. It must emit as `def m(self):` (the store name), not be dropped
+    // as an unrecoverable `<dictcomp>`.
+    let method = Builder::new("<dictcomp>", 1, &["self"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+    let method_obj = Obj::Code(Arc::new(RwLock::new((*method).clone())));
+    let outer = Builder::new("f", 0, &[], &["m"], vec![Obj::None, method_obj])
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::MAKE_FUNCTION, 0)
+        .arg(Standard::STORE_NAME, 0)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    let out = decompile(outer);
+    assert!(out.contains("def m(self):"), "expected `def m(self):`, got:\n{}", out);
+    assert!(!out.contains("__unrecovered__"), "should not be unrecovered:\n{}", out);
+    assert!(!out.contains("dictcomp"), "co_name must not leak:\n{}", out);
+}
+
+#[test]
 fn while_true_infinite_loop() {
     // def f(output):
     //     output.append(1)

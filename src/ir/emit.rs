@@ -265,9 +265,16 @@ impl<'a> Emitter<'a> {
             self.line(&line);
             return;
         }
-        // A `def` names itself; any other non-identifier name (`<genexpr>`) is a form
-        // this path does not render, so mark it unrecovered.
-        if nested.name.to_string().starts_with('<') {
+        // The obfuscator renames a method's own code object to a `<comprehension>`
+        // form (`<dictcomp>`, `<genexpr>`, ...) to mislead decompilers, but it is a
+        // real function: a genuine comprehension/generator body takes the implicit
+        // `.0` argument, which these do not, and the method is still stored at its
+        // real name. Emit a `def` under the store target rather than the obfuscated
+        // co_name. A genuine comprehension body (with `.0`) has no standalone `def`
+        // form, so it stays unrecovered.
+        let obfuscated_name = nested.name.to_string().starts_with('<');
+        let renamed_method = obfuscated_name && !super::is_comprehension_body(&nested);
+        if obfuscated_name && !renamed_method {
             self.line(UNRECOVERED);
             return;
         }
@@ -276,6 +283,11 @@ impl<'a> Emitter<'a> {
         let defaults: Vec<String> = defaults.iter().map(|d| self.expr(*d, 0)).collect();
         match super::decompile_function_with_defaults(nested, &defaults) {
             Ok(source) => {
+                let source = if renamed_method {
+                    rename_def_header(&source, &self.lvalue(target)).unwrap_or(source)
+                } else {
+                    source
+                };
                 for text in source.trim_end_matches('\n').split('\n') {
                     self.line(text);
                 }
@@ -1382,6 +1394,31 @@ fn docstring_literal(bytes: &[u8]) -> String {
     } else {
         python_bytes_literal(bytes)
     }
+}
+
+/// Rewrites the `def <id>(` header of a decompiled function so it names `name`,
+/// used when the code object's own co_name was obfuscated to a `<comprehension>`
+/// form but it is a real method stored at `name`. Only the header identifier is
+/// replaced (the parameter list and body are untouched); a recursive call inside
+/// the body reaches the method through `self`/the binding, not the co_name, so it is
+/// unaffected. Returns `None` if no `def ` header line is found (the source is then
+/// left as-is).
+fn rename_def_header(source: &str, name: &str) -> Option<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut done = false;
+    for line in source.split('\n') {
+        if !done {
+            if let Some(rest) = line.strip_prefix("def ") {
+                if let Some(paren) = rest.find('(') {
+                    out.push(format!("def {}{}", name, &rest[paren..]));
+                    done = true;
+                    continue;
+                }
+            }
+        }
+        out.push(line.to_string());
+    }
+    done.then(|| out.join("\n"))
 }
 
 /// Renders a byte string as a single-quoted Python 2 string literal.
