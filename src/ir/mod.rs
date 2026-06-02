@@ -390,7 +390,7 @@ pub fn decompile_module(root: &Arc<RwLock<Code>>) -> String {
         if !body.ends_with('\n') {
             body.push('\n');
         }
-        return body;
+        return with_coding_header(body);
     }
 
     // Fallback: some nested object is unrecoverable, so the module body could not be
@@ -422,7 +422,21 @@ pub fn decompile_module(root: &Arc<RwLock<Code>>) -> String {
             }
         }
     }
-    out
+    with_coding_header(out)
+}
+
+/// Prepends a `# -*- coding: utf-8 -*-` declaration when `source` contains any
+/// non-ASCII byte, so a recovered module whose string literals carry raw UTF-8 (e.g. a
+/// Cyrillic docstring, emitted readable rather than `\xNN`-escaped) compiles under
+/// Python 2, where the default source encoding is ASCII. The declaration must be on
+/// line 1 or 2 (PEP 263); line 1 keeps it ahead of any module docstring. ASCII-only
+/// modules are left untouched.
+fn with_coding_header(source: String) -> String {
+    if source.bytes().any(|byte| byte >= 0x80) {
+        format!("# -*- coding: utf-8 -*-\n{}", source)
+    } else {
+        source
+    }
 }
 
 /// Decompiles a code object whose enclosing scope supplied default argument

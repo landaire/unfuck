@@ -1380,16 +1380,28 @@ fn render_float(f: f64) -> String {
     }
 }
 
-/// Renders a docstring. A triple-quoted literal is used when the bytes are plain
-/// ASCII text with no embedded triple quote or trailing quote/backslash, so
-/// multi-line docstrings stay readable; otherwise the fully escaped single-quoted
-/// form keeps non-ASCII bytes valid in a Python 2 source file.
+/// Renders a docstring. A triple-quoted literal is used only for plain ASCII text with
+/// no embedded triple quote or trailing quote/backslash, so multi-line ASCII docstrings
+/// stay readable. A docstring with non-ASCII bytes uses the single-quoted form instead
+/// (via `python_bytes_literal`): a triple-quoted literal's real newlines would be
+/// re-indented when the method is nested inside its class, corrupting the string, while
+/// the single-quoted `\n`/`\t`-escaped form is one physical line and survives nesting.
+/// `python_bytes_literal` still renders the non-ASCII characters raw (readable), valid
+/// because `decompile_module` adds a `# -*- coding: utf-8 -*-` header.
 fn docstring_literal(bytes: &[u8]) -> String {
     let printable = bytes
         .iter()
         .all(|&b| matches!(b, b'\n' | b'\t' | 0x20..=0x7e));
     let text = String::from_utf8_lossy(bytes);
-    if printable && !text.contains("\"\"\"") && !text.ends_with('"') && !text.ends_with('\\') {
+    // A backslash inside a triple-quoted literal is a string escape, so a docstring
+    // carrying a literal backslash (a doctest's `\xe4`, a regex, a Windows path) would
+    // recompile to different bytes. Such a docstring uses the single-quoted form, which
+    // escapes each backslash, keeping it byte-exact.
+    if printable
+        && !text.contains("\"\"\"")
+        && !text.contains('\\')
+        && !text.ends_with('"')
+    {
         format!("\"\"\"{}\"\"\"", text)
     } else {
         python_bytes_literal(bytes)
@@ -1421,19 +1433,43 @@ fn rename_def_header(source: &str, name: &str) -> Option<String> {
     done.then(|| out.join("\n"))
 }
 
-/// Renders a byte string as a single-quoted Python 2 string literal.
+/// Renders a byte string as a single-quoted Python 2 string literal. When the bytes
+/// are valid UTF-8 with non-ASCII content, those characters are emitted raw (readable,
+/// e.g. Cyrillic) -- they round-trip byte-exact in a UTF-8 source file, which
+/// `decompile_module` guarantees with a `# -*- coding: utf-8 -*-` header. Control and
+/// quote characters are still escaped. Invalid UTF-8 (real binary) falls back to
+/// byte-wise `\xNN` escapes so every byte is preserved.
 fn python_bytes_literal(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() + 2);
     out.push('\'');
-    for &byte in bytes {
-        match byte {
-            b'\\' => out.push_str("\\\\"),
-            b'\'' => out.push_str("\\'"),
-            b'\n' => out.push_str("\\n"),
-            b'\r' => out.push_str("\\r"),
-            b'\t' => out.push_str("\\t"),
-            0x20..=0x7e => out.push(byte as char),
-            _ => out.push_str(&format!("\\x{:02x}", byte)),
+    match std::str::from_utf8(bytes) {
+        Ok(text) if bytes.iter().any(|&b| b >= 0x80) => {
+            for ch in text.chars() {
+                match ch {
+                    '\\' => out.push_str("\\\\"),
+                    '\'' => out.push_str("\\'"),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    c if (c as u32) < 0x20 || c == '\u{7f}' => {
+                        out.push_str(&format!("\\x{:02x}", c as u32))
+                    }
+                    c => out.push(c),
+                }
+            }
+        }
+        _ => {
+            for &byte in bytes {
+                match byte {
+                    b'\\' => out.push_str("\\\\"),
+                    b'\'' => out.push_str("\\'"),
+                    b'\n' => out.push_str("\\n"),
+                    b'\r' => out.push_str("\\r"),
+                    b'\t' => out.push_str("\\t"),
+                    0x20..=0x7e => out.push(byte as char),
+                    _ => out.push_str(&format!("\\x{:02x}", byte)),
+                }
+            }
         }
     }
     out.push('\'');

@@ -461,6 +461,33 @@ fn for_loop_try_except_continue() {
 }
 
 #[test]
+fn non_ascii_string_renders_readable_utf8() {
+    // def f(): return 'Привет'  (a Python 2 byte string of UTF-8 Cyrillic)
+    // The literal is emitted with its characters raw rather than \xNN-escaped; the
+    // bytes round-trip exactly in a UTF-8 source file (decompile_module adds the
+    // coding header).
+    let code = Builder::new("f", 0, &[], &[], vec![Obj::None, pystr("Привет")])
+        .arg(Standard::LOAD_CONST, 1)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+    assert_eq!(decompile(code), "def f():\n    return 'Привет'\n");
+}
+
+#[test]
+fn invalid_utf8_string_stays_hex_escaped() {
+    // A byte string that is not valid UTF-8 keeps \xNN escapes so every byte is
+    // preserved (it cannot be emitted raw without changing or losing bytes).
+    let raw = Obj::String(Arc::new(RwLock::new(py27_marshal::bstr::BString::from(
+        vec![0xf0u8, 0x28],
+    ))));
+    let code = Builder::new("f", 0, &[], &[], vec![Obj::None, raw])
+        .arg(Standard::LOAD_CONST, 1)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+    assert_eq!(decompile(code), "def f():\n    return '\\xf0('\n");
+}
+
+#[test]
 fn method_misnamed_as_comprehension_uses_store_name() {
     // The obfuscator renamed a real method's code object to `<dictcomp>`, but it has a
     // normal signature (`self`), not the comprehension `.0` argument, and is stored at
