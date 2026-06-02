@@ -388,6 +388,7 @@ impl<'a> Emitter<'a> {
             stmt,
             Stmt::If { .. }
                 | Stmt::While { .. }
+                | Stmt::Loop { .. }
                 | Stmt::For { .. }
                 | Stmt::Try { .. }
                 | Stmt::With { .. }
@@ -493,6 +494,10 @@ impl<'a> Emitter<'a> {
                     format!("while {}:", self.expr(*cond, 0))
                 };
                 self.line(&rendered);
+                self.block(body);
+            }
+            Stmt::Loop { body } => {
+                self.line("while True:");
                 self.block(body);
             }
             Stmt::For { target, iter, body } => {
@@ -1072,9 +1077,10 @@ fn contains_return(stmts: &[Stmt]) -> bool {
     stmts.iter().any(|stmt| match stmt {
         Stmt::Return(_) => true,
         Stmt::If { then, els, .. } => contains_return(then) || contains_return(els),
-        Stmt::While { body, .. } | Stmt::For { body, .. } | Stmt::With { body, .. } => {
-            contains_return(body)
-        }
+        Stmt::While { body, .. }
+        | Stmt::Loop { body }
+        | Stmt::For { body, .. }
+        | Stmt::With { body, .. } => contains_return(body),
         Stmt::Try { body, handlers } => {
             contains_return(body) || handlers.iter().any(|h| contains_return(&h.body))
         }

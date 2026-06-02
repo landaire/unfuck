@@ -331,6 +331,11 @@ pub enum Stmt {
         negated: bool,
         body: Vec<Stmt>,
     },
+    /// `while True:` -- an unconditional-header loop (the bytecode has no condition
+    /// test at the header, only a back edge), exited only by `break`/`return`/`raise`.
+    Loop {
+        body: Vec<Stmt>,
+    },
     For {
         target: LValue,
         iter: ValueId,

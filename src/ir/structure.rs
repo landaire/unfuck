@@ -73,7 +73,7 @@ fn cleanup(stmts: &mut Vec<Stmt>) {
                 cleanup(then);
                 cleanup(els);
             }
-            Stmt::While { body, .. } | Stmt::For { body, .. } => {
+            Stmt::While { body, .. } | Stmt::Loop { body } | Stmt::For { body, .. } => {
                 cleanup(body);
                 strip_tail_continue(body);
             }
@@ -369,10 +369,92 @@ impl Structurer<'_> {
                 let body = self.loop_body(header, body_entry, follow, depth)?;
                 Ok((Stmt::For { target, iter, body }, follow))
             }
-            // A non-conditional header is an infinite `while True`, not yet emitted.
-            // Reject rather than guess.
-            _ => Err(IrError::Unstructurable),
+            // A non-conditional header reached by a back edge is `while True:`: the
+            // loop has no condition test at the header and exits only via
+            // break/return/raise. Its follow is the break target -- the one block a
+            // body block reaches outside the loop -- not the header's own successors,
+            // which are all in-body, so recompute it from the body.
+            _ => {
+                let follow = self.infinite_loop_follow(&body_set);
+                let body = self.infinite_loop_body(header, follow, depth)?;
+                Ok((Stmt::Loop { body }, follow))
+            }
         }
+    }
+
+    /// The follow of a `while True:` loop: the block a body block reaches outside the
+    /// loop (the `break` target / the SETUP_LOOP exit). A truly infinite loop with no
+    /// break has none, so control continues at the function exit. Picks the smallest
+    /// such block id for determinism; a well-formed loop has exactly one.
+    fn infinite_loop_follow(&self, body_set: &HashSet<BlockId>) -> Point {
+        let mut exits: Vec<BlockId> = Vec::new();
+        for &block in body_set {
+            for target in self.cfg.block(block).successors() {
+                if let Some(&succ) = self.cfg.by_offset.get(&target) {
+                    if !body_set.contains(&succ) {
+                        exits.push(succ);
+                    }
+                }
+            }
+        }
+        match exits.into_iter().min() {
+            Some(block) => Point::Block(block),
+            None => Point::Exit,
+        }
+    }
+
+    /// Structures the body of a `while True:` loop. The header is the first body block
+    /// (unlike a conditional/for loop, where the header is a branch and the body a
+    /// separate block), so its statements are emitted directly and the rest of the body
+    /// is structured up to the back edge. A trailing `continue` the body falls through
+    /// to is dropped.
+    fn infinite_loop_body(
+        &mut self,
+        header: BlockId,
+        follow: Point,
+        depth: usize,
+    ) -> Result<Vec<Stmt>, IrError> {
+        self.loop_stack.push(LoopFrame { header, follow });
+        let outcome = self.infinite_loop_body_inner(header, depth);
+        self.loop_stack.pop();
+        let mut body = outcome?;
+        if matches!(body.last(), Some(Stmt::Continue)) {
+            body.pop();
+        }
+        // An empty body would emit `while True: pass`. A genuine infinite loop always
+        // has work in it; an empty one means the real body and its break collapsed --
+        // a break mis-resolved to a block inside the loop (an optimized `while 1:
+        // break`, or urlparse's segment-removal loops whose POP_BLOCK exit the deob
+        // stripped). Reject so the function fails rather than emitting an infinite loop
+        // that silently drops the break.
+        if body.is_empty() {
+            return Err(IrError::Unstructurable);
+        }
+        Ok(body)
+    }
+
+    fn infinite_loop_body_inner(
+        &mut self,
+        header: BlockId,
+        depth: usize,
+    ) -> Result<Vec<Stmt>, IrError> {
+        let mut body = self.cfg.block(header).stmts.clone();
+        // The header's terminator leads back into the loop. Only a plain edge is the
+        // `while True:` shape; a conditional or for header is handled above, and a
+        // try/with/finally at the header is a shape this does not yet recover.
+        let cont = match &self.cfg.block(header).terminator {
+            Terminator::Jump(target) | Terminator::Fallthrough(target) => self.cfg.target(*target)?,
+            _ => return Err(IrError::Unstructurable),
+        };
+        if cont == header {
+            // The header jumps straight back to itself: the whole body is the header.
+        } else if let Some(stmt) = self.loop_edge(cont) {
+            body.push(stmt);
+        } else {
+            let rest = self.region(cont, Point::Block(header), depth + 1)?;
+            body.extend(rest);
+        }
+        Ok(body)
     }
 
     /// Structures a loop body, dropping the back edge's trailing `continue`.

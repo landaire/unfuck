@@ -461,6 +461,60 @@ fn for_loop_try_except_continue() {
 }
 
 #[test]
+fn while_true_infinite_loop() {
+    // def f(output):
+    //     output.append(1)
+    //     while True:
+    //         output.append(2)
+    // The loop header has no condition test -- only a JUMP_ABSOLUTE back edge to
+    // itself -- so structure_loop's non-conditional arm emits `while True:`. The code
+    // after the loop (the implicit `return None`) is unreachable and dropped.
+    let code = Builder::new("f", 1, &["output"], &["append"], vec![Obj::None, long(1), long(2)])
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::LOAD_ATTR, 0)
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .op(Standard::POP_TOP)
+        .jump(Standard::SETUP_LOOP, "end")
+        .label("loop")
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::LOAD_ATTR, 0)
+        .arg(Standard::LOAD_CONST, 2)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_ABSOLUTE, "loop")
+        .label("end")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(output):\n    output.append(1)\n\n    while True:\n        output.append(2)\n"
+    );
+}
+
+#[test]
+fn break_without_pop_block_exit_is_rejected() {
+    // An optimized `while 1: break` whose loop has no POP_BLOCK exit block before the
+    // SETUP_LOOP follow: the BREAK_LOOP cannot be resolved to a real exit (the
+    // instruction before the follow is the dead back-edge JUMP, not a POP_BLOCK), so
+    // the function is rejected rather than mis-recovered as an infinite `while True:
+    // pass` that drops the break.
+    let code = Builder::new("f", 1, &["self"], &[], vec![Obj::None])
+        .jump(Standard::SETUP_LOOP, "end")
+        .label("loop")
+        .op(Standard::BREAK_LOOP)
+        .jump(Standard::JUMP_ABSOLUTE, "loop")
+        .label("end")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert!(unfuck::ir::decompile_function(code).is_err());
+}
+
+#[test]
 fn for_loop_body_always_returns_has_no_back_edge() {
     // def f(xs):
     //     for x in xs:
