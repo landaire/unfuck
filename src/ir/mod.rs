@@ -109,10 +109,12 @@ impl DecodedFunction {
         // returns None and the normal block-structuring path runs (and rejects).
         let mut us = unstack::Unstacker::new();
         if let Some(value) = us.recover_returned_bool(&self.instrs) {
+            let mut body = us.take_stmts();
+            body.push(Stmt::Return(Some(value)));
             return Ok(StructuredFunction {
                 code: self.code,
                 arena: us.into_arena(),
-                body: vec![Stmt::Return(Some(value))],
+                body,
             });
         }
         let cfg = Cfg::build(&self.instrs)?;

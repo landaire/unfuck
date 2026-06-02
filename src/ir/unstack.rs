@@ -564,10 +564,63 @@ impl Unstacker {
         Ok(())
     }
 
-    /// Recovers a function whose whole body is `return <boolean expression>` built
-    /// from cross-block short-circuit control flow (`return (a or b) and not c`).
-    /// The unstacker clears the stack at block boundaries, so such an expression --
-    /// split into blocks by its `POP_JUMP_IF_TRUE/FALSE` jumps -- otherwise fails.
+    /// Recovers a function whose body is a leading run of straight-line statements
+    /// followed by `return <boolean expression>`, where the returned boolean is built
+    /// from cross-block short-circuit control flow (e.g. `x = f(); return x and
+    /// x.copy() or {}`, or the whole-body `return (a or b) and not c`). The unstacker
+    /// clears the stack at block boundaries, so such an expression -- split into blocks
+    /// by its short-circuit jumps -- otherwise fails to fold.
+    ///
+    /// The leading statements (if any) are lowered normally onto `self`; the boolean
+    /// return region is reconstructed and verified by [`Self::reconstruct_returned_bool`].
+    /// Returns the recovered return value, or `None` when the body is not of this shape.
+    pub fn recover_returned_bool(&mut self, instrs: &[OffsetInstr]) -> Option<ValueId> {
+        let n = instrs.len();
+        if n < 3 || instrs[n - 1].instr.opcode.mnemonic() != Mnemonic::RETURN_VALUE {
+            return None;
+        }
+        // Locate the first short-circuit jump. Everything before the boolean region it
+        // begins is a leading run of straight-line statements with no control flow of
+        // its own; reject if that prefix contains any jump or block setup, which would
+        // make straight-line lowering unsound.
+        let first_jump = instrs[..n - 1]
+            .iter()
+            .position(|it| is_bool_jump(it.instr.opcode.mnemonic()))?;
+        if instrs[..first_jump]
+            .iter()
+            .any(|it| is_control_flow(it.instr.opcode.mnemonic()))
+        {
+            return None;
+        }
+        // Find the cut between the leading statements and the boolean region: the last
+        // point before `first_jump` where the symbolic stack is empty (a statement
+        // boundary). The boolean region's first leaf is the value the first short-
+        // circuit jump tests, which begins at that boundary.
+        let cut = {
+            let mut probe = Unstacker::new();
+            let mut cut = 0usize;
+            for k in 0..first_jump {
+                if probe.stack_is_empty() {
+                    cut = k;
+                }
+                probe.step(&instrs[k].instr, instrs[k].offset).ok()?;
+            }
+            cut
+        };
+        // Lower the leading statements onto `self`; the boolean region's leaves are
+        // re-lowered from the cut by `reconstruct_returned_bool`.
+        for k in 0..cut {
+            self.step(&instrs[k].instr, instrs[k].offset).ok()?;
+        }
+        if !self.stack_is_empty() {
+            return None;
+        }
+        self.reconstruct_returned_bool(&instrs[cut..])
+    }
+
+    /// Reconstructs the boolean expression of a `return <boolean expression>` region
+    /// (the last instruction is the `RETURN_VALUE`), built from cross-block short-
+    /// circuit control flow.
     ///
     /// Each short-circuit jump translates faithfully to a conditional expression:
     /// `POP_JUMP_IF_TRUE T` is `eval(T) if v else eval(continue)` (the value `v` is
@@ -578,8 +631,8 @@ impl Unstacker {
     /// every assignment of the leaf operands) -- a mismatch returns `None` so the
     /// function falls back to the existing graceful rejection rather than emit a
     /// wrong-but-compilable boolean. Returns the recovered value, or `None` when the
-    /// body is not a pure returned boolean of this shape.
-    pub fn recover_returned_bool(&mut self, instrs: &[OffsetInstr]) -> Option<ValueId> {
+    /// region is not a pure returned boolean of this shape.
+    fn reconstruct_returned_bool(&mut self, instrs: &[OffsetInstr]) -> Option<ValueId> {
         let n = instrs.len();
         if n < 3 || instrs[n - 1].instr.opcode.mnemonic() != Mnemonic::RETURN_VALUE {
             return None;
@@ -1340,6 +1393,28 @@ fn is_bool_jump(m: Mnemonic) -> bool {
             | Mnemonic::JUMP_IF_TRUE_OR_POP
             | Mnemonic::JUMP_IF_FALSE_OR_POP
     )
+}
+
+/// Whether a mnemonic transfers control or manages a block, so it cannot appear in a
+/// straight-line statement prefix lowered ahead of a boolean return region.
+fn is_control_flow(m: Mnemonic) -> bool {
+    if is_bool_jump(m) {
+        return true;
+    }
+    let name = format!("{:?}", m);
+    name.starts_with("JUMP")
+        || name.starts_with("SETUP_")
+        || name.starts_with("FOR_")
+        || matches!(
+            m,
+            Mnemonic::RETURN_VALUE
+                | Mnemonic::RAISE_VARARGS
+                | Mnemonic::YIELD_VALUE
+                | Mnemonic::END_FINALLY
+                | Mnemonic::BREAK_LOOP
+                | Mnemonic::CONTINUE_LOOP
+                | Mnemonic::POP_BLOCK
+        )
 }
 
 /// Simulates the original boolean region's control flow under a leaf-truthiness

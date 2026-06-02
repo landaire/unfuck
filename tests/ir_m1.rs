@@ -407,6 +407,25 @@ fn cross_block_boolean_return() {
 }
 
 #[test]
+fn statements_then_boolean_return() {
+    // def f(a): y = a; return y or a
+    // A leading straight-line statement (the assignment) precedes a cross-block
+    // boolean return. recover_returned_bool peels the statement off and reconstructs
+    // the returned boolean from the suffix.
+    let code = Builder::new("f", 1, &["a", "y"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::STORE_FAST, 1)
+        .arg(Standard::LOAD_FAST, 1)
+        .jump(Standard::JUMP_IF_TRUE_OR_POP, "ret")
+        .arg(Standard::LOAD_FAST, 0)
+        .label("ret")
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(a):\n    y = a\n    return y or a\n");
+}
+
+#[test]
 fn raise_statement() {
     // def f(): raise Boom
     let code = Builder::new("f", 0, &[], &["Boom"], vec![Obj::None])
