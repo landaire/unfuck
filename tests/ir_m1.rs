@@ -1262,6 +1262,43 @@ fn jump_to_shared_return_with_orphan_dead_block() {
 }
 
 #[test]
+fn ternary_arm_with_inline_list_comp() {
+    // x = [a for a in xs] if c else []
+    // The then-arm is an inline list comprehension (BUILD_LIST 0; FOR_ITER; STORE_FAST a;
+    // LIST_APPEND). Its loop STORE_FAST made is_statement_or_control flag the arm impure,
+    // so pure_ternary_arm rejected the diamond and it structured as an `if` that drops the
+    // arm value -> underflow. The comprehension folds to one value, so its interior
+    // (STORE/FOR_ITER/LIST_APPEND) must not count as arm statements. This is the
+    // `str([x for x in xs]) if cond else ''` shape (Entity.toString).
+    let code = Builder::new("f", 1, &["c", "xs", "a", "x"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 0) // c
+        .jump(Standard::POP_JUMP_IF_FALSE, "else_")
+        .arg(Standard::BUILD_LIST, 0)
+        .arg(Standard::LOAD_FAST, 1) // xs
+        .op(Standard::GET_ITER)
+        .label("for_iter")
+        .jump(Standard::FOR_ITER, "fend")
+        .arg(Standard::STORE_FAST, 2) // a
+        .arg(Standard::LOAD_FAST, 2) // a
+        .arg(Standard::LIST_APPEND, 2)
+        .jump(Standard::JUMP_ABSOLUTE, "for_iter")
+        .label("fend")
+        .jump(Standard::JUMP_FORWARD, "merge")
+        .label("else_")
+        .arg(Standard::BUILD_LIST, 0)
+        .label("merge")
+        .arg(Standard::STORE_FAST, 3) // x
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    let out = decompile(code);
+    assert!(!out.contains("__unrecovered__"), "should be fully recovered:\n{}", out);
+    assert!(out.contains("if c else"), "should fold as a ternary:\n{}", out);
+    assert!(out.contains("for a in xs"), "then arm should be the list comp:\n{}", out);
+}
+
+#[test]
 fn bare_except() {
     // def f(): try: g() except: h()
     let code = Builder::new("f", 0, &[], &["g", "h"], vec![Obj::None])

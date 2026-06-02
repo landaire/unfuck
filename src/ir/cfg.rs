@@ -187,7 +187,15 @@ impl Cfg {
     fn build_with(instrs: &[OffsetInstr], mode: BuildMode) -> Result<Cfg, IrError> {
         let comp = matches!(mode, BuildMode::Comprehension);
         let use_bool_regions = matches!(mode, BuildMode::BoolRegions);
-        let mut ternaries = find_ternaries(instrs);
+        // Inline list comprehensions are folded whole; their interior instructions
+        // stay inside one block and never become block leaders or for-loops. A
+        // comprehension used as a ternary then-arm also marks its condition as a
+        // ternary diamond, and records the merge where the unstacker completes it.
+        // Computed before find_ternaries so a ternary arm containing an inline list
+        // comp (whose loop STOREs / LIST_APPEND are part of a folded value, not
+        // statements) is still recognised as a pure value arm.
+        let (list_comps, mut list_interior, comp_ternaries) = find_list_comps(instrs);
+        let mut ternaries = find_ternaries(instrs, &list_interior);
         let (tries, mut excluded) = recover_tries(instrs)?;
         let (withs, with_excluded) = recover_withs(instrs)?;
         excluded.extend(with_excluded);
@@ -207,11 +215,6 @@ impl Cfg {
             .into_iter()
             .map(|(merge, (start, end))| (merge, instrs[start..end].iter().collect()))
             .collect();
-        // Inline list comprehensions are folded whole; their interior instructions
-        // stay inside one block and never become block leaders or for-loops. A
-        // comprehension used as a ternary then-arm also marks its condition as a
-        // ternary diamond, and records the merge where the unstacker completes it.
-        let (list_comps, mut list_interior, comp_ternaries) = find_list_comps(instrs);
         let mut comp_then_merges: HashMap<Offset, Offset> = HashMap::new();
         for (build, (cond, merge)) in &comp_ternaries {
             ternaries.insert(*cond);
@@ -1135,7 +1138,7 @@ fn scan_bool_region(instrs: &[OffsetInstr], start: usize) -> Option<(usize, bool
     }
 }
 
-fn find_ternaries(instrs: &[OffsetInstr]) -> HashSet<Offset> {
+fn find_ternaries(instrs: &[OffsetInstr], list_interior: &HashSet<Offset>) -> HashSet<Offset> {
     let index: HashMap<Offset, usize> = instrs
         .iter()
         .enumerate()
@@ -1171,8 +1174,8 @@ fn find_ternaries(instrs: &[OffsetInstr]) -> HashSet<Offset> {
             continue;
         }
         let then_start = Offset(item.offset.0 + item.instr.len() as u32);
-        if pure_ternary_arm(instrs, then_start, jump.offset, merge)
-            && pure_ternary_arm(instrs, else_target, merge, merge)
+        if pure_ternary_arm(instrs, then_start, jump.offset, merge, list_interior)
+            && pure_ternary_arm(instrs, else_target, merge, merge, list_interior)
         {
             ternaries.insert(item.offset);
             ternaries.insert(jump.offset);
@@ -1218,12 +1221,25 @@ fn pure_expression(instrs: &[OffsetInstr], start: Offset, end: Offset) -> bool {
 /// the closing JUMP_FORWARD (see its handler). A short-circuit to any other target is
 /// a nested boolean with its own internal merge that this in-block folding does not
 /// model, so it is treated as impure and the diamond structures as an ordinary `if`.
-fn pure_ternary_arm(instrs: &[OffsetInstr], start: Offset, end: Offset, merge: Offset) -> bool {
+fn pure_ternary_arm(
+    instrs: &[OffsetInstr],
+    start: Offset,
+    end: Offset,
+    merge: Offset,
+    list_interior: &HashSet<Offset>,
+) -> bool {
     instrs
         .iter()
         .filter(|item| item.offset >= start && item.offset < end)
         .all(|item| {
             let mnemonic = item.instr.opcode.mnemonic();
+            // An inline list comprehension folds to a single value; its interior loop
+            // STOREs, FOR_ITER, and LIST_APPEND are part of that expression, not arm
+            // statements. Skip them so `str([x for x in xs]) if cond else ''` is a pure
+            // value arm rather than rejected on the comprehension's STORE_FAST.
+            if list_interior.contains(&item.offset) {
+                return true;
+            }
             if matches!(
                 mnemonic,
                 Mnemonic::JUMP_IF_FALSE_OR_POP | Mnemonic::JUMP_IF_TRUE_OR_POP
