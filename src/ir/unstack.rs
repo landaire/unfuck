@@ -504,8 +504,19 @@ impl Unstacker {
         let mut clauses: Vec<ListClause> = Vec::new();
         let mut loop_tops: Vec<Offset> = Vec::new();
         let mut i = 1;
+        // A comprehension used as a ternary then-arm enters with the enclosing
+        // ternary's cond already pending; the element may add its own ternary/short-
+        // circuit (`[x if c else y for ..]`, `[a or b for ..]`), which must fully
+        // resolve before the LIST_APPEND. Snapshot the pending state at entry so the
+        // append-time check rejects only an element that left a NEW pending operator.
+        let entry_ternary = self.ternary.is_some();
+        let entry_shortcircuits = self.shortcircuit.len();
         let element = loop {
             let item = region.get(i).ok_or(IrError::Decode)?;
+            // Resolve an element ternary or short-circuit whose merge is here. Comp-
+            // interior offsets never coincide with an enclosing ternary's merge (which
+            // lies past the region), so this leaves any entry-pending operator alone.
+            self.resolve_pending(item.offset)?;
             match item.instr.opcode.mnemonic() {
                 // A `for` clause: the iterable is on the stack (GET_ITER was a no-op),
                 // and the target (single store, or UNPACK_SEQUENCE plus one store per
@@ -536,23 +547,46 @@ impl Unstacker {
                 // skipped. POP_JUMP_IF_FALSE keeps the element when the value is true
                 // (`if cond`); POP_JUMP_IF_TRUE skips when true, so the kept condition
                 // is the negation (`if not cond`). A jump to anything but an enclosing
-                // loop top is a branch inside the element, which this shape rejects.
-                m @ (Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE) => {
+                // loop top is instead a branch inside the element (a ternary's cond),
+                // folded through the shared ternary machinery (see LIST_APPEND).
+                Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE => {
                     let dest = Offset(item.instr.arg.ok_or(IrError::MissingOperand)? as u32);
-                    if !loop_tops.contains(&dest) {
-                        return Err(IrError::Unsupported(m));
-                    }
-                    let cond = self.pop()?;
-                    let cond = if m == Mnemonic::POP_JUMP_IF_TRUE {
-                        self.arena.alloc(Expr::Unary(UnaryOp::Not, cond))
+                    if loop_tops.contains(&dest) {
+                        let cond = self.pop()?;
+                        let cond = if item.instr.opcode.mnemonic() == Mnemonic::POP_JUMP_IF_TRUE
+                        {
+                            self.arena.alloc(Expr::Unary(UnaryOp::Not, cond))
+                        } else {
+                            cond
+                        };
+                        clauses.push(ListClause::If(cond));
                     } else {
-                        cond
-                    };
-                    clauses.push(ListClause::If(cond));
+                        self.step(&item.instr, item.offset)?;
+                    }
                     i += 1;
                 }
-                // LIST_APPEND leaves the element on top of the stack.
-                Mnemonic::LIST_APPEND => break self.pop()?,
+                // Control flow internal to the element expression: a ternary then-arm
+                // exit (`JUMP_FORWARD`) or a short-circuit operand (`JUMP_IF_*_OR_POP`),
+                // both recorded by `step` and completed by `resolve_pending` at the
+                // merge -- the same folding the block path uses outside comprehensions.
+                Mnemonic::JUMP_FORWARD
+                | Mnemonic::JUMP_IF_FALSE_OR_POP
+                | Mnemonic::JUMP_IF_TRUE_OR_POP => {
+                    self.step(&item.instr, item.offset)?;
+                    i += 1;
+                }
+                // LIST_APPEND leaves the element on top of the stack. Any element
+                // ternary/short-circuit must have resolved by now (the entry-pending
+                // operator of a ternary then-arm comp aside); a leftover one is a shape
+                // this folder cannot reconstruct, so reject rather than mis-emit.
+                Mnemonic::LIST_APPEND => {
+                    if self.ternary.is_some() != entry_ternary
+                        || self.shortcircuit.len() != entry_shortcircuits
+                    {
+                        return Err(IrError::Unsupported(Mnemonic::LIST_APPEND));
+                    }
+                    break self.pop()?;
+                }
                 _ => {
                     reject_comp_control(item)?;
                     self.step(&item.instr, item.offset)?;

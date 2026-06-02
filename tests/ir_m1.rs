@@ -426,6 +426,37 @@ fn statements_then_boolean_return() {
 }
 
 #[test]
+fn list_comp_ternary_element() {
+    // def f(xs): return [m if m else 0 for m in xs]
+    // The element is a ternary, compiled as a diamond between FOR_ITER and
+    // LIST_APPEND; parse_list_comp folds it through the shared ternary machinery.
+    let code = Builder::new("f", 1, &["xs", "m"], &[], vec![Obj::None, long(0)])
+        .arg(Standard::BUILD_LIST, 0)
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::GET_ITER)
+        .label("loop")
+        .jump(Standard::FOR_ITER, "done")
+        .arg(Standard::STORE_FAST, 1)
+        .arg(Standard::LOAD_FAST, 1)
+        .jump(Standard::POP_JUMP_IF_FALSE, "else_")
+        .arg(Standard::LOAD_FAST, 1)
+        .jump(Standard::JUMP_FORWARD, "app")
+        .label("else_")
+        .arg(Standard::LOAD_CONST, 1)
+        .label("app")
+        .arg(Standard::LIST_APPEND, 2)
+        .jump(Standard::JUMP_ABSOLUTE, "loop")
+        .label("done")
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(xs):\n    return [m if m else 0 for m in xs]\n"
+    );
+}
+
+#[test]
 fn raise_statement() {
     // def f(): raise Boom
     let code = Builder::new("f", 0, &[], &["Boom"], vec![Obj::None])
