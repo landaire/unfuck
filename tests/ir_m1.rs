@@ -251,6 +251,44 @@ fn relative_imports() {
 }
 
 #[test]
+fn list_comp_multiple_for_clauses() {
+    // def f(items, border): return [x for a, b in items for x in b if a < border]
+    // A multi-`for` comprehension: nested FOR_ITERs, one LIST_APPEND, a filter that
+    // jumps back to the inner loop top.
+    let code = Builder::new("f", 2, &["items", "border", "a", "b", "x"], &[], vec![Obj::None])
+        .arg(Standard::BUILD_LIST, 0)
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::GET_ITER)
+        .label("loop1")
+        .jump(Standard::FOR_ITER, "exit1")
+        .arg(Standard::UNPACK_SEQUENCE, 2)
+        .arg(Standard::STORE_FAST, 2)
+        .arg(Standard::STORE_FAST, 3)
+        .arg(Standard::LOAD_FAST, 3)
+        .op(Standard::GET_ITER)
+        .label("loop2")
+        .jump(Standard::FOR_ITER, "exit2")
+        .arg(Standard::STORE_FAST, 4)
+        .arg(Standard::LOAD_FAST, 2)
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::COMPARE_OP, 0)
+        .jump(Standard::POP_JUMP_IF_FALSE, "loop2")
+        .arg(Standard::LOAD_FAST, 4)
+        .arg(Standard::LIST_APPEND, 3)
+        .jump(Standard::JUMP_ABSOLUTE, "loop2")
+        .label("exit2")
+        .jump(Standard::JUMP_ABSOLUTE, "loop1")
+        .label("exit1")
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(items, border):\n    return [x for a, b in items for x in b if a < border]\n"
+    );
+}
+
+#[test]
 fn list_comp_negated_filter() {
     // def f(self): return [x for x in self._actions if not x.option_strings]
     // The compiler emits a negated filter as `<cond>; POP_JUMP_IF_TRUE loop_top`

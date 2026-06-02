@@ -771,15 +771,19 @@ impl<'a> Emitter<'a> {
             // The class object is consumed by its store; one reaching here is a class
             // shape that was not fully matched.
             Expr::BuildClass { .. } => (UNRECOVERED.to_string(), prec::ATOM),
-            Expr::ListComp { element, target, iter, conds } => {
-                let mut text = format!(
-                    "[{} for {} in {}",
-                    self.expr(*element, 0),
-                    self.lvalue(target),
-                    self.expr(*iter, 0)
-                );
-                for cond in conds {
-                    text.push_str(&format!(" if {}", self.expr(*cond, prec::OR)));
+            Expr::ListComp { element, clauses } => {
+                let mut text = format!("[{}", self.expr(*element, 0));
+                for clause in clauses {
+                    match clause {
+                        ListClause::For { target, iter } => text.push_str(&format!(
+                            " for {} in {}",
+                            self.lvalue(target),
+                            self.expr(*iter, 0)
+                        )),
+                        ListClause::If(cond) => {
+                            text.push_str(&format!(" if {}", self.expr(*cond, prec::OR)))
+                        }
+                    }
                 }
                 text.push(']');
                 (text, prec::ATOM)

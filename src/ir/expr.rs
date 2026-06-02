@@ -222,14 +222,14 @@ pub enum Expr {
     /// `yield value`. `YIELD_VALUE` pushes the value the generator receives, which
     /// a statement-level yield then pops.
     Yield(ValueId),
-    /// An inline list comprehension `[element for target in iter if cond ...]`.
+    /// An inline list comprehension `[element clause clause ...]`, where the clauses
+    /// are `for target in iter` and `if cond` in source order (so a multi-`for`
+    /// comprehension like `[x for a in xs for b in a if c]` is one expression).
     /// Python 2.7 builds these in place rather than in a nested code object, so the
     /// whole `BUILD_LIST`/`FOR_ITER`/`LIST_APPEND` region is recovered as one value.
     ListComp {
         element: ValueId,
-        target: LValue,
-        iter: ValueId,
-        conds: Vec<ValueId>,
+        clauses: Vec<ListClause>,
     },
     /// The module object produced by `IMPORT_NAME`. Consumed by a following store
     /// (an `import` statement) or by `IMPORT_FROM`/`IMPORT_STAR`. `level` is the
@@ -252,6 +252,15 @@ pub enum Expr {
         bases: ValueId,
         code: ConstId,
     },
+}
+
+/// One clause of an inline list comprehension (see [`Expr::ListComp`]).
+#[derive(Debug, Clone)]
+pub enum ListClause {
+    /// `for target in iter`.
+    For { target: LValue, iter: ValueId },
+    /// `if cond`.
+    If(ValueId),
 }
 
 /// The target of an assignment.

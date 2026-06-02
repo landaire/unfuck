@@ -489,79 +489,78 @@ impl Unstacker {
     }
 
     /// Folds an inline list comprehension region into a single [`Expr::ListComp`].
-    /// `region` runs from the `BUILD_LIST 0` accumulator through the loop's back
-    /// edge: `BUILD_LIST 0; <iter>; GET_ITER; FOR_ITER exit; STORE target;
-    /// [<cond>; POP_JUMP_IF_FALSE top]*; <element>; LIST_APPEND; JUMP_ABSOLUTE top`.
-    /// Only this single-`for` shape with straight-line sub-expressions is accepted;
-    /// anything else returns an error so the function is rejected rather than
-    /// mis-recovered.
+    /// `region` runs from the `BUILD_LIST 0` accumulator through the outer loop's
+    /// back edge. Each `for` clause is `<iter>; GET_ITER; FOR_ITER exit; <target>`;
+    /// filters are `<cond>; POP_JUMP_IF_FALSE/TRUE loop_top` (jumping back to the loop
+    /// they filter); the element precedes `LIST_APPEND`. Multiple `for` clauses nest,
+    /// each pushing its loop top so a filter can target any enclosing loop. Only this
+    /// shape with straight-line sub-expressions is accepted; anything else returns an
+    /// error so the function is rejected rather than mis-recovered.
     pub fn parse_list_comp(&mut self, region: &[&OffsetInstr]) -> Result<(), IrError> {
         let mnemonic = |i: usize| region.get(i).map(|item| item.instr.opcode.mnemonic());
         if mnemonic(0) != Some(Mnemonic::BUILD_LIST) {
             return Err(IrError::Unsupported(Mnemonic::BUILD_LIST));
         }
-        // The iterable expression, ending in GET_ITER (a no-op for the stack)
-        // before FOR_ITER consumes the iterator.
+        let mut clauses: Vec<ListClause> = Vec::new();
+        let mut loop_tops: Vec<Offset> = Vec::new();
         let mut i = 1;
-        while mnemonic(i) != Some(Mnemonic::FOR_ITER) {
+        let element = loop {
             let item = region.get(i).ok_or(IrError::Decode)?;
-            reject_comp_control(item)?;
-            self.step(&item.instr, item.offset)?;
-            i += 1;
-        }
-        let for_iter = region[i];
-        let loop_top = for_iter.offset;
-        let iter = self.pop()?;
-        i += 1;
-        // The loop target follows FOR_ITER: a single store, or an UNPACK_SEQUENCE
-        // and one store per element for a tuple target (`for a, b, c in ...`).
-        let target = if mnemonic(i) == Some(Mnemonic::UNPACK_SEQUENCE) {
-            let arity = region[i].instr.arg.ok_or(IrError::MissingOperand)? as usize;
-            i += 1;
-            let mut targets = Vec::with_capacity(arity);
-            for _ in 0..arity {
-                let store = region.get(i).ok_or(IrError::Decode)?;
-                targets.push(comp_target(&store.instr)?);
-                i += 1;
-            }
-            LValue::Tuple(targets)
-        } else {
-            let target = comp_target(&region.get(i).ok_or(IrError::Decode)?.instr)?;
-            i += 1;
-            target
-        };
-        // Filters and the element, up to LIST_APPEND.
-        let mut conds = Vec::new();
-        while mnemonic(i) != Some(Mnemonic::LIST_APPEND) {
-            let item = region.get(i).ok_or(IrError::Decode)?;
-            let m = item.instr.opcode.mnemonic();
-            if m == Mnemonic::POP_JUMP_IF_FALSE || m == Mnemonic::POP_JUMP_IF_TRUE {
-                // A filter jumps back to the loop top when the element is to be
-                // skipped; a forward jump would be branching inside the element,
-                // which this shape does not handle. POP_JUMP_IF_FALSE keeps the
-                // element when the value is true (`if cond`); POP_JUMP_IF_TRUE skips
-                // when it is true, so the kept condition is the negation (`if not
-                // cond`, the form the compiler emits for a negated filter).
-                let dest = Offset(item.instr.arg.ok_or(IrError::MissingOperand)? as u32);
-                if dest != loop_top {
-                    return Err(IrError::Unsupported(m));
+            match item.instr.opcode.mnemonic() {
+                // A `for` clause: the iterable is on the stack (GET_ITER was a no-op),
+                // and the target (single store, or UNPACK_SEQUENCE plus one store per
+                // element) follows FOR_ITER.
+                Mnemonic::FOR_ITER => {
+                    let loop_top = item.offset;
+                    let iter = self.pop()?;
+                    i += 1;
+                    let target = if mnemonic(i) == Some(Mnemonic::UNPACK_SEQUENCE) {
+                        let arity = region[i].instr.arg.ok_or(IrError::MissingOperand)? as usize;
+                        i += 1;
+                        let mut targets = Vec::with_capacity(arity);
+                        for _ in 0..arity {
+                            let store = region.get(i).ok_or(IrError::Decode)?;
+                            targets.push(comp_target(&store.instr)?);
+                            i += 1;
+                        }
+                        LValue::Tuple(targets)
+                    } else {
+                        let t = comp_target(&region.get(i).ok_or(IrError::Decode)?.instr)?;
+                        i += 1;
+                        t
+                    };
+                    clauses.push(ListClause::For { target, iter });
+                    loop_tops.push(loop_top);
                 }
-                let cond = self.pop()?;
-                let cond = if m == Mnemonic::POP_JUMP_IF_TRUE {
-                    self.arena.alloc(Expr::Unary(UnaryOp::Not, cond))
-                } else {
-                    cond
-                };
-                conds.push(cond);
-            } else {
-                reject_comp_control(item)?;
-                self.step(&item.instr, item.offset)?;
+                // A filter jumps back to the loop it guards when the element is to be
+                // skipped. POP_JUMP_IF_FALSE keeps the element when the value is true
+                // (`if cond`); POP_JUMP_IF_TRUE skips when true, so the kept condition
+                // is the negation (`if not cond`). A jump to anything but an enclosing
+                // loop top is a branch inside the element, which this shape rejects.
+                m @ (Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE) => {
+                    let dest = Offset(item.instr.arg.ok_or(IrError::MissingOperand)? as u32);
+                    if !loop_tops.contains(&dest) {
+                        return Err(IrError::Unsupported(m));
+                    }
+                    let cond = self.pop()?;
+                    let cond = if m == Mnemonic::POP_JUMP_IF_TRUE {
+                        self.arena.alloc(Expr::Unary(UnaryOp::Not, cond))
+                    } else {
+                        cond
+                    };
+                    clauses.push(ListClause::If(cond));
+                    i += 1;
+                }
+                // LIST_APPEND leaves the element on top of the stack.
+                Mnemonic::LIST_APPEND => break self.pop()?,
+                _ => {
+                    reject_comp_control(item)?;
+                    self.step(&item.instr, item.offset)?;
+                    i += 1;
+                }
             }
-            i += 1;
-        }
-        // LIST_APPEND leaves the element on top of the stack.
-        let element = self.pop()?;
-        self.push(Expr::ListComp { element, target, iter, conds });
+        };
+        self.push(Expr::ListComp { element, clauses });
         Ok(())
     }
 

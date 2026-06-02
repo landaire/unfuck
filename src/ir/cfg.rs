@@ -1845,22 +1845,24 @@ fn recognize_list_comp(
     if for_exit_idx <= for_idx {
         return None;
     }
-    // Find the back edge that closes the loop body: a JUMP_ABSOLUTE to the FOR_ITER.
-    // It is at the FOR_ITER exit for a plain comprehension, or earlier (with the
-    // ternary else arm following) for a comprehension used as a ternary then-arm.
+    // Find the back edge that closes the outer loop body: a JUMP_ABSOLUTE to this
+    // FOR_ITER. It is at the FOR_ITER exit for a plain comprehension, earlier (with
+    // the ternary else arm following) for a comprehension used as a ternary then-arm.
+    // A multi-`for` comprehension nests inner FOR_ITERs whose own back edges target
+    // their inner loop tops, not this one, so they are passed over here and the
+    // outer back edge is still found.
     let mut back_idx = None;
     for i in (for_idx + 1)..for_exit_idx {
         let mnemonic = instrs[i].instr.opcode.mnemonic();
-        if mnemonic == Mnemonic::FOR_ITER {
-            return None;
-        }
         if mnemonic == Mnemonic::JUMP_ABSOLUTE && branch_target(&instrs[i]).ok() == Some(loop_top) {
             back_idx = Some(i);
             break;
         }
     }
     let back_idx = back_idx?;
-    // Exactly one append in the loop body and no nested loop of its own.
+    // Exactly one append builds the result list, whether the comprehension has one
+    // `for` clause or several (a nested element comprehension has its own append and
+    // is left to fail rather than be mis-folded).
     let appends = instrs[for_idx + 1..=back_idx]
         .iter()
         .filter(|item| item.instr.opcode.mnemonic() == Mnemonic::LIST_APPEND)
