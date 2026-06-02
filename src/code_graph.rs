@@ -299,7 +299,12 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                     if *to > curr_basic_block.start_offset && *to <= curr_basic_block.end_offset {
                         if let Some((ins_offset, split_bb)) = curr_basic_block.split(*to) {
                             edges.push((split_bb.end_offset, ins_offset, EdgeWeight::NonJump));
-                            code_graph.add_node(split_bb);
+                            let split_node = code_graph.add_node(split_bb);
+                            // The split portion holds the entry's lower offsets; claim the
+                            // root for it (see the jump-case split below).
+                            if root_node_id.is_none() {
+                                root_node_id = Some(split_node);
+                            }
                             break;
                         } else {
                             // this node jumped to a bad address... let's change this
@@ -428,7 +433,17 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                     if let Some((ins_offset, split_bb)) = curr_basic_block.split(split_at) {
                         //println!("Splitting at instruction offset: {}", ins_offset);
                         edges.push((split_bb.end_offset, ins_offset, EdgeWeight::NonJump));
-                        code_graph.add_node(split_bb);
+                        let split_node = code_graph.add_node(split_bb);
+                        // The split portion holds the lower offsets, so when the very
+                        // first block to be finalized is split (a jump targets the middle
+                        // of the entry block), the entry -- which starts at offset 0 -- is
+                        // this `split_bb`, not the remainder. Claim the root here so the
+                        // reachability-based dead-node removal does not later drop the
+                        // entry block and the instructions it holds (e.g. the first
+                        // default-argument load of a MAKE_FUNCTION).
+                        if root_node_id.is_none() {
+                            root_node_id = Some(split_node);
+                        }
                     }
                 }
 
