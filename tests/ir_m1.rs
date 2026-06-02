@@ -289,6 +289,84 @@ fn list_comp_multiple_for_clauses() {
 }
 
 #[test]
+fn list_comp_nested_element() {
+    // def g(rows): return [[f(x) for x in row] for row in rows]
+    // A nested list comprehension: the outer comp's element is itself a comp, so
+    // there are two BUILD_LIST 0 accumulators and two LIST_APPENDs. recognize_list_comp
+    // must accept the outer (one own append, the inner append belonging to the nested
+    // comp), and parse_list_comp must fold the inner BUILD_LIST region as the element.
+    let code = Builder::new("g", 1, &["rows", "row", "x"], &["f"], vec![Obj::None])
+        .arg(Standard::BUILD_LIST, 0)
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::GET_ITER)
+        .label("loop1")
+        .jump(Standard::FOR_ITER, "exit1")
+        .arg(Standard::STORE_FAST, 1)
+        .arg(Standard::BUILD_LIST, 0)
+        .arg(Standard::LOAD_FAST, 1)
+        .op(Standard::GET_ITER)
+        .label("loop2")
+        .jump(Standard::FOR_ITER, "exit2")
+        .arg(Standard::STORE_FAST, 2)
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::LOAD_FAST, 2)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .arg(Standard::LIST_APPEND, 2)
+        .jump(Standard::JUMP_ABSOLUTE, "loop2")
+        .label("exit2")
+        .arg(Standard::LIST_APPEND, 2)
+        .jump(Standard::JUMP_ABSOLUTE, "loop1")
+        .label("exit1")
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def g(rows):\n    return [[f(x) for x in row] for row in rows]\n"
+    );
+}
+
+#[test]
+fn list_comp_multi_for_with_empty_list_in_iterable() {
+    // def f(rewards, picked): return [y for a in picked for y in rewards.get(a, [])]
+    // A multi-`for` comprehension whose second iterable is `rewards.get(a, [])`. The
+    // `[]` default arg is a BUILD_LIST 0 sitting just before the inner FOR_ITER, but it
+    // is a list literal consumed by the call, not a nested accumulator: the inner loop
+    // exits by jumping back to the outer loop top, not into a LIST_APPEND. The nested-
+    // comp detection must not mistake it for an inner comprehension (which would steal
+    // the single real append and reject the whole comprehension).
+    let code = Builder::new("f", 2, &["rewards", "picked", "a", "y"], &["get"], vec![Obj::None])
+        .arg(Standard::BUILD_LIST, 0)
+        .arg(Standard::LOAD_FAST, 1)
+        .op(Standard::GET_ITER)
+        .label("loop1")
+        .jump(Standard::FOR_ITER, "exit1")
+        .arg(Standard::STORE_FAST, 2)
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::LOAD_ATTR, 0)
+        .arg(Standard::LOAD_FAST, 2)
+        .arg(Standard::BUILD_LIST, 0)
+        .arg(Standard::CALL_FUNCTION, 2)
+        .op(Standard::GET_ITER)
+        .label("loop2")
+        .jump(Standard::FOR_ITER, "exit2")
+        .arg(Standard::STORE_FAST, 3)
+        .arg(Standard::LOAD_FAST, 3)
+        .arg(Standard::LIST_APPEND, 3)
+        .jump(Standard::JUMP_ABSOLUTE, "loop2")
+        .label("exit2")
+        .jump(Standard::JUMP_ABSOLUTE, "loop1")
+        .label("exit1")
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(rewards, picked):\n    return [y for a in picked for y in rewards.get(a, [])]\n"
+    );
+}
+
+#[test]
 fn list_comp_negated_filter() {
     // def f(self): return [x for x in self._actions if not x.option_strings]
     // The compiler emits a negated filter as `<cond>; POP_JUMP_IF_TRUE loop_top`

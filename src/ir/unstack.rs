@@ -586,6 +586,21 @@ impl Unstacker {
                     self.step(&item.instr, item.offset)?;
                     i += 1;
                 }
+                // A nested element comprehension (`[[..] for ..]`): the element is
+                // itself a list comp, brought inline as its own `BUILD_LIST 0 .. back
+                // edge`. Fold that sub-region recursively into one Expr::ListComp value
+                // and skip past it; the enclosing LIST_APPEND below takes it as the
+                // element. Only fires for the empty-accumulator build of a recognised
+                // inner comp -- a plain list literal `[]` element keeps the old path.
+                Mnemonic::BUILD_LIST
+                    if item.instr.arg == Some(0)
+                        && nested_comp_end(region, i).is_some() =>
+                {
+                    let end = nested_comp_end(region, i).ok_or(IrError::Decode)?;
+                    let sub: Vec<&OffsetInstr> = region[i..end].to_vec();
+                    self.parse_list_comp(&sub)?;
+                    i = end;
+                }
                 // LIST_APPEND leaves the element on top of the stack. Any element
                 // ternary/short-circuit must have resolved by now (the entry-pending
                 // operator of a ternary then-arm comp aside); a leftover one is a shape
@@ -2065,6 +2080,47 @@ fn cfg_sim(
                     _ => return None,
                 };
             }
+        }
+    }
+    None
+}
+
+/// Locates the end (region index, exclusive) of a nested element comprehension
+/// whose `BUILD_LIST 0` accumulator is at `region[build]`. The sub-comp runs from
+/// that build through the back edge that closes its outer loop -- a `JUMP_ABSOLUTE`
+/// to the first `FOR_ITER` after the build -- and the instruction at that end must be
+/// the `LIST_APPEND` that appends the inner list to the enclosing accumulator.
+/// Returns `None` when the build is an ordinary `[]` literal (no following FOR_ITER,
+/// or the borrowed loop exits by jumping to an enclosing loop top rather than into an
+/// append), so the caller leaves it on the normal path.
+fn nested_comp_end(region: &[&OffsetInstr], build: usize) -> Option<usize> {
+    let mut for_i = build + 1;
+    loop {
+        let mnemonic = region.get(for_i)?.instr.opcode.mnemonic();
+        if mnemonic == Mnemonic::FOR_ITER {
+            break;
+        }
+        // A store or jump before any FOR_ITER means this build is a list literal,
+        // not a comprehension accumulator.
+        let name = format!("{:?}", mnemonic);
+        if name.starts_with("STORE_") || name.starts_with("JUMP") || name.starts_with("POP_JUMP")
+        {
+            return None;
+        }
+        for_i += 1;
+    }
+    let loop_top = region[for_i].offset;
+    for k in (for_i + 1)..region.len() {
+        if region[k].instr.opcode.mnemonic() == Mnemonic::JUMP_ABSOLUTE
+            && region[k].instr.arg.map(|a| Offset(a as u32)) == Some(loop_top)
+        {
+            // The inner list must be consumed by an append into the enclosing
+            // accumulator; otherwise the borrowed loop is a multi-`for` continuation
+            // and this build was a `[]` literal in its iterable.
+            return match region.get(k + 1).map(|item| item.instr.opcode.mnemonic()) {
+                Some(Mnemonic::LIST_APPEND) => Some(k + 1),
+                _ => None,
+            };
         }
     }
     None

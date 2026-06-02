@@ -2119,14 +2119,43 @@ fn recognize_list_comp(
         }
     }
     let back_idx = back_idx?;
-    // Exactly one append builds the result list, whether the comprehension has one
-    // `for` clause or several (a nested element comprehension has its own append and
-    // is left to fail rather than be mis-folded).
-    let appends = instrs[for_idx + 1..=back_idx]
-        .iter()
-        .filter(|item| item.instr.opcode.mnemonic() == Mnemonic::LIST_APPEND)
+    // Exactly one append builds THIS comprehension's result list, whether it has one
+    // `for` clause or several. An element that is itself a list comprehension
+    // (`[[..] for ..]`) brings its own `BUILD_LIST 0 .. LIST_APPEND`; that inner
+    // append belongs to the inner list and is folded recursively, so skip the spans
+    // of any nested comprehensions before counting. Requiring exactly one own append
+    // still rejects shapes the folder cannot reconstruct.
+    let mut nested_spans: Vec<(usize, usize)> = Vec::new();
+    let mut scan = for_idx + 1;
+    while scan <= back_idx {
+        if instrs[scan].instr.opcode.mnemonic() == Mnemonic::BUILD_LIST
+            && instrs[scan].instr.arg == Some(0)
+        {
+            // A genuine nested element comprehension closes its loop straight into a
+            // LIST_APPEND -- the inner list appended to this comp's accumulator. A
+            // `BUILD_LIST 0` that is instead a `[]` literal in a later for-clause's
+            // iterable (`q.get(k, [])`) borrows the following FOR_ITER, but that loop
+            // exits by jumping back to an enclosing loop top, not into an append; the
+            // end-is-append check rejects it so the real (single) append is still ours.
+            if let Some((inner_end, _)) = recognize_list_comp(instrs, index, scan) {
+                if instrs
+                    .get(inner_end)
+                    .map(|item| item.instr.opcode.mnemonic())
+                    == Some(Mnemonic::LIST_APPEND)
+                {
+                    nested_spans.push((scan, inner_end));
+                    scan = inner_end;
+                    continue;
+                }
+            }
+        }
+        scan += 1;
+    }
+    let own_appends = (for_idx + 1..=back_idx)
+        .filter(|&i| instrs[i].instr.opcode.mnemonic() == Mnemonic::LIST_APPEND)
+        .filter(|i| !nested_spans.iter().any(|&(s, e)| (s..e).contains(i)))
         .count();
-    if appends != 1 {
+    if own_appends != 1 {
         return None;
     }
     Some((back_idx + 1, for_exit_idx))
