@@ -1089,13 +1089,199 @@ impl Unstacker {
         }
         for bits in 0..(1u32 << k) {
             let assign: Vec<bool> = (0..k).map(|b| (bits >> b) & 1 == 1).collect();
-            let cfg = cfg_sim(instrs, &index, merge, &leaf_index, &recs, &assign)?;
+            let cfg = cfg_sim(instrs[0].offset, instrs.len(), &leaf_index, &recs, &assign)?;
             let exp = self.expr_sim(value, &leaf_index, &structure, &assign)?;
             if cfg != exp {
                 return None;
             }
         }
         Some(value)
+    }
+
+    /// Fallback for a straight-line function (statements then a single trailing
+    /// `return <expr>`) where an expression embeds a pure short-circuit boolean region
+    /// -- a ternary/`and`/`or` mid-expression, e.g. `return fmt % (x[0], a or b if c
+    /// else d)` -- that the block structurer splits at its `POP_JUMP` and cannot
+    /// rejoin (the values below the region clear at the block boundary). Runs ONLY
+    /// after the normal path fails, so it can only convert a failure to a success.
+    /// Processes the stream linearly: statements and value ops fold normally, and each
+    /// boolean region collapses to one value reconstructed by [`Self::eval_bool`] and
+    /// verified by the same truth-table gate as [`Self::recover_returned_bool`].
+    /// Returns the return value (leading statements pushed onto `self`), or None.
+    pub fn recover_straightline_bools(&mut self, instrs: &[OffsetInstr]) -> Option<ValueId> {
+        let n = instrs.len();
+        if n < 2 || instrs[n - 1].instr.opcode.mnemonic() != Mnemonic::RETURN_VALUE {
+            return None;
+        }
+        let index: HashMap<Offset, usize> =
+            instrs.iter().enumerate().map(|(i, it)| (it.offset, i)).collect();
+        // Restrict to straight-line code modulo forward short-circuit jumps. A mid-body
+        // RETURN, loop, exception/with setup, backward or unconditional jump, or a
+        // JUMP_FORWARD ternary all mean control flow the block path -- not this
+        // fallback -- owns (eval_bool models only the POP_JUMP/OR_POP short-circuit
+        // forms, which carry no JUMP_FORWARD).
+        for (i, it) in instrs.iter().enumerate() {
+            let m = it.instr.opcode.mnemonic();
+            if m == Mnemonic::RETURN_VALUE {
+                if i + 1 != n {
+                    return None;
+                }
+            } else if is_bool_jump(m) {
+                if *index.get(&Offset(it.instr.arg? as u32))? <= i {
+                    return None;
+                }
+            } else if is_control_flow(m) {
+                return None;
+            }
+        }
+        let mut i = 0;
+        while i < n {
+            let m = instrs[i].instr.opcode.mnemonic();
+            if m == Mnemonic::RETURN_VALUE {
+                break;
+            }
+            if is_bool_jump(m) {
+                let (_value, next) = self.fold_bool_region(instrs, &index, i)?;
+                i = next;
+            } else {
+                self.step(&instrs[i].instr, instrs[i].offset).ok()?;
+                i += 1;
+            }
+        }
+        let value = self.pop_value().ok()?;
+        if !self.stack_is_empty() {
+            return None;
+        }
+        Some(value)
+    }
+
+    /// Folds the boolean region whose first short-circuit jump is `instrs[jump_idx]`
+    /// (its tested value already on top of the stack) into one value, pushing the
+    /// result and returning `(value, region-end index)`. The region runs to the merge
+    /// where all its short-circuit paths converge; values below it on the stack are
+    /// preserved. Verified by the truth-table gate; None on any mismatch or unsupported
+    /// shape. See [`Self::recover_straightline_bools`].
+    fn fold_bool_region(
+        &mut self,
+        instrs: &[OffsetInstr],
+        index: &HashMap<Offset, usize>,
+        jump_idx: usize,
+    ) -> Option<(ValueId, usize)> {
+        let first_value = self.pop_value().ok()?;
+        let base_len = self.stack.len();
+        let j1 = &instrs[jump_idx];
+        let j1_off = j1.offset;
+        // The merge is where the region's short-circuit paths converge: scan forward
+        // tracking the furthest short-circuit target; the region ends when the cursor
+        // reaches it. Only value ops may sit between the jumps.
+        let mut max_target = 0u32;
+        let mut k = jump_idx;
+        let m_idx = loop {
+            let it = instrs.get(k)?;
+            if k > jump_idx && it.offset.0 == max_target {
+                break k;
+            }
+            let m = it.instr.opcode.mnemonic();
+            if is_bool_jump(m) {
+                let t = Offset(it.instr.arg? as u32);
+                if t.0 <= it.offset.0 {
+                    return None;
+                }
+                max_target = max_target.max(t.0);
+            } else if is_control_flow(m) {
+                return None;
+            }
+            k += 1;
+        };
+        let merge = instrs[m_idx].offset;
+
+        // Lower every leaf (a value-op run between short-circuit jumps) once, keyed by
+        // start offset. The first leaf's value is the one already popped; the rest are
+        // lowered by stepping from their start, each leaving the stack at `base_len`.
+        let mut recs: HashMap<Offset, LeafRec> = HashMap::new();
+        let mut leaf_index: HashMap<ValueId, usize> = HashMap::new();
+        let mut leaf_order: Vec<ValueId> = Vec::new();
+        let mut register = |value: ValueId,
+                            leaf_index: &mut HashMap<ValueId, usize>,
+                            leaf_order: &mut Vec<ValueId>| {
+            leaf_index.entry(value).or_insert_with(|| {
+                leaf_order.push(value);
+                leaf_order.len() - 1
+            });
+        };
+        let term_of = |k: usize| -> Option<LeafTerm> {
+            let it = &instrs[k];
+            Some(LeafTerm::Jump {
+                kind: it.instr.opcode.mnemonic(),
+                target: Offset(it.instr.arg? as u32),
+                after: instrs.get(k + 1)?.offset,
+            })
+        };
+        register(first_value, &mut leaf_index, &mut leaf_order);
+        recs.insert(j1_off, LeafRec { value: first_value, term: term_of(jump_idx)? });
+
+        let mut queue: Vec<Offset> = Vec::new();
+        if let LeafTerm::Jump { target, after, .. } = recs[&j1_off].term {
+            queue.push(target);
+            queue.push(after);
+        }
+        while let Some(off) = queue.pop() {
+            if off == merge || recs.contains_key(&off) {
+                continue;
+            }
+            let mut j = *index.get(&off)?;
+            loop {
+                let it = instrs.get(j)?;
+                if it.offset == merge {
+                    let value = self.pop_value().ok()?;
+                    if self.stack.len() != base_len {
+                        return None;
+                    }
+                    register(value, &mut leaf_index, &mut leaf_order);
+                    recs.insert(off, LeafRec { value, term: LeafTerm::Return });
+                    break;
+                }
+                let m = it.instr.opcode.mnemonic();
+                if is_bool_jump(m) {
+                    let value = self.pop_value().ok()?;
+                    if self.stack.len() != base_len {
+                        return None;
+                    }
+                    register(value, &mut leaf_index, &mut leaf_order);
+                    let term = term_of(j)?;
+                    if let LeafTerm::Jump { target, after, .. } = term {
+                        queue.push(target);
+                        queue.push(after);
+                    }
+                    recs.insert(off, LeafRec { value, term });
+                    break;
+                }
+                if is_control_flow(m) {
+                    return None;
+                }
+                self.step(&it.instr, it.offset).ok()?;
+                j += 1;
+            }
+        }
+
+        let mut memo: HashMap<Offset, ValueId> = HashMap::new();
+        let mut structure: HashSet<ValueId> = HashSet::new();
+        let value = self.eval_bool(j1_off, merge, &recs, &mut memo, &mut structure)?;
+
+        let k = leaf_order.len();
+        if k > 16 {
+            return None;
+        }
+        for bits in 0..(1u32 << k) {
+            let assign: Vec<bool> = (0..k).map(|b| (bits >> b) & 1 == 1).collect();
+            let cfg = cfg_sim(j1_off, recs.len(), &leaf_index, &recs, &assign)?;
+            let exp = self.expr_sim(value, &leaf_index, &structure, &assign)?;
+            if cfg != exp {
+                return None;
+            }
+        }
+        self.stack.push(value);
+        Some((value, m_idx))
     }
 
     /// Recursive translation of the boolean region rooted at the leaf starting at
@@ -1838,18 +2024,16 @@ fn filter_cfg_sim(
 }
 
 fn cfg_sim(
-    instrs: &[OffsetInstr],
-    index: &HashMap<Offset, usize>,
-    merge: Offset,
+    start: Offset,
+    steps: usize,
     leaf_index: &HashMap<ValueId, usize>,
     recs: &HashMap<Offset, LeafRec>,
     assign: &[bool],
 ) -> Option<(usize, Vec<usize>)> {
-    let _ = (index, merge);
-    let mut cur = instrs[0].offset;
+    let mut cur = start;
     let mut order = Vec::new();
     // The region is finite and every jump moves strictly forward, so this terminates.
-    for _ in 0..=instrs.len() {
+    for _ in 0..=steps {
         let rec = recs.get(&cur)?;
         let li = *leaf_index.get(&rec.value)?;
         order.push(li);

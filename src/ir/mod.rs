@@ -117,27 +117,43 @@ impl DecodedFunction {
                 body,
             });
         }
-        let cfg = Cfg::build(&self.instrs)?;
-        self.structure_with(cfg)
+        // Try the normal CFG path; only if it fails fall back to a straight-line
+        // boolean reconstruction. Because the fallback runs solely on failure (and is
+        // itself gated by truth-table verification), it can only turn a failure into a
+        // success -- never change an object the CFG path already recovers.
+        let normal = Cfg::build(&self.instrs).and_then(|cfg| self.structure_with(cfg));
+        match normal {
+            Ok((arena, body)) => Ok(StructuredFunction { code: self.code, arena, body }),
+            Err(err) => {
+                let mut us = unstack::Unstacker::new();
+                if let Some(value) = us.recover_straightline_bools(&self.instrs) {
+                    let mut body = us.take_stmts();
+                    body.push(Stmt::Return(Some(value)));
+                    return Ok(StructuredFunction {
+                        code: self.code,
+                        arena: us.into_arena(),
+                        body,
+                    });
+                }
+                Err(err)
+            }
+        }
     }
 
     /// Structures a comprehension code object, lowering its accumulator and
     /// `SET_ADD`/`MAP_ADD` instructions into comprehension element statements.
     pub fn structure_comp(self) -> Result<StructuredFunction, IrError> {
         let cfg = Cfg::build_comp(&self.instrs)?;
-        self.structure_with(cfg)
+        let (arena, body) = self.structure_with(cfg)?;
+        Ok(StructuredFunction { code: self.code, arena, body })
     }
 
-    fn structure_with(self, mut cfg: Cfg) -> Result<StructuredFunction, IrError> {
+    fn structure_with(&self, mut cfg: Cfg) -> Result<(ExprArena, Vec<Stmt>), IrError> {
         // Fold opaque-predicate branches before structuring so the junk they guard
         // becomes unreachable and is never emitted.
         simplify::simplify(&mut cfg, &self.code);
         let body = structure::structure(&cfg)?;
-        Ok(StructuredFunction {
-            code: self.code,
-            arena: cfg.arena,
-            body,
-        })
+        Ok((cfg.arena, body))
     }
 }
 

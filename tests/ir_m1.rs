@@ -487,6 +487,32 @@ fn list_comp_or_filter() {
 }
 
 #[test]
+fn straightline_midexpression_boolean() {
+    // def f(c, a): x = (a or 0) if c else 0; return x
+    // The ternary's then-arm is `a or 0` whose `or` short-circuits to the merge, and
+    // the else-arm shares that `0` -- a POP_JUMP split with no JUMP_FORWARD that the
+    // block path cannot rejoin. The straight-line fallback folds it (verified) after
+    // the normal path fails, then the assignment and return fold normally.
+    let code = Builder::new("f", 2, &["c", "a", "x"], &[], vec![Obj::None, long(0)])
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::POP_JUMP_IF_FALSE, "elseb")
+        .arg(Standard::LOAD_FAST, 1)
+        .jump(Standard::JUMP_IF_TRUE_OR_POP, "merge")
+        .label("elseb")
+        .arg(Standard::LOAD_CONST, 1)
+        .label("merge")
+        .arg(Standard::STORE_FAST, 2)
+        .arg(Standard::LOAD_FAST, 2)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(c, a):\n    x = a or 0 if c else 0\n    return x\n"
+    );
+}
+
+#[test]
 fn raise_statement() {
     // def f(): raise Boom
     let code = Builder::new("f", 0, &[], &["Boom"], vec![Obj::None])
