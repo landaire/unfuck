@@ -1309,6 +1309,49 @@ fn try_with_returning_body() {
 }
 
 #[test]
+fn typed_except_tuple_target() {
+    // A typed except whose `as` target is a tuple, the Python 2 socket idiom
+    // `except socket.error, (errno, msg): ...`. The handler binds the exception by
+    // UNPACK_SEQUENCE into two names. It must render in the comma form (the `as` form
+    // with a tuple is a SyntaxError in 2.7).
+    // def f(): try: g() except E, (a, b): h(a, b)
+    let code = Builder::new("f", 0, &["a", "b"], &["g", "E", "h"], vec![Obj::None])
+        .jump(Standard::SETUP_EXCEPT, "handler")
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_BLOCK)
+        .jump(Standard::JUMP_FORWARD, "end")
+        .label("handler")
+        .op(Standard::DUP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::COMPARE_OP, 10)
+        .jump(Standard::POP_JUMP_IF_FALSE, "reraise")
+        .op(Standard::POP_TOP)
+        .arg(Standard::UNPACK_SEQUENCE, 2)
+        .arg(Standard::STORE_FAST, 0)
+        .arg(Standard::STORE_FAST, 1)
+        .op(Standard::POP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 2)
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::CALL_FUNCTION, 2)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_FORWARD, "end")
+        .label("reraise")
+        .op(Standard::END_FINALLY)
+        .label("end")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f():\n    try:\n        g()\n    except E, (a, b):\n        h(a, b)\n\n    return None\n"
+    );
+}
+
+#[test]
 fn call_with_non_string_keyword_key_is_rejected() {
     // A keyword argument's key is always a string constant in valid CPython 2.7.
     // Corrupted/obfuscated residue can leave a non-string there; emitting it would be

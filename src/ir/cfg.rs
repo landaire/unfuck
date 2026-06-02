@@ -881,6 +881,60 @@ fn store_target(instr: &Instruction<Standard>) -> Result<LValue, IrError> {
     })
 }
 
+/// Parses the exception `as` target that follows the type-`POP_TOP` in a typed
+/// `except` clause: a discarding `POP_TOP` (no name), a single `STORE_*`, or an
+/// `UNPACK_SEQUENCE` of (possibly nested) stores for a tuple binding
+/// (`except socket.error, (errno, msg):`). Returns the recovered target and the
+/// index just past it (where the traceback `POP_TOP` is expected).
+fn parse_exc_target(
+    instrs: &[OffsetInstr],
+    idx: usize,
+) -> Result<(Option<LValue>, usize), IrError> {
+    match mnemonic_at(instrs, idx)? {
+        Mnemonic::POP_TOP => Ok((None, idx + 1)),
+        Mnemonic::UNPACK_SEQUENCE => {
+            let (lv, next) = parse_unpack_target(instrs, idx)?;
+            Ok((Some(lv), next))
+        }
+        Mnemonic::STORE_FAST
+        | Mnemonic::STORE_NAME
+        | Mnemonic::STORE_GLOBAL
+        | Mnemonic::STORE_DEREF => Ok((Some(store_target(&instrs[idx].instr)?), idx + 1)),
+        _ => Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT)),
+    }
+}
+
+/// Parses an `UNPACK_SEQUENCE n` followed by `n` (possibly nested) store targets
+/// into an `LValue::Tuple`. Returns the tuple and the index just past the last
+/// store. Only simple stores and nested unpacks are accepted; an attribute or
+/// subscript target (which would need the unstacker) rejects the clause.
+fn parse_unpack_target(
+    instrs: &[OffsetInstr],
+    idx: usize,
+) -> Result<(LValue, usize), IrError> {
+    let count = instrs[idx].instr.arg.ok_or(IrError::MissingOperand)? as usize;
+    let mut elems = Vec::with_capacity(count);
+    let mut next = idx + 1;
+    for _ in 0..count {
+        match mnemonic_at(instrs, next)? {
+            Mnemonic::UNPACK_SEQUENCE => {
+                let (lv, after) = parse_unpack_target(instrs, next)?;
+                elems.push(lv);
+                next = after;
+            }
+            Mnemonic::STORE_FAST
+            | Mnemonic::STORE_NAME
+            | Mnemonic::STORE_GLOBAL
+            | Mnemonic::STORE_DEREF => {
+                elems.push(store_target(&instrs[next].instr)?);
+                next += 1;
+            }
+            _ => return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT)),
+        }
+    }
+    Ok((LValue::Tuple(elems), next))
+}
+
 enum TerminatorKind {
     None,
     Jump,
@@ -1777,19 +1831,12 @@ fn recover_try(
                 if mnemonic_at(instrs, bind)? != Mnemonic::POP_TOP {
                     return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT));
                 }
-                let name = match mnemonic_at(instrs, bind + 1)? {
-                    Mnemonic::POP_TOP => None,
-                    Mnemonic::STORE_FAST
-                    | Mnemonic::STORE_NAME
-                    | Mnemonic::STORE_GLOBAL
-                    | Mnemonic::STORE_DEREF => Some(store_target(&instrs[bind + 1].instr)?),
-                    _ => return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT)),
-                };
-                if mnemonic_at(instrs, bind + 2)? != Mnemonic::POP_TOP {
+                let (name, after_target) = parse_exc_target(instrs, bind + 1)?;
+                if mnemonic_at(instrs, after_target)? != Mnemonic::POP_TOP {
                     return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT));
                 }
-                let body = instrs.get(bind + 3).ok_or(IrError::Unstructurable)?.offset;
-                exclude_range(instrs, clause_idx, bind + 3, excluded);
+                let body = instrs.get(after_target + 1).ok_or(IrError::Unstructurable)?.offset;
+                exclude_range(instrs, clause_idx, after_target + 1, excluded);
                 clauses.push(ClauseShape { type_load: Some(type_load), name, body_entry: body });
 
                 let next_idx = *index.get(&next_off).ok_or(IrError::BadOperand)?;

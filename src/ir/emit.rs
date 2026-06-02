@@ -507,6 +507,13 @@ impl<'a> Emitter<'a> {
                     let header = match (&handler.exc_type, &handler.name) {
                         (None, _) => "except:".to_string(),
                         (Some(exc), None) => format!("except {}:", self.expr(*exc, 0)),
+                        // A tuple target is only valid in the comma form
+                        // `except E, (a, b):`; `except E as (a, b):` is a SyntaxError
+                        // in Python 2.7. A simple name keeps the `as` form so existing
+                        // output stays byte-identical.
+                        (Some(exc), Some(name @ LValue::Tuple(_))) => {
+                            format!("except {}, ({}):", self.expr(*exc, 0), self.lvalue(name))
+                        }
                         (Some(exc), Some(name)) => {
                             format!("except {} as {}:", self.expr(*exc, 0), self.lvalue(name))
                         }
