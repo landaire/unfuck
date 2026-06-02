@@ -642,6 +642,22 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             'conditions: for (node, result) in conditions_reached {
                 self.graph[*node].flags |= BasicBlockFlags::USED_IN_EXECUTION;
 
+                // A JUMP_IF_TRUE_OR_POP / JUMP_IF_FALSE_OR_POP is a short-circuit
+                // boolean operator: when its branch is taken it KEEPS the tested value
+                // on the stack -- that value is the expression's result (e.g. the
+                // `'Allow'` of `'Allow' if x else 'Disallow'`), not a discarded opaque
+                // predicate the way POP_JUMP_IF_* is. Folding it as a constant condition
+                // would remove the value-producing load and leave the stack short, so
+                // leave these untouched for the IR's boolean recovery to fold.
+                if let Some(last) = self.graph[*node].instrs.last()
+                    && matches!(
+                        last.unwrap().opcode.mnemonic(),
+                        Mnemonic::JUMP_IF_TRUE_OR_POP | Mnemonic::JUMP_IF_FALSE_OR_POP
+                    )
+                {
+                    continue 'conditions;
+                }
+
                 // we already did the work for this node
                 if node_branch_direction.contains_key(node) {
                     continue;
