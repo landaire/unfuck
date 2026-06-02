@@ -141,7 +141,9 @@ impl<'a> Emitter<'a> {
         let Some(Obj::String(s)) = self.code.consts.get(c.0 as usize) else {
             return None;
         };
-        Some((docstring_literal(s.read().unwrap().as_slice()), rest))
+        // A module docstring is emitted at the top level and never re-indented, so a
+        // multi-line triple-quoted form is safe and stays readable.
+        Some((docstring_literal(s.read().unwrap().as_slice(), true), rest))
     }
 
     /// The function's docstring literal, if any. A docstring is `co_consts[0]` when
@@ -155,7 +157,12 @@ impl<'a> Emitter<'a> {
             return None;
         }
         match self.code.consts.first() {
-            Some(Obj::String(s)) => Some(docstring_literal(s.read().unwrap().as_slice())),
+            // A function/method/class-body docstring is re-indented when the def is
+            // nested into its class or module (the source is emitted line by line with
+            // an added indent), which would inject spaces into a triple-quoted literal's
+            // continuation lines and corrupt the bytes. Force the single-quoted, one-line
+            // `\n`-escaped form, which survives re-indentation byte-exact.
+            Some(Obj::String(s)) => Some(docstring_literal(s.read().unwrap().as_slice(), false)),
             _ => None,
         }
     }
@@ -1388,19 +1395,21 @@ fn render_float(f: f64) -> String {
 /// the single-quoted `\n`/`\t`-escaped form is one physical line and survives nesting.
 /// `python_bytes_literal` still renders the non-ASCII characters raw (readable), valid
 /// because `decompile_module` adds a `# -*- coding: utf-8 -*-` header.
-fn docstring_literal(bytes: &[u8]) -> String {
+fn docstring_literal(bytes: &[u8], multiline_ok: bool) -> String {
     let printable = bytes
         .iter()
         .all(|&b| matches!(b, b'\n' | b'\t' | 0x20..=0x7e));
     let text = String::from_utf8_lossy(bytes);
     // A backslash inside a triple-quoted literal is a string escape, so a docstring
     // carrying a literal backslash (a doctest's `\xe4`, a regex, a Windows path) would
-    // recompile to different bytes. Such a docstring uses the single-quoted form, which
-    // escapes each backslash, keeping it byte-exact.
+    // recompile to different bytes. A multi-line literal is corrupted by re-indentation
+    // when the def is nested (see the caller). Both fall to the single-quoted form,
+    // which escapes backslashes and newlines and is byte-exact regardless of nesting.
     if printable
         && !text.contains("\"\"\"")
         && !text.contains('\\')
         && !text.ends_with('"')
+        && (multiline_ok || !text.contains('\n'))
     {
         format!("\"\"\"{}\"\"\"", text)
     } else {

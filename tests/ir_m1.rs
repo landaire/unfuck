@@ -64,6 +64,7 @@ struct Builder {
     names: Vec<Arc<BString>>,
     consts: Vec<Obj>,
     items: Vec<Item>,
+    flags: CodeFlags,
 }
 
 impl Builder {
@@ -75,7 +76,13 @@ impl Builder {
             names: names.iter().map(|n| bstr(n)).collect(),
             consts,
             items: Vec::new(),
+            flags: CodeFlags::empty(),
         }
+    }
+
+    fn flags(mut self, flags: CodeFlags) -> Builder {
+        self.flags = flags;
+        self
     }
 
     fn op(mut self, opcode: Standard) -> Builder {
@@ -133,7 +140,7 @@ impl Builder {
             argcount: self.argcount,
             nlocals: self.varnames.len() as u32,
             stacksize: 16,
-            flags: CodeFlags::empty(),
+            flags: self.flags,
             code: Arc::new(code),
             consts: Arc::new(self.consts),
             names: self.names,
@@ -458,6 +465,21 @@ fn for_loop_try_except_continue() {
         decompile(code),
         "def f(xs):\n    for x in xs:\n        try:\n            g(x)\n        except OSError:\n            pass\n\n    return None\n"
     );
+}
+
+#[test]
+fn function_docstring_multiline_is_single_line_escaped() {
+    // A real function (CO_OPTIMIZED) with a multi-line docstring. When the def is nested
+    // into its class/module, the source is re-indented line by line, which would inject
+    // spaces into a triple-quoted literal's continuation lines and corrupt the bytes. So
+    // a function docstring is emitted single-quoted with `\n` escaped -- one physical
+    // line that survives re-indentation byte-exact.
+    let code = Builder::new("m", 1, &["self"], &[], vec![pystr("line1\nline2"), Obj::None])
+        .flags(CodeFlags::OPTIMIZED)
+        .arg(Standard::LOAD_CONST, 1)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+    assert_eq!(decompile(code), "def m(self):\n    'line1\\nline2'\n    return None\n");
 }
 
 #[test]
