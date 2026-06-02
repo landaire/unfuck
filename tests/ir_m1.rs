@@ -568,6 +568,34 @@ fn shared_else_boolean_in_statement() {
 }
 
 #[test]
+fn if_branch_returns_shared_else_boolean() {
+    // def f(c, z, x, y): if c: return (x or y) if z else y; return 0
+    // The if's POP_JUMP targets the merge (it is control flow, not a value), so the
+    // region scanner must reject it -- otherwise it greedily swallows the if and the
+    // genuine shared-else boolean nested in the branch never folds.
+    let code = Builder::new("f", 4, &["c", "z", "x", "y"], &[], vec![Obj::None, long(0)])
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::POP_JUMP_IF_FALSE, "ret0")
+        .arg(Standard::LOAD_FAST, 1)
+        .jump(Standard::POP_JUMP_IF_FALSE, "elsey")
+        .arg(Standard::LOAD_FAST, 2)
+        .jump(Standard::JUMP_IF_TRUE_OR_POP, "branchret")
+        .label("elsey")
+        .arg(Standard::LOAD_FAST, 3)
+        .label("branchret")
+        .op(Standard::RETURN_VALUE)
+        .label("ret0")
+        .arg(Standard::LOAD_CONST, 1)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(c, z, x, y):\n    if c:\n        return x or y if z else y\n\n    return 0\n",
+    );
+}
+
+#[test]
 fn raise_statement() {
     // def f(): raise Boom
     let code = Builder::new("f", 0, &[], &["Boom"], vec![Obj::None])

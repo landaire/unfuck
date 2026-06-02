@@ -978,10 +978,19 @@ fn find_bool_regions(instrs: &[OffsetInstr]) -> (HashMap<Offset, Offset>, HashSe
 fn scan_bool_region(instrs: &[OffsetInstr], start: usize) -> Option<(usize, bool)> {
     let mut max_target = 0u32;
     let mut has_or_pop = false;
+    let mut pop_jump_targets: Vec<u32> = Vec::new();
     let mut k = start;
     loop {
         let item = instrs.get(k)?;
         if k > start && item.offset.0 == max_target {
+            // A bare `POP_JUMP` (not a value-keeping `JUMP_IF_*_OR_POP`) targeting the
+            // merge is a control-flow branch -- an `if` whose arm runs on past here --
+            // not a value short-circuit. Such a region is not a single value (its
+            // branches are statement suites), so reject it; the genuine value booleans
+            // nested inside each branch are found on their own.
+            if pop_jump_targets.contains(&max_target) {
+                return None;
+            }
             return Some((k, has_or_pop));
         }
         let mnemonic = item.instr.opcode.mnemonic();
@@ -992,6 +1001,7 @@ fn scan_bool_region(instrs: &[OffsetInstr], start: usize) -> Option<(usize, bool
                     return None;
                 }
                 max_target = max_target.max(t.0);
+                pop_jump_targets.push(t.0);
             }
             Mnemonic::JUMP_IF_FALSE_OR_POP | Mnemonic::JUMP_IF_TRUE_OR_POP => {
                 let t = branch_target(item).ok()?;
