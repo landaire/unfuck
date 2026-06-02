@@ -781,6 +781,85 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             }
         }
 
+        // Partial execution never follows exception edges (entering a handler would
+        // need the exception triple modeled), so an opaque predicate sitting INSIDE an
+        // except/finally handler is never folded above. But a self-contained
+        // `LOAD_CONST c; POP_JUMP_IF_{TRUE,FALSE}` needs no stack model: the const it
+        // loads IS the value the jump pops, so its direction is statically known
+        // wherever it sits. Fold those here (handler or not) the same way -- drop the
+        // untaken edge, turn the conditional into an unconditional JUMP_FORWARD, and
+        // remove the now-dead LOAD_CONST -- so the handler reduces to its real shape
+        // (e.g. a `try: from X import * except ImportError: from Y import *` whose
+        // re-raise END_FINALLY the obfuscator guarded with `LOAD_CONST 0;
+        // POP_JUMP_IF_TRUE`). The reachability prune and dead-instruction removal below
+        // then clean up exactly as for the partial-execution folds.
+        let mut local_folds: Vec<(NodeIndex, usize)> = Vec::new();
+        for node in self.graph.node_indices() {
+            if node_branch_direction.contains_key(&node) {
+                continue;
+            }
+            let bb = &self.graph[node];
+            let n = bb.instrs.len();
+            if n < 2 {
+                continue;
+            }
+            let (Some(last), Some(prev)) = (bb.instrs[n - 1].get(), bb.instrs[n - 2].get()) else {
+                continue;
+            };
+            if !matches!(
+                last.opcode.mnemonic(),
+                Mnemonic::POP_JUMP_IF_TRUE | Mnemonic::POP_JUMP_IF_FALSE
+            ) || prev.opcode.mnemonic() != Mnemonic::LOAD_CONST
+            {
+                continue;
+            }
+            let Some(const_idx) = prev.arg else { continue };
+            let Some(truthy) =
+                self.code.consts.get(const_idx as usize).and_then(const_truthy)
+            else {
+                continue;
+            };
+            let jumps = match last.opcode.mnemonic() {
+                Mnemonic::POP_JUMP_IF_TRUE => truthy,
+                _ => !truthy,
+            };
+            // Only fold the NEVER-TAKEN case (the jump is dead, control falls through).
+            // The always-taken case is a control-flow-flattening trampoline whose taken
+            // target may be backward -- converting it to a forward jump is wrong, and the
+            // IR's own opaque-predicate folding already handles those post-build. The
+            // never-taken case is exactly the handler END_FINALLY guard this pass targets,
+            // and a fall-through successor is always forward, so the JUMP_FORWARD below is
+            // sound.
+            if !jumps {
+                local_folds.push((node, n - 2));
+            }
+        }
+        for (node, load_idx) in local_folds {
+            // Drop the dead taken-side (Jump) edge; control falls through.
+            let unused = self
+                .graph
+                .edges_directed(node, Direction::Outgoing)
+                .find_map(|e| (*e.weight() == EdgeWeight::Jump).then(|| (e.id(), e.target())));
+            let Some((edge_id, target)) = unused else {
+                continue;
+            };
+            potentially_unused_nodes.insert(target);
+            self.graph.remove_edge(edge_id);
+            if self.graph.edges_directed(node, Direction::Outgoing).count() == 1 {
+                let bb = &mut self.graph[node];
+                if let Some(last) = bb.instrs.last()
+                    && last.get().is_some_and(|i| i.opcode.is_conditional_jump())
+                {
+                    let last_mut = bb.instrs.last_mut().unwrap().unwrap_mut();
+                    Arc::make_mut(last_mut).opcode = Mnemonic::JUMP_FORWARD.into();
+                }
+            }
+            // The LOAD_CONST only fed the now-removed condition; drop it so the
+            // JUMP_FORWARD does not leave its value stranded on the stack.
+            insns_to_remove.entry(node).or_default().insert(load_idx);
+            node_branch_direction.insert(node, EdgeWeight::NonJump);
+        }
+
         if node_branch_direction.is_empty() {
             // no obfuscation?
             return;
@@ -2273,6 +2352,25 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             false
         }
     }
+}
+
+/// Python truthiness of a constant, for statically folding a `LOAD_CONST c;
+/// POP_JUMP_IF_*` opaque predicate. Returns `None` for a const whose truth value the
+/// folder does not evaluate (e.g. a code object), so such a jump is left untouched.
+fn const_truthy(obj: &Obj) -> Option<bool> {
+    use num_traits::Zero;
+    Some(match obj {
+        Obj::None => false,
+        Obj::Bool(b) => *b,
+        Obj::Long(l) => !l.read().unwrap_or_else(|e| e.into_inner()).is_zero(),
+        Obj::Float(f) => *f != 0.0,
+        Obj::String(s) => !s.read().unwrap_or_else(|e| e.into_inner()).is_empty(),
+        Obj::Tuple(t) => !t.read().unwrap_or_else(|e| e.into_inner()).is_empty(),
+        Obj::List(l) => !l.read().unwrap_or_else(|e| e.into_inner()).is_empty(),
+        Obj::Dict(d) => !d.read().unwrap_or_else(|e| e.into_inner()).is_empty(),
+        Obj::Set(s) => !s.read().unwrap_or_else(|e| e.into_inner()).is_empty(),
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
