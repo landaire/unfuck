@@ -1208,6 +1208,51 @@ fn mergeless_except_in_finally_is_rejected() {
 }
 
 #[test]
+fn mergeless_except_raising_handler_in_with_is_accepted() {
+    // A merge-less try/except nested in a with: the body returns, so its POP_BLOCK is
+    // gone, and the typed handler always raises. A raising handler never falls through,
+    // so it cannot reach the with's cleanup -- the merge-less recovery is admitted even
+    // though the object holds a SETUP_WITH. with cm(): try: return g() except E: raise h()
+    let code = Builder::new("f", 0, &["e"], &["cm", "g", "E", "h"], vec![Obj::None])
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .jump(Standard::SETUP_WITH, "wcleanup")
+        .op(Standard::POP_TOP)
+        .jump(Standard::SETUP_EXCEPT, "handler")
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::RETURN_VALUE)
+        .label("handler")
+        .op(Standard::DUP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 2)
+        .arg(Standard::COMPARE_OP, 10)
+        .jump(Standard::POP_JUMP_IF_FALSE, "reraise")
+        .op(Standard::POP_TOP)
+        .arg(Standard::STORE_FAST, 0)
+        .op(Standard::POP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 3)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .arg(Standard::RAISE_VARARGS, 1)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .label("reraise")
+        .op(Standard::END_FINALLY)
+        .op(Standard::POP_BLOCK)
+        .arg(Standard::LOAD_CONST, 0)
+        .label("wcleanup")
+        .op(Standard::WITH_CLEANUP)
+        .op(Standard::END_FINALLY)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f():\n    with cm():\n        try:\n            return g()\n        except E as e:\n            raise h()\n\n    return None\n"
+    );
+}
+
+#[test]
 fn with_binding_to_attribute() {
     // def f(self, cm): with cm as self.resource: g()
     // The `as` target is an attribute (STORE_ATTR), not a simple name; recover_with

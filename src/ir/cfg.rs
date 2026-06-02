@@ -1777,19 +1777,11 @@ fn recover_try(
         // cleanup of an enclosing try/finally or with, which its own structurer also
         // emits (double execution). The relinearizer scatters the protected region, so
         // the block-at-a-time recoverer cannot reliably tell an enclosed merge-less try
-        // from a standalone one; when the code object contains any SETUP_FINALLY or
-        // SETUP_WITH, reject rather than risk it. Objects with neither cannot enclose.
-        None => {
-            if instrs.iter().any(|item| {
-                matches!(
-                    item.instr.opcode.mnemonic(),
-                    Mnemonic::SETUP_FINALLY | Mnemonic::SETUP_WITH
-                )
-            }) {
-                return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT));
-            }
-            None
-        }
+        // from a standalone one. A handler that always raises or returns never falls
+        // through, so it cannot reach an enclosing cleanup; the merge-less rejection
+        // below (after the clauses are known) fires only when the object contains a
+        // SETUP_FINALLY/SETUP_WITH and some handler is not provably terminating.
+        None => None,
     };
 
     let mut clauses = Vec::new();
@@ -1883,7 +1875,65 @@ fn recover_try(
         }
     }
 
+    // Merge-less rejection (see the `end` match above): a merge-less try whose handlers
+    // might fall through into an enclosing finally/with cleanup would be double-emitted
+    // (the finally/with structurer also emits that cleanup). Accept it only when every
+    // handler provably terminates -- its body raises or returns before reaching any
+    // branch -- so none can fall through. An object with no SETUP_FINALLY/SETUP_WITH
+    // has no enclosing cleanup to clash with, so it needs no check.
+    if end.is_none()
+        && instrs.iter().any(|item| {
+            matches!(
+                item.instr.opcode.mnemonic(),
+                Mnemonic::SETUP_FINALLY | Mnemonic::SETUP_WITH
+            )
+        })
+        && !clauses.iter().all(|c| clause_terminates(instrs, index, c.body_entry))
+    {
+        return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT));
+    }
+
     Ok(TryShape { setup: setup.offset, body_entry, end, clauses })
+}
+
+/// Whether an `except` arm provably terminates: scanning forward from its body, a
+/// `RETURN_VALUE` or `RAISE_VARARGS` is reached through straight-line code before any
+/// control-flow op. Used to admit a merge-less try nested in a finally/with: a handler
+/// that always raises or returns never falls through into the enclosing cleanup. The
+/// check is conservative -- a handler with an internal branch is treated as possibly
+/// falling through even when every path actually terminates -- which only declines
+/// recovery, never mis-accepts.
+fn clause_terminates(
+    instrs: &[OffsetInstr],
+    index: &HashMap<Offset, usize>,
+    body_entry: Offset,
+) -> bool {
+    let Some(&start) = index.get(&body_entry) else {
+        return false;
+    };
+    for i in start..instrs.len() {
+        match instrs[i].instr.opcode.mnemonic() {
+            Mnemonic::RETURN_VALUE | Mnemonic::RAISE_VARARGS => return true,
+            Mnemonic::POP_JUMP_IF_FALSE
+            | Mnemonic::POP_JUMP_IF_TRUE
+            | Mnemonic::JUMP_FORWARD
+            | Mnemonic::JUMP_ABSOLUTE
+            | Mnemonic::JUMP_IF_FALSE_OR_POP
+            | Mnemonic::JUMP_IF_TRUE_OR_POP
+            | Mnemonic::CONTINUE_LOOP
+            | Mnemonic::BREAK_LOOP
+            | Mnemonic::FOR_ITER
+            | Mnemonic::POP_BLOCK
+            | Mnemonic::END_FINALLY
+            | Mnemonic::WITH_CLEANUP
+            | Mnemonic::SETUP_LOOP
+            | Mnemonic::SETUP_EXCEPT
+            | Mnemonic::SETUP_FINALLY
+            | Mnemonic::SETUP_WITH => return false,
+            _ => continue,
+        }
+    }
+    false
 }
 
 /// Excludes the `END_FINALLY` at `idx` and, when present, the dead jump right after
