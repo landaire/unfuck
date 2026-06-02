@@ -1658,14 +1658,27 @@ fn recover_try(
     // locate the body's own `POP_BLOCK` by scanning from the body with block-nesting
     // depth rather than assuming adjacency. The first `POP_BLOCK` reached at depth 0
     // pops this try's block.
-    let mut depth = 0i32;
+    // Find this try's own POP_BLOCK by tracking the runtime block stack: each SETUP_
+    // pushes a block, a POP_BLOCK pops the innermost (LIFO). A nested with/finally/
+    // except whose body returns or raises is unwound through WITH_CLEANUP/END_FINALLY
+    // at its target rather than a POP_BLOCK, so when the scan reaches such a block's
+    // target without having seen its POP_BLOCK, pop it as unwound. The first POP_BLOCK
+    // reached with no nested block open is the try's own. (Plain POP_BLOCK counting
+    // would leave a return-bodied SETUP_ unbalanced and consume this try's POP_BLOCK,
+    // misclassifying the try as merge-less; the relinearizer can also place a nested
+    // handler past an outer cleanup, so the targets do not nest by offset.)
+    let mut stack: Vec<Offset> = Vec::new();
     let mut pop_idx = None;
     for i in (setup_idx + 1)..handler_idx {
+        let off = instrs[i].offset;
+        while stack.last().map_or(false, |&t| off >= t) {
+            stack.pop();
+        }
         let mnemonic = instrs[i].instr.opcode.mnemonic();
         if format!("{:?}", mnemonic).starts_with("SETUP_") {
-            depth += 1;
+            stack.push(branch_target(&instrs[i])?);
         } else if mnemonic == Mnemonic::POP_BLOCK {
-            if depth == 0 {
+            if stack.is_empty() {
                 // Skip an orphan POP_BLOCK from a loop whose SETUP_LOOP the deob
                 // dropped (it precedes the try's own POP_BLOCK); see recover_finally.
                 if mnemonic_at(instrs, i + 1)? == Mnemonic::POP_BLOCK {
@@ -1674,7 +1687,7 @@ fn recover_try(
                 pop_idx = Some(i);
                 break;
             }
-            depth -= 1;
+            stack.pop();
         }
     }
     // A SETUP_EXCEPT pushes a block that any normal exit from the body must pop, so

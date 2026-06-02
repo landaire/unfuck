@@ -1262,6 +1262,53 @@ fn mergeless_with() {
 }
 
 #[test]
+fn try_with_returning_body() {
+    // A try whose body is a `with` whose body returns. The with-body's return unwinds
+    // through WITH_CLEANUP/END_FINALLY, so the with emits no POP_BLOCK; the try's own
+    // POP_BLOCK still follows it. The block-stack scan must pop the unbalanced
+    // SETUP_WITH when it reaches the WITH_CLEANUP target, so the following POP_BLOCK is
+    // recognised as the try's own merge exit rather than consumed by the with -- which
+    // would misclassify the try as merge-less and reject it.
+    // def f(): try: with cm() as x: return g(x) except E: return None
+    let code = Builder::new("f", 0, &["x"], &["cm", "g", "E"], vec![Obj::None])
+        .jump(Standard::SETUP_EXCEPT, "handler")
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .jump(Standard::SETUP_WITH, "cleanup")
+        .arg(Standard::STORE_FAST, 0)
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .op(Standard::RETURN_VALUE)
+        .label("cleanup")
+        .op(Standard::WITH_CLEANUP)
+        .op(Standard::END_FINALLY)
+        .op(Standard::POP_BLOCK)
+        .jump(Standard::JUMP_FORWARD, "merge")
+        .label("handler")
+        .op(Standard::DUP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 2)
+        .arg(Standard::COMPARE_OP, 10)
+        .jump(Standard::POP_JUMP_IF_FALSE, "reraise")
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .label("reraise")
+        .op(Standard::END_FINALLY)
+        .label("merge")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f():\n    try:\n        with cm() as x:\n            return g(x)\n    except E:\n        return None\n\n    return None\n"
+    );
+}
+
+#[test]
 fn call_with_non_string_keyword_key_is_rejected() {
     // A keyword argument's key is always a string constant in valid CPython 2.7.
     // Corrupted/obfuscated residue can leave a non-string there; emitting it would be
