@@ -162,6 +162,19 @@ impl Structurer<'_> {
                 break;
             }
 
+            // A cursor that lands on the innermost active loop's own header is a
+            // `continue` of that loop, not a re-entry into the header block. This
+            // happens when the region's `stop` is not the header -- e.g. an `if` inside
+            // the loop whose other arm returns has the function exit as its
+            // post-dominator, so this arm's region runs with `stop == Exit` -- and
+            // control then flows back to the header. Without this the header's
+            // ForIter/while terminator is emitted as a plain block and rejected. (The
+            // `stop == header` case is the normal loop-body end, already handled above.)
+            if self.loop_stack.last().is_some_and(|frame| frame.header == current) {
+                out.push(Stmt::Continue);
+                break;
+            }
+
             // A block that could not be lowered is reachable here, so the function
             // genuinely needs it; surface the error that poisoned it. (Opaque-dead
             // poison blocks are never reached.)

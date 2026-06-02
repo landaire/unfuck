@@ -1208,6 +1208,55 @@ fn mergeless_except_in_finally_is_rejected() {
 }
 
 #[test]
+fn loop_if_returns_then_fallthrough_continue() {
+    // A loop body with two ifs: the first returns (so its post-dominator is the
+    // function exit, making the rest of the body structure with stop == Exit), the
+    // second's arms both reach the loop header directly. Control then reaches the
+    // header by fall-through with stop != header, which must be recovered as a
+    // `continue` of the loop rather than emitting the FOR_ITER header as a plain block.
+    // def f(xs):
+    //     for x in xs:
+    //         if a(x): return x
+    //         if b(x): c(x)
+    let code = Builder::new("f", 1, &["xs", "x"], &["a", "b", "c"], vec![Obj::None])
+        .jump(Standard::SETUP_LOOP, "end")
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::GET_ITER)
+        .label("loop")
+        .jump(Standard::FOR_ITER, "exit")
+        .arg(Standard::STORE_FAST, 1)
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .jump(Standard::POP_JUMP_IF_FALSE, "if2")
+        .arg(Standard::LOAD_FAST, 1)
+        .op(Standard::RETURN_VALUE)
+        .label("if2")
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .jump(Standard::POP_JUMP_IF_FALSE, "loop")
+        .arg(Standard::LOAD_GLOBAL, 2)
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_ABSOLUTE, "loop")
+        .label("exit")
+        .op(Standard::POP_BLOCK)
+        .label("end")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    // The trailing `continue` is the bytecode's explicit back-edge after `c(x)`;
+    // it is redundant but faithful (getArmorType in the archive renders the same way).
+    assert_eq!(
+        decompile(code),
+        "def f(xs):\n    for x in xs:\n        if a(x):\n            return x\n\n        if b(x):\n            c(x)\n            continue\n\n    return None\n"
+    );
+}
+
+#[test]
 fn mergeless_except_raising_handler_in_with_is_accepted() {
     // A merge-less try/except nested in a with: the body returns, so its POP_BLOCK is
     // gone, and the typed handler always raises. A raising handler never falls through,
