@@ -1583,6 +1583,117 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         }
     }
 
+    /// Strips the obfuscator's dead-store junk inserted into a `class` creation. In
+    /// clean CPython 2.7 a `class C(bases): ...` lowers to `LOAD_CONST 'C'; <bases>;
+    /// LOAD_CONST <body>; MAKE_FUNCTION 0; CALL_FUNCTION 0; BUILD_CLASS; STORE_NAME C`
+    /// with nothing between the `MAKE_FUNCTION` and the `BUILD_CLASS` except that one
+    /// `CALL_FUNCTION 0`. The obfuscator wedges dead `unknown_N = <const/arith>` stores
+    /// in there (on either side of the call); their net stack effect leaves extra values
+    /// below `BUILD_CLASS`, which then pops garbage instead of (name, bases, dict) and
+    /// the class fails to decompile. The deob can also have peeled one such store off,
+    /// leaving an unbalanced `INPLACE` before the call.
+    ///
+    /// Remove the whole junk region between `MAKE_FUNCTION 0` and `BUILD_CLASS`, keeping
+    /// only the single class `CALL_FUNCTION 0`, which restores the clean sequence and a
+    /// balanced stack regardless of the junk's internal (im)balance. Conservative: it
+    /// only fires when every instruction in the region is a pure-data junk op (loads,
+    /// stores-to-name, arithmetic, builds -- no call besides the one class call, no jump,
+    /// import, or attribute/subscript store), and it refuses when any name the junk
+    /// stores is read outside the region (so a store that is actually used is never
+    /// dropped). Offsets are stale after removal, so an `update_bb_offsets` must follow.
+    pub(crate) fn strip_build_class_junk(&mut self) {
+        // Names read (LOAD_NAME/LOAD_GLOBAL) anywhere, with the (node, index) of each
+        // read, so a read inside the junk region itself can be excluded below.
+        let mut name_reads: HashMap<u16, Vec<(NodeIndex, usize)>> = HashMap::new();
+        for node in self.graph.node_indices() {
+            for (i, instr) in self.graph[node].instrs.iter().enumerate() {
+                if let Some(instr) = instr.get()
+                    && matches!(
+                        instr.opcode.mnemonic(),
+                        Mnemonic::LOAD_NAME | Mnemonic::LOAD_GLOBAL
+                    )
+                    && let Some(arg) = instr.arg
+                {
+                    name_reads.entry(arg).or_default().push((node, i));
+                }
+            }
+        }
+
+        // Analyse with the original (stable) indices, then apply removals -- avoids
+        // re-deriving name_reads after each edit. Disjoint regions, so one pass suffices.
+        let mut to_remove: HashMap<NodeIndex, Vec<usize>> = HashMap::new();
+        for node in self.graph.node_indices() {
+            let instrs = &self.graph[node].instrs;
+            for bc in 0..instrs.len() {
+                if instrs[bc].get().map(|i| i.opcode.mnemonic()) != Some(Mnemonic::BUILD_CLASS) {
+                    continue;
+                }
+                // Walk back from BUILD_CLASS over the junk to the class body's
+                // MAKE_FUNCTION, requiring exactly one CALL_FUNCTION 0 (the class call)
+                // and only pure-data junk otherwise.
+                let mut make_idx = None;
+                let mut call_idx = None;
+                let mut k = bc;
+                while k > 0 {
+                    k -= 1;
+                    let Some(instr) = instrs[k].get() else {
+                        break;
+                    };
+                    let mnemonic = instr.opcode.mnemonic();
+                    if mnemonic == Mnemonic::MAKE_FUNCTION && instr.arg == Some(0) {
+                        make_idx = Some(k);
+                        break;
+                    }
+                    if mnemonic == Mnemonic::CALL_FUNCTION && instr.arg == Some(0) {
+                        if call_idx.is_some() {
+                            break; // a second call: not the simple class shape
+                        }
+                        call_idx = Some(k);
+                        continue;
+                    }
+                    if !is_class_junk_op(mnemonic) {
+                        break;
+                    }
+                }
+                let (Some(make_idx), Some(call_idx)) = (make_idx, call_idx) else {
+                    continue;
+                };
+                if bc - make_idx <= 2 {
+                    continue; // already clean: MAKE_FUNCTION; CALL_FUNCTION; BUILD_CLASS
+                }
+                // Liveness: every name the junk stores must be read only inside the junk
+                // region; a read elsewhere means the store is live and must stay.
+                let stored = (make_idx + 1..bc).filter(|&j| j != call_idx).filter_map(|j| {
+                    let instr = instrs[j].get()?;
+                    (instr.opcode.mnemonic() == Mnemonic::STORE_NAME)
+                        .then_some(())
+                        .and(instr.arg)
+                });
+                let live = stored.clone().any(|name| {
+                    name_reads.get(&name).is_some_and(|reads| {
+                        reads
+                            .iter()
+                            .any(|&(rn, ri)| rn != node || !(make_idx + 1..bc).contains(&ri))
+                    })
+                });
+                if live {
+                    continue;
+                }
+                to_remove
+                    .entry(node)
+                    .or_default()
+                    .extend((make_idx + 1..bc).filter(|&j| j != call_idx));
+            }
+        }
+        for (node, mut indices) in to_remove {
+            indices.sort_unstable();
+            let block = &mut self.graph[node];
+            for j in indices.into_iter().rev() {
+                block.instrs.remove(j);
+            }
+        }
+    }
+
     /// Ensure every leaf node (no outgoing edges) ends with RETURN_VALUE.
     /// Python's compiler always emits an implicit 'return None' at the end of
     /// every code object.  If the deobfuscator removes dead code that contained
@@ -2373,6 +2484,41 @@ fn const_truthy(obj: &Obj) -> Option<bool> {
     })
 }
 
+/// Whether `m` is a pure-data instruction the class-creation junk stripper may remove:
+/// a load, store-to-name, arithmetic/bitwise op, or value build. Excludes anything with
+/// a side effect or that could fault (calls, jumps, imports, attribute/subscript access,
+/// `STORE_ATTR`/`STORE_SUBSCR`), so removing the run cannot change observable behaviour.
+fn is_class_junk_op(m: Mnemonic) -> bool {
+    use Mnemonic::*;
+    let name = format!("{:?}", m);
+    if name.starts_with("INPLACE_") || name.starts_with("UNARY_") {
+        return true;
+    }
+    // Binary arithmetic/bitwise, but NOT BINARY_SUBSC (a `__getitem__` may have effects).
+    if name.starts_with("BINARY_") && m != BINARY_SUBSC {
+        return true;
+    }
+    matches!(
+        m,
+        LOAD_CONST
+            | LOAD_NAME
+            | LOAD_GLOBAL
+            | STORE_NAME
+            | STORE_MAP
+            | UNPACK_SEQUENCE
+            | BUILD_TUPLE
+            | BUILD_LIST
+            | BUILD_SET
+            | BUILD_MAP
+            | ROT_TWO
+            | ROT_THREE
+            | ROT_FOUR
+            | DUP_TOP
+            | DUP_TOPX
+            | COMPARE_OP
+    )
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use std::collections::BTreeMap;
@@ -2517,6 +2663,63 @@ pub(crate) mod tests {
             "the dead arm should be pruned: {:?}",
             surviving
         );
+    }
+
+    #[test]
+    fn strips_build_class_junk() {
+        // class C(object): ... with obfuscator junk wedged between MAKE_FUNCTION and
+        // BUILD_CLASS -- a balanced dead store, an unbalanced INPLACE before the call, and
+        // a dead BINARY after it. The junk (which leaves stray values under BUILD_CLASS)
+        // must be removed, leaving MAKE_FUNCTION 0; CALL_FUNCTION 0; BUILD_CLASS.
+        let mut code = default_code_obj();
+        Arc::get_mut(&mut code).unwrap().consts =
+            Arc::new(vec![Obj::None, Obj::None, crate::Long!(99i64), Obj::None]);
+        // names: 0=object, 1=unknown_0 (junk), 2=C
+        let instrs = [
+            Instr!(TargetOpcode::LOAD_CONST, 0),    // class name 'C'
+            Instr!(TargetOpcode::LOAD_NAME, 0),     // base: object
+            Instr!(TargetOpcode::BUILD_TUPLE, 1),
+            Instr!(TargetOpcode::LOAD_CONST, 1),    // class body code
+            Instr!(TargetOpcode::MAKE_FUNCTION, 0),
+            // --- junk before the call: a store and an unbalanced INPLACE ---
+            Instr!(TargetOpcode::LOAD_CONST, 2),
+            Instr!(TargetOpcode::STORE_NAME, 1),    // unknown_0 = 99
+            Instr!(TargetOpcode::LOAD_NAME, 1),
+            Instr!(TargetOpcode::LOAD_CONST, 2),
+            Instr!(TargetOpcode::INPLACE_ADD),      // unbalanced: no store
+            Instr!(TargetOpcode::CALL_FUNCTION, 0), // the class call
+            // --- junk after the call ---
+            Instr!(TargetOpcode::LOAD_NAME, 1),
+            Instr!(TargetOpcode::LOAD_CONST, 2),
+            Instr!(TargetOpcode::BINARY_ADD),       // dead, leaves a stray value
+            Instr!(TargetOpcode::BUILD_CLASS),
+            Instr!(TargetOpcode::STORE_NAME, 2),    // C = <class>
+            Instr!(TargetOpcode::LOAD_CONST, 3),
+            Instr!(TargetOpcode::RETURN_VALUE),
+        ];
+        change_code_instrs(&mut code, &instrs[..]);
+
+        let mut code_graph =
+            CodeGraph::<'_, TargetOpcode>::from_code(code, 0, false, None, None).unwrap();
+        code_graph.strip_build_class_junk();
+
+        let body: Vec<_> = code_graph
+            .graph
+            .node_indices()
+            .flat_map(|nx| code_graph.graph[nx].instrs.iter().filter_map(|i| i.get()))
+            .map(|i| i.opcode.mnemonic())
+            .collect();
+
+        // The junk arithmetic is gone; MAKE_FUNCTION leads straight to the call then
+        // BUILD_CLASS. (The legitimate `STORE_NAME C` after BUILD_CLASS stays.)
+        assert!(
+            !body.iter().any(|m| *m == Mnemonic::INPLACE_ADD || *m == Mnemonic::BINARY_ADD),
+            "junk arithmetic should be gone: {:?}",
+            body
+        );
+        let make = body.iter().position(|m| *m == Mnemonic::MAKE_FUNCTION).unwrap();
+        assert_eq!(body[make + 1], Mnemonic::CALL_FUNCTION, "call must follow make: {:?}", body);
+        assert_eq!(body[make + 2], Mnemonic::BUILD_CLASS, "build_class must follow call: {:?}", body);
     }
 
     #[test]

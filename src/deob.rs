@@ -121,6 +121,12 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             // update_bb_offsets below.
             code_graph.strip_import_store_junk();
 
+            // Strip the obfuscator's dead-store junk wedged into `class` creations
+            // (between MAKE_FUNCTION and BUILD_CLASS), which otherwise leaves stray values
+            // under BUILD_CLASS. Runs in the same junk-stripping phase; offsets are fixed
+            // by the update_bb_offsets below.
+            code_graph.strip_build_class_junk();
+
             // update BB offsets
             //insert_jump_0(root_node_id, &mut code_graph);
             code_graph.update_bb_offsets();
