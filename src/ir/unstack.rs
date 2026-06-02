@@ -63,7 +63,11 @@ pub struct Unstacker {
     /// most one entry; nested targets like `(a, b), c = ...` push a second.
     unpacks: Vec<PendingUnpack>,
     shortcircuit: Vec<ShortCircuit>,
-    ternary: Option<PendingTernary>,
+    /// Stack of in-progress ternaries (outermost first). A flat `a if c else b` has at
+    /// most one entry; a chained `a if c1 else b if c2 else d` pushes a new entry for
+    /// each nested ternary in an else arm, all sharing the merge and resolved
+    /// innermost-first there.
+    ternary: Vec<PendingTernary>,
     from_import: Option<PendingFrom>,
     /// Overrides the merge offset of a `JUMP_IF_FALSE_OR_POP` whose short-circuit is
     /// a chained-comparison test: the value lands after the cleanup, not at the
@@ -107,7 +111,7 @@ impl Unstacker {
             stmts: Vec::new(),
             unpacks: Vec::new(),
             shortcircuit: Vec::new(),
-            ternary: None,
+            ternary: Vec::new(),
             from_import: None,
             merge_overrides: HashMap::new(),
             comp,
@@ -192,8 +196,12 @@ impl Unstacker {
                 self.stack.push(combined);
                 continue;
             }
-            if self.ternary.as_ref().is_some_and(|t| t.merge == offset && t.then.is_some()) {
-                let pending = self.ternary.take().unwrap();
+            // Resolve the innermost pending ternary first: a chained ternary nests its
+            // else arms, so the last one pushed (deepest in the else chain) takes the
+            // true else value off the stack, and each enclosing one then takes the
+            // freshly-built nested ternary as its otherwise.
+            if self.ternary.last().is_some_and(|t| t.merge == offset && t.then.is_some()) {
+                let pending = self.ternary.pop().unwrap();
                 let otherwise = self.pop()?;
                 let ternary = self.arena.alloc(Expr::Ternary {
                     cond: pending.cond,
@@ -209,7 +217,7 @@ impl Unstacker {
 
     /// Whether all short-circuit and ternary operators in this block resolved.
     pub fn pending_resolved(&self) -> bool {
-        self.shortcircuit.is_empty() && self.ternary.is_none()
+        self.shortcircuit.is_empty() && self.ternary.is_empty()
     }
 
     /// Records the just-folded comprehension as the pending ternary's then operand,
@@ -218,7 +226,7 @@ impl Unstacker {
     /// place of the `JUMP_FORWARD` that records `then` for an ordinary ternary.
     pub fn set_comp_ternary_then(&mut self, merge: Offset) -> Result<(), IrError> {
         let then = self.pop()?;
-        match self.ternary.as_mut() {
+        match self.ternary.last_mut() {
             Some(pending) if pending.then.is_none() => {
                 pending.then = Some(then);
                 pending.merge = merge;
@@ -457,7 +465,7 @@ impl Unstacker {
         self.stack.clear();
         self.unpacks.clear();
         self.shortcircuit.clear();
-        self.ternary = None;
+        self.ternary.clear();
         self.from_import = None;
         self.print_values.clear();
         self.print_to = None;
@@ -509,7 +517,7 @@ impl Unstacker {
         // circuit (`[x if c else y for ..]`, `[a or b for ..]`), which must fully
         // resolve before the LIST_APPEND. Snapshot the pending state at entry so the
         // append-time check rejects only an element that left a NEW pending operator.
-        let entry_ternary = self.ternary.is_some();
+        let entry_ternary = self.ternary.len();
         let entry_shortcircuits = self.shortcircuit.len();
         let element = loop {
             let item = region.get(i).ok_or(IrError::Decode)?;
@@ -606,7 +614,7 @@ impl Unstacker {
                 // operator of a ternary then-arm comp aside); a leftover one is a shape
                 // this folder cannot reconstruct, so reject rather than mis-emit.
                 Mnemonic::LIST_APPEND => {
-                    if self.ternary.is_some() != entry_ternary
+                    if self.ternary.len() != entry_ternary
                         || self.shortcircuit.len() != entry_shortcircuits
                     {
                         return Err(IrError::Unsupported(Mnemonic::LIST_APPEND));
@@ -1704,23 +1712,22 @@ impl Unstacker {
                 if mnemonic == Mnemonic::POP_JUMP_IF_TRUE {
                     cond = self.arena.alloc(Expr::Unary(UnaryOp::Not, cond));
                 }
-                match self.ternary.take() {
-                    None => {
-                        self.ternary = Some(PendingTernary {
-                            cond,
-                            then: None,
-                            merge: Offset(0),
-                        });
-                    }
-                    Some(pending) if pending.then.is_none() => {
-                        let cond = self.and_chain(pending.cond, cond);
-                        self.ternary = Some(PendingTernary {
-                            cond,
-                            then: None,
-                            merge: pending.merge,
-                        });
-                    }
-                    Some(_) => return Err(IrError::Unsupported(mnemonic)),
+                // The innermost pending ternary with no `then` yet is still gathering its
+                // condition: another POP_JUMP folds in as a compound `and` test. If the
+                // top ternary already has its `then` (we are in its else arm) or the stack
+                // is empty, this POP_JUMP begins a new (nested) ternary -- a chained
+                // `a if c1 else b if c2 else d` -- so push it. All share the merge and
+                // resolve there innermost-first.
+                if self.ternary.last().is_some_and(|p| p.then.is_none()) {
+                    let prev = self.ternary.last().unwrap().cond;
+                    let merged = self.and_chain(prev, cond);
+                    self.ternary.last_mut().unwrap().cond = merged;
+                } else {
+                    self.ternary.push(PendingTernary {
+                        cond,
+                        then: None,
+                        merge: Offset(0),
+                    });
                 }
             }
             Mnemonic::JUMP_FORWARD => {
@@ -1738,7 +1745,7 @@ impl Unstacker {
                     self.stack.push(combined);
                 }
                 let then = self.pop()?;
-                match self.ternary.as_mut() {
+                match self.ternary.last_mut() {
                     Some(pending) if pending.then.is_none() => {
                         pending.then = Some(then);
                         pending.merge = merge;

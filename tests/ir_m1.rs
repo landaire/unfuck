@@ -1299,6 +1299,64 @@ fn ternary_arm_with_inline_list_comp() {
 }
 
 #[test]
+fn chained_ternary() {
+    // x = a if c1 else b if c2 else d
+    // A chained ternary nests in the else arm; both diamonds share the merge. The
+    // outer else arm holds the inner ternary's POP_JUMP/JUMP_FORWARD, which
+    // is_statement_or_control flagged, so find_ternaries rejected the outer diamond.
+    // pure_ternary_arm now accepts nested ternary jumps that converge on the merge, and
+    // the unstacker keeps a stack of pending ternaries, resolving them innermost-first.
+    let code = Builder::new("f", 5, &["c1", "c2", "a", "b", "d", "x"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 0) // c1
+        .jump(Standard::POP_JUMP_IF_FALSE, "e1")
+        .arg(Standard::LOAD_FAST, 2) // a
+        .jump(Standard::JUMP_FORWARD, "merge")
+        .label("e1")
+        .arg(Standard::LOAD_FAST, 1) // c2
+        .jump(Standard::POP_JUMP_IF_FALSE, "e2")
+        .arg(Standard::LOAD_FAST, 3) // b
+        .jump(Standard::JUMP_FORWARD, "merge")
+        .label("e2")
+        .arg(Standard::LOAD_FAST, 4) // d
+        .label("merge")
+        .arg(Standard::STORE_FAST, 5) // x
+        .arg(Standard::LOAD_FAST, 5) // x
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(c1, c2, a, b, d):\n    x = a if c1 else b if c2 else d\n    return x\n"
+    );
+}
+
+#[test]
+fn or_chain_if_with_empty_body_is_not_a_ternary() {
+    // if c1 or c2: pass
+    // return None
+    // Each or-test is `POP_JUMP_IF_FALSE <next>; JUMP_FORWARD end` to the same end, with
+    // an EMPTY then arm. This must NOT be mis-folded as a ternary (no then value -> would
+    // underflow): find_ternaries rejects an empty then arm. Regression guard for the
+    // chained-ternary relaxation (Avatar.onActionFailed).
+    let code = Builder::new("f", 2, &["c1", "c2"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 0) // c1
+        .jump(Standard::POP_JUMP_IF_FALSE, "next")
+        .jump(Standard::JUMP_FORWARD, "end")
+        .label("next")
+        .arg(Standard::LOAD_FAST, 1) // c2
+        .jump(Standard::POP_JUMP_IF_FALSE, "end")
+        .jump(Standard::JUMP_FORWARD, "end")
+        .label("end")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    let out = decompile(code);
+    assert!(!out.contains("__unrecovered__"), "should be recovered, not underflow:\n{}", out);
+    assert!(out.contains("return None"), "should return None:\n{}", out);
+}
+
+#[test]
 fn bare_except() {
     // def f(): try: g() except: h()
     let code = Builder::new("f", 0, &[], &["g", "h"], vec![Obj::None])

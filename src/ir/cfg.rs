@@ -1174,6 +1174,13 @@ fn find_ternaries(instrs: &[OffsetInstr], list_interior: &HashSet<Offset>) -> Ha
             continue;
         }
         let then_start = Offset(item.offset.0 + item.instr.len() as u32);
+        // A real ternary's then arm produces a value. An empty then arm (the
+        // JUMP_FORWARD immediately follows the test) is an `if cond: <empty>` whose
+        // condition is an or-chain of `POP_JUMP_IF_FALSE; JUMP_FORWARD merge` tests, not
+        // a ternary; folding it would underflow on a missing then value.
+        if then_start >= jump.offset {
+            continue;
+        }
         if pure_ternary_arm(instrs, then_start, jump.offset, merge, list_interior)
             && pure_ternary_arm(instrs, else_target, merge, merge, list_interior)
         {
@@ -1253,6 +1260,21 @@ fn pure_ternary_arm(
             // Allow it so `{..} if cond else {}` folds as a ternary instead of
             // mis-structuring as an `if` that drops the arm value off the stack.
             if matches!(mnemonic, Mnemonic::MAKE_FUNCTION | Mnemonic::MAKE_CLOSURE) {
+                return true;
+            }
+            // A nested ternary inside this arm -- a chained `a if c1 else b if c2 else d`
+            // whose else arms nest: the nested condition branches forward within the arm
+            // (to the next else), and the nested then-arm jumps to the shared merge. Both
+            // are value-level control flow the unstacker folds (it keeps a stack of
+            // pending ternaries), not arm statements.
+            if matches!(mnemonic, Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE) {
+                if let Ok(target) = branch_target(item) {
+                    if target > item.offset && target <= end {
+                        return true;
+                    }
+                }
+            }
+            if mnemonic == Mnemonic::JUMP_FORWARD && branch_target(item).ok() == Some(merge) {
                 return true;
             }
             !is_statement_or_control(mnemonic)
