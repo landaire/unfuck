@@ -856,6 +856,47 @@ fn except_with_branch_in_handler() {
 }
 
 #[test]
+fn finally_body_for_loop_orphan_pop_block() {
+    // try/finally whose body ends in a for loop. The deob dropped the loop's
+    // SETUP_LOOP but kept its POP_BLOCK, leaving an orphan at depth 0 right before
+    // the finally's own POP_BLOCK. recover_finally must skip the orphan.
+    // def f(self): acquire(); try: (for x in self: g(x)) finally: release()
+    let code = Builder::new("f", 1, &["self", "x"], &["acquire", "g", "release"], vec![Obj::None])
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .jump(Standard::SETUP_FINALLY, "finally")
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::GET_ITER)
+        .label("loop")
+        .jump(Standard::FOR_ITER, "loopexit")
+        .arg(Standard::STORE_FAST, 1)
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_ABSOLUTE, "loop")
+        .label("loopexit")
+        .op(Standard::POP_BLOCK)
+        .op(Standard::POP_BLOCK)
+        .arg(Standard::LOAD_CONST, 0)
+        .label("finally")
+        .arg(Standard::LOAD_GLOBAL, 2)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .op(Standard::END_FINALLY)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(self):\n    acquire()\n\n    try:\n        for x in self:\n            g(x)\n    \
+         finally:\n        release()\n\n    return None\n"
+    );
+}
+
+#[test]
 fn mergeless_finally() {
     // A try/finally whose body always returns: the deob drops the unreachable
     // normal-exit POP_BLOCK; LOAD_CONST None, leaving no body POP_BLOCK. The finally

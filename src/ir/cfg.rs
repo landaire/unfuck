@@ -1193,6 +1193,12 @@ fn recover_with(
             depth += 1;
         } else if mnemonic == Mnemonic::POP_BLOCK {
             if depth == 0 {
+                // Skip an orphan POP_BLOCK from a loop whose SETUP_LOOP the deob
+                // dropped (it sits right before the with's own POP_BLOCK); see
+                // recover_finally.
+                if mnemonic_at(instrs, i + 1)? == Mnemonic::POP_BLOCK {
+                    continue;
+                }
                 pop_idx = Some(i);
                 break;
             }
@@ -1324,6 +1330,14 @@ fn recover_finally(
             depth += 1;
         } else if mnemonic == Mnemonic::POP_BLOCK {
             if depth == 0 {
+                // A `for` loop ending the try body has its own POP_BLOCK; the deob can
+                // drop that loop's SETUP_LOOP while keeping the POP_BLOCK, leaving an
+                // orphan at depth 0 right before the finally's own POP_BLOCK. The
+                // finally's is followed by `LOAD_CONST None`, never by another
+                // POP_BLOCK, so skip an orphan (POP_BLOCK followed by POP_BLOCK).
+                if mnemonic_at(instrs, i + 1)? == Mnemonic::POP_BLOCK {
+                    continue;
+                }
                 pop_idx = Some(i);
                 break;
             }
@@ -1451,6 +1465,11 @@ fn recover_try(
             depth += 1;
         } else if mnemonic == Mnemonic::POP_BLOCK {
             if depth == 0 {
+                // Skip an orphan POP_BLOCK from a loop whose SETUP_LOOP the deob
+                // dropped (it precedes the try's own POP_BLOCK); see recover_finally.
+                if mnemonic_at(instrs, i + 1)? == Mnemonic::POP_BLOCK {
+                    continue;
+                }
                 pop_idx = Some(i);
                 break;
             }
