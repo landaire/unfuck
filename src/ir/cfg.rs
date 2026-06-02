@@ -712,24 +712,14 @@ fn lower_block(
     let mnemonic = last.instr.opcode.mnemonic();
     let kind = terminator_kind(mnemonic)?;
 
-    // A for-loop body begins with the loop target: a single store, or
-    // `UNPACK_SEQUENCE` followed by one store per element for a tuple target.
+    // A for-loop body begins with the loop target: a single store, or one or more
+    // (possibly nested) `UNPACK_SEQUENCE`s with a store per leaf for a tuple target.
     // Record it and skip it so the remaining body unstacks with a balanced stack.
     let mut start = 0;
     if let Some(header) = for_header {
-        let first = body.first().ok_or(IrError::Decode)?;
-        if first.instr.opcode.mnemonic() == Mnemonic::UNPACK_SEQUENCE {
-            let arity = first.instr.arg.ok_or(IrError::MissingOperand)? as usize;
-            let mut targets = Vec::with_capacity(arity);
-            for item in body.get(1..1 + arity).ok_or(IrError::Decode)? {
-                targets.push(store_target(&item.instr)?);
-            }
-            for_targets.insert(header, LValue::Tuple(targets));
-            start = 1 + arity;
-        } else {
-            for_targets.insert(header, store_target(&first.instr)?);
-            start = 1;
-        }
+        let (target, consumed) = parse_for_target(body, 0)?;
+        for_targets.insert(header, target);
+        start = consumed;
     }
 
     let feed_end = match kind {
@@ -878,6 +868,33 @@ fn lower_block(
 
 /// Extracts the assignment target of a `STORE_*` instruction, used for the loop
 /// variable that follows `FOR_ITER`.
+/// Parses a for-loop's target from the start of the loop body: a single store, or one
+/// or more (possibly nested) `UNPACK_SEQUENCE`s with a store per leaf (`for a, (b, c)
+/// in xs:`). Returns the target and the index just past it, so the caller skips the
+/// target instructions when feeding the body. Flat and single-store targets produce
+/// exactly the result the prior non-nested parser did; only nested tuples are new.
+fn parse_for_target(body: &[&OffsetInstr], idx: usize) -> Result<(LValue, usize), IrError> {
+    let item = body.get(idx).ok_or(IrError::Decode)?;
+    match item.instr.opcode.mnemonic() {
+        Mnemonic::UNPACK_SEQUENCE => {
+            let count = item.instr.arg.ok_or(IrError::MissingOperand)? as usize;
+            let mut elems = Vec::with_capacity(count);
+            let mut next = idx + 1;
+            for _ in 0..count {
+                let (lv, after) = parse_for_target(body, next)?;
+                elems.push(lv);
+                next = after;
+            }
+            Ok((LValue::Tuple(elems), next))
+        }
+        Mnemonic::STORE_FAST
+        | Mnemonic::STORE_NAME
+        | Mnemonic::STORE_GLOBAL
+        | Mnemonic::STORE_DEREF => Ok((store_target(&item.instr)?, idx + 1)),
+        other => Err(IrError::Unsupported(other)),
+    }
+}
+
 fn store_target(instr: &Instruction<Standard>) -> Result<LValue, IrError> {
     let arg = instr.arg.ok_or(IrError::MissingOperand)?;
     Ok(match instr.opcode.mnemonic() {

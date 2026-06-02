@@ -589,6 +589,42 @@ fn break_without_pop_block_exit_is_rejected() {
 }
 
 #[test]
+fn for_loop_nested_tuple_target() {
+    // def f(xs):
+    //     for a, (b, c) in xs:
+    //         g(b)
+    // The loop target is a nested unpack (UNPACK_SEQUENCE 2; STORE a; UNPACK_SEQUENCE 2;
+    // STORE b; STORE c), parsed recursively into LValue::Tuple[a, Tuple[b, c]].
+    let code = Builder::new("f", 1, &["xs", "a", "b", "c"], &["g"], vec![Obj::None])
+        .jump(Standard::SETUP_LOOP, "end")
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::GET_ITER)
+        .label("loop")
+        .jump(Standard::FOR_ITER, "exit")
+        .arg(Standard::UNPACK_SEQUENCE, 2)
+        .arg(Standard::STORE_FAST, 1)
+        .arg(Standard::UNPACK_SEQUENCE, 2)
+        .arg(Standard::STORE_FAST, 2)
+        .arg(Standard::STORE_FAST, 3)
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::LOAD_FAST, 2)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_ABSOLUTE, "loop")
+        .label("exit")
+        .op(Standard::POP_BLOCK)
+        .label("end")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(xs):\n    for a, (b, c) in xs:\n        g(b)\n\n    return None\n"
+    );
+}
+
+#[test]
 fn for_loop_body_always_returns_has_no_back_edge() {
     // def f(xs):
     //     for x in xs:
