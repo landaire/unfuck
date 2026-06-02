@@ -997,7 +997,7 @@ pub(crate) mod tests {
 
         match &stack[0].0 {
             Some(Obj::Long(l)) => {
-                assert_eq!(*l.lock().unwrap(), expected.to_bigint().unwrap());
+                assert_eq!(*l.read().unwrap(), expected.to_bigint().unwrap());
             }
             Some(other) => panic!("unexpected type: {:?}", other.typ()),
             _ => panic!("unexpected None value for TOS"),
@@ -1044,7 +1044,7 @@ pub(crate) mod tests {
 
         match &stack[0].0 {
             Some(Obj::Long(l)) => {
-                assert_eq!(*l.lock().unwrap(), expected.to_bigint().unwrap());
+                assert_eq!(*l.read().unwrap(), expected.to_bigint().unwrap());
             }
             Some(other) => panic!("unexpected type: {:?}", other.typ()),
             _ => panic!("unexpected None value for TOS"),
@@ -1090,7 +1090,7 @@ pub(crate) mod tests {
 
         match &stack[0].0 {
             Some(Obj::Long(l)) => {
-                assert_eq!(*l.lock().unwrap(), expected.to_bigint().unwrap());
+                assert_eq!(*l.read().unwrap(), expected.to_bigint().unwrap());
             }
             Some(other) => panic!("unexpected type: {:?}", other.typ()),
             _ => panic!("unexpected None value for TOS"),
@@ -1137,7 +1137,7 @@ pub(crate) mod tests {
 
         match &stack[0].0 {
             Some(Obj::Long(l)) => {
-                assert_eq!(*l.lock().unwrap(), expected.to_bigint().unwrap());
+                assert_eq!(*l.read().unwrap(), expected.to_bigint().unwrap());
             }
             Some(other) => panic!("unexpected type: {:?}", other.typ()),
             _ => panic!("unexpected None value for TOS"),
@@ -1184,7 +1184,7 @@ pub(crate) mod tests {
 
         match &stack[0].0 {
             Some(Obj::Long(l)) => {
-                assert_eq!(*l.lock().unwrap(), expected.to_bigint().unwrap());
+                assert_eq!(*l.read().unwrap(), expected.to_bigint().unwrap());
             }
             Some(other) => panic!("unexpected type: {:?}", other.typ()),
             _ => panic!("unexpected None value for TOS"),
@@ -1231,7 +1231,7 @@ pub(crate) mod tests {
 
         match &stack[0].0 {
             Some(Obj::Long(l)) => {
-                assert_eq!(*l.lock().unwrap(), expected.to_bigint().unwrap());
+                assert_eq!(*l.read().unwrap(), expected.to_bigint().unwrap());
             }
             Some(other) => panic!("unexpected type: {:?}", other.typ()),
             _ => panic!("unexpected None value for TOS"),
@@ -1278,7 +1278,7 @@ pub(crate) mod tests {
 
         match &stack[0].0 {
             Some(Obj::Long(l)) => {
-                assert_eq!(*l.lock().unwrap(), expected.to_bigint().unwrap());
+                assert_eq!(*l.read().unwrap(), expected.to_bigint().unwrap());
             }
             Some(other) => panic!("unexpected type: {:?}", other.typ()),
             _ => panic!("unexpected None value for TOS"),
@@ -1462,7 +1462,7 @@ pub(crate) mod tests {
 
         match &stack[0].0 {
             Some(Obj::Long(l)) => {
-                assert_eq!(*l.lock().unwrap(), expected.to_bigint().unwrap());
+                assert_eq!(*l.read().unwrap(), expected.to_bigint().unwrap());
             }
             Some(other) => panic!("unexpected type: {:?}", other.typ()),
             _ => panic!("unexpected None value for TOS"),
@@ -1519,7 +1519,7 @@ pub(crate) mod tests {
                 assert_eq!(list.len(), 1);
 
                 assert_eq!(
-                    *list[0].clone().extract_long().unwrap().lock().unwrap(),
+                    *list[0].clone().extract_long().unwrap().read().unwrap(),
                     BigInt::from(0x41)
                 );
             }
@@ -1584,8 +1584,8 @@ pub(crate) mod tests {
                     let expected_value = expected_value.clone().extract_long().unwrap();
 
                     assert_eq!(
-                        *expected_value.lock().unwrap(),
-                        *actual_value.unwrap().lock().unwrap()
+                        *expected_value.read().unwrap(),
+                        *actual_value.unwrap().read().unwrap()
                     );
                 }
             }
@@ -1650,8 +1650,8 @@ pub(crate) mod tests {
                     let expected_value = expected_value.clone().extract_long().unwrap();
 
                     assert_eq!(
-                        *expected_value.lock().unwrap(),
-                        *actual_value.unwrap().lock().unwrap()
+                        *expected_value.read().unwrap(),
+                        *actual_value.unwrap().read().unwrap()
                     );
                 }
             }
@@ -1742,12 +1742,12 @@ pub(crate) mod tests {
         match (&stack[0].0, &stack[1].0) {
             (Some(Obj::Long(bottom)), Some(Obj::Long(top))) => {
                 assert_eq!(
-                    *bottom.lock().unwrap(),
+                    *bottom.read().unwrap(),
                     BigInt::from(20),
                     "TOS1 (bottom) should be old TOS (20)"
                 );
                 assert_eq!(
-                    *top.lock().unwrap(),
+                    *top.read().unwrap(),
                     BigInt::from(10),
                     "TOS (top) should be old TOS1 (10)"
                 );
@@ -1788,7 +1788,7 @@ pub(crate) mod tests {
         let vals: Vec<i64> = stack
             .iter()
             .map(|(obj, _)| match obj.as_ref().unwrap() {
-                Obj::Long(l) => l.lock().unwrap().to_i64().unwrap(),
+                Obj::Long(l) => l.read().unwrap().to_i64().unwrap(),
                 _ => panic!("expected Long"),
             })
             .collect();
@@ -1828,7 +1828,7 @@ pub(crate) mod tests {
         match &stack[0].0 {
             Some(Obj::Long(l)) => {
                 assert_eq!(
-                    *l.lock().unwrap(),
+                    *l.read().unwrap(),
                     BigInt::from(-4),
                     "-7 / 2 should be -4 (floor)"
                 )
@@ -1861,7 +1861,7 @@ pub(crate) mod tests {
         assert_eq!(stack.len(), 1);
         match &stack[0].0 {
             Some(Obj::Long(l)) => {
-                assert_eq!(*l.lock().unwrap(), BigInt::from(-4), "-7 // 2 should be -4")
+                assert_eq!(*l.read().unwrap(), BigInt::from(-4), "-7 // 2 should be -4")
             }
             _ => panic!("expected Long"),
         }
@@ -1895,7 +1895,7 @@ pub(crate) mod tests {
         assert_eq!(stack.len(), 1);
         match &stack[0].0 {
             Some(Obj::Long(l)) => {
-                assert_eq!(*l.lock().unwrap(), BigInt::from(1), "-7 % 2 should be 1")
+                assert_eq!(*l.read().unwrap(), BigInt::from(1), "-7 % 2 should be 1")
             }
             _ => panic!("expected Long"),
         }
@@ -1926,7 +1926,7 @@ pub(crate) mod tests {
         assert_eq!(stack.len(), 1);
         match &stack[0].0 {
             Some(Obj::Long(l)) => {
-                assert_eq!(*l.lock().unwrap(), BigInt::from(-1), "7 % -2 should be -1")
+                assert_eq!(*l.read().unwrap(), BigInt::from(-1), "7 % -2 should be -1")
             }
             _ => panic!("expected Long"),
         }
@@ -1960,11 +1960,11 @@ pub(crate) mod tests {
         assert_eq!(stack.len(), 1);
         match &stack[0].0 {
             Some(Obj::Tuple(t)) => {
-                let t_guard = t.lock().unwrap();
+                let t_guard = t.read().unwrap();
                 let vals: Vec<i64> = t_guard
                     .iter()
                     .map(|obj| match obj {
-                        Obj::Long(l) => l.lock().unwrap().to_i64().unwrap(),
+                        Obj::Long(l) => l.read().unwrap().to_i64().unwrap(),
                         _ => panic!("expected Long"),
                     })
                     .collect();
@@ -2006,7 +2006,7 @@ pub(crate) mod tests {
                 let vals: Vec<i64> = list
                     .iter()
                     .map(|obj| match obj {
-                        Obj::Long(l) => l.lock().unwrap().to_i64().unwrap(),
+                        Obj::Long(l) => l.read().unwrap().to_i64().unwrap(),
                         _ => panic!("expected Long"),
                     })
                     .collect();
@@ -2055,7 +2055,7 @@ pub(crate) mod tests {
                 let hashable_key = ObjHashable::try_from(&key).unwrap();
                 let val = dict.get(&hashable_key).expect("key should exist in dict");
                 match val {
-                    Obj::Long(l) => assert_eq!(*l.lock().unwrap(), BigInt::from(42)),
+                    Obj::Long(l) => assert_eq!(*l.read().unwrap(), BigInt::from(42)),
                     _ => panic!("expected Long value"),
                 }
             }
@@ -2089,7 +2089,7 @@ pub(crate) mod tests {
 
         assert_eq!(stack.len(), 1);
         match &stack[0].0 {
-            Some(Obj::Long(l)) => assert_eq!(*l.lock().unwrap(), BigInt::from(-4)),
+            Some(Obj::Long(l)) => assert_eq!(*l.read().unwrap(), BigInt::from(-4)),
             _ => panic!("expected Long"),
         }
     }
@@ -2120,7 +2120,7 @@ pub(crate) mod tests {
 
         assert_eq!(stack.len(), 1);
         match &stack[0].0 {
-            Some(Obj::Long(l)) => assert_eq!(*l.lock().unwrap(), BigInt::from(1)),
+            Some(Obj::Long(l)) => assert_eq!(*l.read().unwrap(), BigInt::from(1)),
             _ => panic!("expected Long"),
         }
     }
@@ -2151,7 +2151,7 @@ pub(crate) mod tests {
 
         assert_eq!(stack.len(), 1);
         match &stack[0].0 {
-            Some(Obj::Long(l)) => assert_eq!(*l.lock().unwrap(), BigInt::from(0xF0)),
+            Some(Obj::Long(l)) => assert_eq!(*l.read().unwrap(), BigInt::from(0xF0)),
             _ => panic!("expected Long"),
         }
     }
@@ -2182,7 +2182,7 @@ pub(crate) mod tests {
 
         assert_eq!(stack.len(), 1);
         match &stack[0].0 {
-            Some(Obj::Long(l)) => assert_eq!(*l.lock().unwrap(), BigInt::from(16)),
+            Some(Obj::Long(l)) => assert_eq!(*l.read().unwrap(), BigInt::from(16)),
             _ => panic!("expected Long"),
         }
     }
@@ -2216,7 +2216,7 @@ pub(crate) mod tests {
         // TOS should be the first byte (0x41 = 'A'), not the last
         match &stack[1].0 {
             Some(Obj::Long(l)) => assert_eq!(
-                *l.lock().unwrap(),
+                *l.read().unwrap(),
                 BigInt::from(0x41u8),
                 "first iteration should yield 'A' (0x41)"
             ),
@@ -2241,7 +2241,7 @@ pub(crate) mod tests {
         assert_eq!(stack.len(), 2);
         match &stack[1].0 {
             Some(Obj::Long(l)) => assert_eq!(
-                *l.lock().unwrap(),
+                *l.read().unwrap(),
                 BigInt::from(0x42u8),
                 "second iteration should yield 'B' (0x42)"
             ),
@@ -2272,7 +2272,7 @@ pub(crate) mod tests {
         ];
 
         use std::sync::Mutex;
-        let captured_args: Arc<Mutex<Vec<VmVar>>> = Arc::new(RwLock::new(Vec::new()));
+        let captured_args: Arc<RwLock<Vec<VmVar>>> = Arc::new(RwLock::new(Vec::new()));
         let captured_args_clone = Arc::clone(&captured_args);
 
         run_instrs_with_callback(
@@ -2284,18 +2284,18 @@ pub(crate) mod tests {
             &mut globals,
             &names_loaded,
             move |_f, args, _kwargs| {
-                *captured_args_clone.lock().unwrap() = args;
+                *captured_args_clone.write().unwrap() = args;
                 None
             },
         );
 
-        let args = captured_args.lock().unwrap();
+        let args = captured_args.read().unwrap();
         assert_eq!(args.len(), 3);
         // args[0] should be 100 (first positional), args[2] should be 300 (last positional)
         let vals: Vec<i64> = args
             .iter()
             .map(|a| match a.as_ref().unwrap() {
-                Obj::Long(l) => l.lock().unwrap().to_i64().unwrap(),
+                Obj::Long(l) => l.read().unwrap().to_i64().unwrap(),
                 _ => panic!("expected Long"),
             })
             .collect();
@@ -2830,15 +2830,15 @@ mod fix_regression_tests {
         // STORE_FAST pops them in forward order.
         assert_eq!(stack.len(), 3);
         match &stack[0].0 {
-            Some(Obj::Long(l)) => assert_eq!(*l.lock().unwrap(), BigInt::from(30)),
+            Some(Obj::Long(l)) => assert_eq!(*l.read().unwrap(), BigInt::from(30)),
             other => panic!("unexpected stack[0]: {:?}", other),
         }
         match &stack[1].0 {
-            Some(Obj::Long(l)) => assert_eq!(*l.lock().unwrap(), BigInt::from(20)),
+            Some(Obj::Long(l)) => assert_eq!(*l.read().unwrap(), BigInt::from(20)),
             other => panic!("unexpected stack[1]: {:?}", other),
         }
         match &stack[2].0 {
-            Some(Obj::Long(l)) => assert_eq!(*l.lock().unwrap(), BigInt::from(10)),
+            Some(Obj::Long(l)) => assert_eq!(*l.read().unwrap(), BigInt::from(10)),
             other => panic!("unexpected stack[2]: {:?}", other),
         }
     }
@@ -2907,7 +2907,7 @@ mod fix_regression_tests {
 
         assert_eq!(stack.len(), 1, "stack should be unchanged after BREAK_LOOP");
         match &stack[0].0 {
-            Some(Obj::Long(l)) => assert_eq!(*l.lock().unwrap(), BigInt::from(99)),
+            Some(Obj::Long(l)) => assert_eq!(*l.read().unwrap(), BigInt::from(99)),
             other => panic!("unexpected stack value: {:?}", other),
         }
     }

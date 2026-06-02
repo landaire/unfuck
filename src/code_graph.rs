@@ -2380,6 +2380,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::smallvm::tests::*;
     use crate::{Deobfuscator, Instr, deob};
+    use num_bigint::BigInt;
     use pydis::opcode::Instruction;
 
     type TargetOpcode = pydis::opcode::py27::Standard;
@@ -2460,6 +2461,64 @@ pub(crate) mod tests {
         assert_eq!(*bb.instrs[0].unwrap(), Instr!(TargetOpcode::LOAD_CONST, 0));
         assert_eq!(*bb.instrs[1].unwrap(), Instr!(TargetOpcode::RETURN_VALUE));
     }
+
+    #[test]
+    fn folds_never_taken_const_predicate_in_handler() {
+        // A self-contained never-taken opaque predicate `LOAD_CONST 0(falsy);
+        // POP_JUMP_IF_TRUE <dead>` sitting INSIDE an exception handler. Partial execution
+        // never follows the SETUP_EXCEPT edge, so it cannot fold this -- only the local
+        // const-condition fold does. It must become a plain fall-through and the dead arm
+        // must be pruned. (A predicate in normal flow is folded by partial execution
+        // regardless, so the handler placement is what exercises the local fold.)
+        let mut code = default_code_obj();
+        Arc::get_mut(&mut code).unwrap().consts =
+            Arc::new(vec![crate::Long!(0i64), Obj::None, crate::Long!(99i64)]);
+
+        // SETUP_EXCEPT/LOAD_CONST/POP_JUMP_IF_TRUE/JUMP_FORWARD are 3 bytes;
+        // POP_BLOCK/RETURN_VALUE are 1.
+        let instrs = [
+            Instr!(TargetOpcode::SETUP_EXCEPT, 7), // 0: handler at 0+3+7 = 10
+            Instr!(TargetOpcode::LOAD_CONST, 1),   // 3: try body (None)
+            Instr!(TargetOpcode::POP_BLOCK),       // 6
+            Instr!(TargetOpcode::JUMP_FORWARD, 14), // 7: -> end at 10+14 = 24
+            Instr!(TargetOpcode::LOAD_CONST, 0),   // 10: HANDLER -- falsy opaque const
+            Instr!(TargetOpcode::POP_JUMP_IF_TRUE, 20), // 13: never taken -> falls to 16
+            Instr!(TargetOpcode::LOAD_CONST, 1),   // 16: handler body (None)
+            Instr!(TargetOpcode::RETURN_VALUE),    // 19
+            Instr!(TargetOpcode::LOAD_CONST, 2),   // 20: DEAD arm
+            Instr!(TargetOpcode::RETURN_VALUE),    // 23
+            Instr!(TargetOpcode::LOAD_CONST, 1),   // 24: end
+            Instr!(TargetOpcode::RETURN_VALUE),    // 27
+        ];
+        change_code_instrs(&mut code, &instrs[..]);
+
+        let mut code_graph =
+            CodeGraph::<'_, TargetOpcode>::from_code(code, 0, false, None, None).unwrap();
+        let mut mapped = HashMap::new();
+        let mut plain = HashSet::new();
+        code_graph.remove_const_conditions(&mut mapped, &mut plain, true);
+
+        let surviving: Vec<_> = code_graph
+            .graph
+            .node_indices()
+            .flat_map(|nx| code_graph.graph[nx].instrs.iter().filter_map(|i| i.get()))
+            .map(|i| (i.opcode.mnemonic(), i.arg))
+            .collect();
+
+        // The handler's never-taken predicate is folded away and its dead arm
+        // (`LOAD_CONST 2`) pruned, even though no partial-execution path reached it.
+        assert!(
+            !surviving.iter().any(|(m, _)| *m == Mnemonic::POP_JUMP_IF_TRUE),
+            "the handler's never-taken predicate should be folded away: {:?}",
+            surviving
+        );
+        assert!(
+            !surviving.iter().any(|(m, arg)| *m == Mnemonic::LOAD_CONST && *arg == Some(2)),
+            "the dead arm should be pruned: {:?}",
+            surviving
+        );
+    }
+
     #[test]
     fn joining_with_conditional_jump() {
         let mut code = default_code_obj();
