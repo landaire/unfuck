@@ -513,6 +513,31 @@ fn straightline_midexpression_boolean() {
 }
 
 #[test]
+fn multi_return_boolean_as_if() {
+    // def f(a, b, c): with each short-circuit branch returning directly (two
+    // RETURN_VALUEs). The block path recovers this clean shape as an if-statement; the
+    // straight-line fallback handles the messier multi-return booleans the block path
+    // cannot (verified archive-wide, not reducible to a small synthetic here).
+    let code = Builder::new("f", 3, &["a", "b", "c"], &[], vec![Obj::None, long(0)])
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::POP_JUMP_IF_FALSE, "lfalse")
+        .arg(Standard::LOAD_FAST, 1)
+        .jump(Standard::JUMP_IF_TRUE_OR_POP, "lret")
+        .arg(Standard::LOAD_FAST, 2)
+        .op(Standard::RETURN_VALUE)
+        .label("lfalse")
+        .arg(Standard::LOAD_CONST, 1)
+        .label("lret")
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(a, b, c):\n    if a:\n        return b or c\n\n    return 0\n"
+    );
+}
+
+#[test]
 fn raise_statement() {
     // def f(): raise Boom
     let code = Builder::new("f", 0, &[], &["Boom"], vec![Obj::None])

@@ -1115,17 +1115,18 @@ impl Unstacker {
         }
         let index: HashMap<Offset, usize> =
             instrs.iter().enumerate().map(|(i, it)| (it.offset, i)).collect();
-        // Restrict to straight-line code modulo forward short-circuit jumps. A mid-body
-        // RETURN, loop, exception/with setup, backward or unconditional jump, or a
-        // JUMP_FORWARD ternary all mean control flow the block path -- not this
-        // fallback -- owns (eval_bool models only the POP_JUMP/OR_POP short-circuit
-        // forms, which carry no JUMP_FORWARD).
+        // Restrict to straight-line code modulo forward short-circuit jumps. Loops,
+        // exception/with setup, backward or unconditional jumps, and JUMP_FORWARD
+        // ternaries all mean control flow the block path -- not this fallback -- owns
+        // (eval_bool models only the POP_JUMP/OR_POP short-circuit forms, which carry
+        // no JUMP_FORWARD). A RETURN_VALUE is allowed anywhere: a short-circuit boolean
+        // that returns early from its branches (`return a and (b or c)` compiled with
+        // each arm returning directly) has interior RETURNs, which fold_bool_region
+        // treats as the region's result terminals.
         for (i, it) in instrs.iter().enumerate() {
             let m = it.instr.opcode.mnemonic();
             if m == Mnemonic::RETURN_VALUE {
-                if i + 1 != n {
-                    return None;
-                }
+                // a result terminal; allowed at any position
             } else if is_bool_jump(m) {
                 if *index.get(&Offset(it.instr.arg? as u32))? <= i {
                     return None;
@@ -1188,6 +1189,9 @@ impl Unstacker {
                     return None;
                 }
                 max_target = max_target.max(t.0);
+            } else if m == Mnemonic::RETURN_VALUE {
+                // An early-return exit from a short-circuit branch; a result terminal
+                // inside the region, not a disqualifying control transfer.
             } else if is_control_flow(m) {
                 return None;
             }
@@ -1232,7 +1236,10 @@ impl Unstacker {
             let mut j = *index.get(&off)?;
             loop {
                 let it = instrs.get(j)?;
-                if it.offset == merge {
+                let m = it.instr.opcode.mnemonic();
+                // A leaf ends at the merge (its value is the region result) or at a
+                // RETURN_VALUE (an early-return branch returns its value directly).
+                if it.offset == merge || m == Mnemonic::RETURN_VALUE {
                     let value = self.pop_value().ok()?;
                     if self.stack.len() != base_len {
                         return None;
@@ -1241,7 +1248,6 @@ impl Unstacker {
                     recs.insert(off, LeafRec { value, term: LeafTerm::Return });
                     break;
                 }
-                let m = it.instr.opcode.mnemonic();
                 if is_bool_jump(m) {
                     let value = self.pop_value().ok()?;
                     if self.stack.len() != base_len {
