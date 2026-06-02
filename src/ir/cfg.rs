@@ -1262,6 +1262,13 @@ fn pure_ternary_arm(
             if matches!(mnemonic, Mnemonic::MAKE_FUNCTION | Mnemonic::MAKE_CLOSURE) {
                 return true;
             }
+            // STORE_MAP only ever builds a dict display `{k: v, ..}` (it pops a key/value
+            // and grows the map left on the stack); it has no statement form, despite the
+            // STORE_ prefix is_statement_or_control matches. Allow it so a dict-literal arm
+            // `{..} if cond else {..}` folds as a ternary.
+            if mnemonic == Mnemonic::STORE_MAP {
+                return true;
+            }
             // A nested ternary inside this arm -- a chained `a if c1 else b if c2 else d`
             // whose else arms nest: the nested condition branches forward within the arm
             // (to the next else), and the nested then-arm jumps to the shared merge. Both

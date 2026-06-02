@@ -1331,6 +1331,36 @@ fn chained_ternary() {
 }
 
 #[test]
+fn ternary_arm_with_dict_display() {
+    // x = {'kk': v} if c else {}
+    // A dict-display arm builds the dict with BUILD_MAP + STORE_MAP. STORE_MAP starts
+    // with STORE_, so is_statement_or_control flagged the arm impure and the diamond
+    // mis-structured as an `if` -> underflow. STORE_MAP only ever builds a dict display
+    // (no statement form), so pure_ternary_arm allows it. This is the
+    // `{...} if cond else {...}` shape (ShipAcesComponent.getUpdateSprintComponentData).
+    let code = Builder::new("f", 2, &["c", "v", "x"], &[], vec![Obj::None, pystr("kk")])
+        .arg(Standard::LOAD_FAST, 0) // c
+        .jump(Standard::POP_JUMP_IF_FALSE, "else_")
+        .arg(Standard::BUILD_MAP, 1)
+        .arg(Standard::LOAD_FAST, 1) // v (value)
+        .arg(Standard::LOAD_CONST, 1) // 'kk' (key)
+        .op(Standard::STORE_MAP)
+        .jump(Standard::JUMP_FORWARD, "merge")
+        .label("else_")
+        .arg(Standard::BUILD_MAP, 0)
+        .label("merge")
+        .arg(Standard::STORE_FAST, 2) // x
+        .arg(Standard::LOAD_FAST, 2)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(c, v):\n    x = {'kk': v} if c else {}\n    return x\n"
+    );
+}
+
+#[test]
 fn or_chain_if_with_empty_body_is_not_a_ternary() {
     // if c1 or c2: pass
     // return None
