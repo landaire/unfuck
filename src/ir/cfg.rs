@@ -246,6 +246,26 @@ impl Cfg {
         let instr_index: HashMap<Offset, usize> =
             instrs.iter().enumerate().map(|(idx, it)| (it.offset, idx)).collect();
 
+        // Block leaders whose block is a lone `RETURN_VALUE` -- a shared return point.
+        // A block ending in an unconditional jump to one leaves its return value on
+        // the stack at the jump (`RETURN_VALUE` returns TOS), so that jump is lowered
+        // as a `Return` of that value (see lower_block). The per-block symbolic stack
+        // is cleared between blocks, so the value cannot otherwise reach the separate
+        // `RETURN_VALUE` block -- this recovers reordered/tail-duplicated ternary
+        // returns (`return X if c else Y`) where an orphan dead block between the then
+        // arm's jump and the merge defeats find_reordered_ternaries.
+        let return_points: HashSet<Offset> = leaders
+            .iter()
+            .copied()
+            .filter(|leader| {
+                instr_index
+                    .get(leader)
+                    .and_then(|&i| instrs.get(i))
+                    .map(|it| it.instr.opcode.mnemonic() == Mnemonic::RETURN_VALUE)
+                    .unwrap_or(false)
+            })
+            .collect();
+
         // The instruction after a FOR_ITER begins the loop body with the loop
         // target's store; map that body leader back to its header offset. A list
         // comprehension's FOR_ITER is folded inline, so it is skipped here.
@@ -305,6 +325,7 @@ impl Cfg {
                 instrs,
                 &instr_index,
                 &bool_regions,
+                &return_points,
             )
             // A block that does not lower (an unsupported opcode, a stack error) is
             // kept as a poison dead-end rather than failing the whole function, so
@@ -705,6 +726,7 @@ fn lower_block(
     instrs: &[OffsetInstr],
     instr_index: &HashMap<Offset, usize>,
     bool_regions: &HashMap<Offset, Offset>,
+    return_points: &HashSet<Offset>,
 ) -> Result<Block, IrError> {
     unstacker.start_block();
 
@@ -806,7 +828,19 @@ fn lower_block(
         TerminatorKind::Finally => {
             finally_terminators.get(&last.offset).cloned().ok_or(IrError::Unstructurable)?
         }
-        TerminatorKind::Jump => Terminator::Jump(branch_target(last)?),
+        TerminatorKind::Jump => {
+            let target = branch_target(last)?;
+            // A jump to a lone `RETURN_VALUE` block is a return of the value this block
+            // left on the stack: the target consumes TOS, and the per-block stack does
+            // not carry across the jump. Lower it as the return directly so the value is
+            // not stranded (it would otherwise underflow the empty RETURN_VALUE block).
+            if return_points.contains(&target) {
+                let value = unstacker.pop_value()?;
+                Terminator::Return(Some(value))
+            } else {
+                Terminator::Jump(target)
+            }
+        }
         TerminatorKind::BreakLoop => {
             Terminator::Jump(breaks.get(&last.offset).copied().ok_or(IrError::Unstructurable)?)
         }

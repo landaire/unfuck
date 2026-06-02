@@ -1231,6 +1231,37 @@ fn ternary_arm_with_make_function() {
 }
 
 #[test]
+fn jump_to_shared_return_with_orphan_dead_block() {
+    // def f(c, a):
+    //     if c: return a
+    //     return None
+    // The deob tail-duplicates the else return and orphans a dead `LOAD_CONST None`
+    // block between the then arm's JUMP_FORWARD and the shared RETURN_VALUE merge
+    // (mb20e87a8.getRestrictions). The then arm leaves `a` on the stack and jumps to a
+    // lone RETURN_VALUE block; the per-block stack is cleared between blocks, so without
+    // the return-jump lowering the RETURN_VALUE block underflows on an empty stack. The
+    // orphan defeats find_reordered_ternaries (the merge is not the instruction right
+    // after the then jump). Lowering the jump-to-lone-RETURN as `return a` recovers it.
+    let code = Builder::new("f", 2, &["c", "a"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::POP_JUMP_IF_FALSE, "else_")
+        .arg(Standard::LOAD_FAST, 1)
+        .jump(Standard::JUMP_FORWARD, "merge")
+        .arg(Standard::LOAD_CONST, 0) // orphan dead block: unreachable LOAD_CONST None
+        .label("merge")
+        .op(Standard::RETURN_VALUE)
+        .label("else_")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    let out = decompile(code);
+    assert!(!out.contains("__unrecovered__"), "should be fully recovered:\n{}", out);
+    assert!(out.contains("return a"), "then arm should return a:\n{}", out);
+    assert!(out.contains("return None"), "else arm should return None:\n{}", out);
+}
+
+#[test]
 fn bare_except() {
     // def f(): try: g() except: h()
     let code = Builder::new("f", 0, &[], &["g", "h"], vec![Obj::None])
