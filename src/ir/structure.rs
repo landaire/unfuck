@@ -291,7 +291,9 @@ impl Structurer<'_> {
                     cursor = self.point_block(follow);
                 }
                 // A ForIter block is always a loop header and is handled by the loop
-                // check above; reaching it here means the back edge was missing.
+                // check above (including the synthesized no-back-edge case); reaching it
+                // here means even that synthesis did not register it -- e.g. its FOR_ITER
+                // target was not a block leader. Reject rather than mis-structure.
                 Terminator::ForIter { .. } => return Err(IrError::Unstructurable),
             }
         }
@@ -367,8 +369,8 @@ impl Structurer<'_> {
                 let body = self.loop_body(header, body_entry, follow, depth)?;
                 Ok((Stmt::For { target, iter, body }, follow))
             }
-            // A non-conditional header would be an infinite `while True`, which the
-            // game's compiled code does not produce. Reject rather than guess.
+            // A non-conditional header is an infinite `while True`, not yet emitted.
+            // Reject rather than guess.
             _ => Err(IrError::Unstructurable),
         }
     }
@@ -517,6 +519,35 @@ impl Graph {
             let follow = self.loop_follow(cfg, header, &body);
             loops.insert(header, LoopInfo { body, follow });
         }
+
+        // A FOR_ITER is always a loop header, but a body that always returns, raises,
+        // or breaks leaves no back edge, so the dominator scan above never registers
+        // it. Synthesize the loop straight from the terminator: the `body` successor
+        // is the loop body, the `exit` successor its follow. Such a loop runs its body
+        // at most once, but it is still a `for` statement; without this it reaches
+        // region() as a bare ForIter and is rejected as unstructurable. Detected loops
+        // are left untouched, so this only ever turns a failure into a recovery.
+        for (idx, block) in cfg.blocks.iter().enumerate() {
+            let header = BlockId(idx as u32);
+            if loops.contains_key(&header) {
+                continue;
+            }
+            if let Terminator::ForIter { body: body_off, exit } = &block.terminator {
+                let follow = match cfg.by_offset.get(exit) {
+                    Some(&follow_block) => Point::Block(follow_block),
+                    None => Point::Exit,
+                };
+                let Some(&body_entry) = cfg.by_offset.get(body_off) else {
+                    continue;
+                };
+                let follow_block = match follow {
+                    Point::Block(block) => Some(block),
+                    Point::Exit => None,
+                };
+                let body = forward_body(cfg, header, body_entry, follow_block);
+                loops.insert(header, LoopInfo { body, follow });
+            }
+        }
         loops
     }
 
@@ -542,6 +573,34 @@ impl Graph {
             _ => Point::Exit,
         }
     }
+}
+
+/// The body of a back-edge-less `FOR_ITER` loop: the header plus every block
+/// forward-reachable from `body_entry` without passing through the loop's `follow`
+/// (the FOR_ITER exit) or re-entering the header. A break edge targets `follow`, so
+/// excluding it keeps the post-loop code out of the body.
+fn forward_body(
+    cfg: &Cfg,
+    header: BlockId,
+    body_entry: BlockId,
+    follow_block: Option<BlockId>,
+) -> HashSet<BlockId> {
+    let mut body = HashSet::new();
+    body.insert(header);
+    let mut stack = vec![body_entry];
+    while let Some(node) = stack.pop() {
+        if node == header || Some(node) == follow_block {
+            continue;
+        }
+        if body.insert(node) {
+            for target in cfg.blocks[node.0 as usize].successors() {
+                if let Some(&succ) = cfg.by_offset.get(&target) {
+                    stack.push(succ);
+                }
+            }
+        }
+    }
+    body
 }
 
 /// The natural loop of a set of latches branching back to `header`: the header

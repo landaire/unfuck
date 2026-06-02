@@ -648,6 +648,15 @@ fn block_leaders(
                 if let Some(next) = next {
                     leaders.insert(next);
                 }
+                // A FOR_ITER is intrinsically a loop header, so it must begin its own
+                // block even when no back edge targets it (a body that always returns,
+                // raises, or breaks). Splitting it from the preceding GET_ITER keeps the
+                // iterator as the predecessor block's stack_out top, the way the loop
+                // structurer reads it. A back edge already makes it a leader, so this is
+                // a no-op for ordinary loops.
+                if mnemonic == Mnemonic::FOR_ITER {
+                    leaders.insert(item.offset);
+                }
             }
             // A break jumps to its loop's follow block (resolved via SETUP_LOOP).
             TerminatorKind::BreakLoop => {

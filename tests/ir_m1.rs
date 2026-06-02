@@ -461,6 +461,38 @@ fn for_loop_try_except_continue() {
 }
 
 #[test]
+fn for_loop_body_always_returns_has_no_back_edge() {
+    // def f(xs):
+    //     for x in xs:
+    //         return x
+    // The loop body returns on the first iteration, so there is no JUMP back to the
+    // FOR_ITER -- no back edge, so the dominator scan never registers it as a loop.
+    // detect_loops must synthesize the loop straight from the FOR_ITER terminator,
+    // otherwise the header reaches region() as a bare ForIter and is rejected with
+    // "control-flow graph did not reduce to regions".
+    let code = Builder::new("f", 1, &["xs", "x"], &[], vec![Obj::None])
+        .jump(Standard::SETUP_LOOP, "end")
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::GET_ITER)
+        .label("loop")
+        .jump(Standard::FOR_ITER, "exit")
+        .arg(Standard::STORE_FAST, 1)
+        .arg(Standard::LOAD_FAST, 1)
+        .op(Standard::RETURN_VALUE)
+        .label("exit")
+        .op(Standard::POP_BLOCK)
+        .label("end")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(xs):\n    for x in xs:\n        return x\n\n    return None\n"
+    );
+}
+
+#[test]
 fn cross_block_boolean_return() {
     // def f(a, b, c): return (a or b) and not c
     // The boolean is compiled to cross-block short-circuit control flow: a's
