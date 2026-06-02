@@ -542,6 +542,17 @@ impl Unstacker {
                     };
                     clauses.push(ListClause::For { target, iter });
                     loop_tops.push(loop_top);
+                    // A boolean filter `if a or b` guarding this loop short-circuits to
+                    // either the loop top (skip) or the element (keep). Reconstruct it
+                    // as one If clause when it contains such a forward keep jump; a
+                    // pure-`and` filter (only loop-top jumps) is left to the per-jump
+                    // path below so already-recovered comprehensions stay byte-identical.
+                    while let Some((cond, keep_idx)) =
+                        self.reconstruct_comp_filter(region, i, loop_top)?
+                    {
+                        clauses.push(ListClause::If(cond));
+                        i = keep_idx;
+                    }
                 }
                 // A filter jumps back to the loop it guards when the element is to be
                 // skipped. POP_JUMP_IF_FALSE keeps the element when the value is true
@@ -596,6 +607,326 @@ impl Unstacker {
         };
         self.push(Expr::ListComp { element, clauses });
         Ok(())
+    }
+
+    /// Reconstructs a boolean filter `if <expr>` beginning at `region[start]` that
+    /// guards the loop whose `FOR_ITER` is at `loop_top`. Such a filter is a chain of
+    /// `POP_JUMP` short-circuits whose every exit reaches the loop top (skip, condition
+    /// false) or the keep point where the element begins (keep, condition true) -- so
+    /// the loop top is the boolean's `False` terminal and the keep point its `True`
+    /// terminal, and each short-circuit translates to `and`/`or`/`not` accordingly.
+    ///
+    /// Returns `Ok(None)` when no such filter starts here: either no jump targets the
+    /// loop top (it is the element, not a filter), or the filter has no forward keep
+    /// jump (a pure-`and` filter, left to the per-jump path so its `If` clauses stay
+    /// byte-identical). A detected filter that does not reconstruct and verify returns
+    /// `Err`, rejecting the whole comprehension rather than mis-emitting it. On success
+    /// returns the condition value and the region index of the keep point.
+    fn reconstruct_comp_filter(
+        &mut self,
+        region: &[&OffsetInstr],
+        start: usize,
+        loop_top: Offset,
+    ) -> Result<Option<(ValueId, usize)>, IrError> {
+        let index: HashMap<Offset, usize> =
+            region.iter().enumerate().map(|(k, it)| (it.offset, k)).collect();
+        // The filter ends at the next FOR_ITER or LIST_APPEND (the element or an inner
+        // loop). Within that, a jump to the loop top marks a filter; the last such jump
+        // fixes the keep point at the instruction after it.
+        let mut bound = region.len();
+        for k in start..region.len() {
+            let m = region[k].instr.opcode.mnemonic();
+            if matches!(m, Mnemonic::FOR_ITER | Mnemonic::LIST_APPEND) {
+                bound = k;
+                break;
+            }
+        }
+        // The last jump to the loop top is the filter's final skip; the instruction
+        // after it is the keep point where the element begins.
+        let mut last_skip = None;
+        for k in start..bound {
+            let m = region[k].instr.opcode.mnemonic();
+            if !matches!(m, Mnemonic::POP_JUMP_IF_TRUE | Mnemonic::POP_JUMP_IF_FALSE) {
+                continue;
+            }
+            let target = Offset(region[k].instr.arg.ok_or(IrError::MissingOperand)? as u32);
+            if target == loop_top {
+                last_skip = Some(k);
+            }
+        }
+        let Some(last_skip) = last_skip else { return Ok(None) };
+        let keep_idx = last_skip + 1;
+        if keep_idx > bound {
+            return Ok(None);
+        }
+        let keep_point = region.get(keep_idx).ok_or(IrError::Decode)?.offset;
+        let start_off = region[start].offset;
+
+        // A forward keep jump (`or`) must lie inside the FILTER region [start, keep);
+        // a forward jump in the element that follows (a ternary element's cond) is not
+        // a filter `or`. Without a keep jump this is a pure-`and` filter, left to the
+        // per-jump path so its `If` clauses stay byte-identical.
+        let mut has_forward_keep = false;
+        for k in start..keep_idx {
+            let m = region[k].instr.opcode.mnemonic();
+            if !matches!(m, Mnemonic::POP_JUMP_IF_TRUE | Mnemonic::POP_JUMP_IF_FALSE) {
+                continue;
+            }
+            let target = Offset(region[k].instr.arg.ok_or(IrError::MissingOperand)? as u32);
+            if target != loop_top && target.0 > region[k].offset.0 {
+                has_forward_keep = true;
+            }
+        }
+        if !has_forward_keep {
+            return Ok(None);
+        }
+
+        // Only a pure short-circuit filter -- value ops and `POP_JUMP`s -- is folded
+        // here. A `JUMP_FORWARD` or `JUMP_IF_*_OR_POP` inside the region means the
+        // condition is a ternary/short-circuit VALUE tested by a single trailing
+        // `POP_JUMP` (e.g. `if (a in c if c else a)`); the per-jump path already folds
+        // that value, so decline and leave it alone rather than mis-handle the merge.
+        for k in start..keep_idx {
+            if matches!(
+                region[k].instr.opcode.mnemonic(),
+                Mnemonic::JUMP_FORWARD
+                    | Mnemonic::JUMP_ABSOLUTE
+                    | Mnemonic::JUMP_IF_FALSE_OR_POP
+                    | Mnemonic::JUMP_IF_TRUE_OR_POP
+            ) {
+                return Ok(None);
+            }
+        }
+
+        // Lower each leaf (a value-op run ending in a POP_JUMP) once, keyed by start
+        // offset. Leaf starts: the region start, plus the fall-through and any forward
+        // (non-loop-top) target of each short-circuit jump that lands inside the filter.
+        let mut leaf_starts: Vec<Offset> = vec![start_off];
+        for k in start..keep_idx {
+            let m = region[k].instr.opcode.mnemonic();
+            if !matches!(m, Mnemonic::POP_JUMP_IF_TRUE | Mnemonic::POP_JUMP_IF_FALSE) {
+                continue;
+            }
+            let target = Offset(region[k].instr.arg.ok_or(IrError::MissingOperand)? as u32);
+            let after = region.get(k + 1).ok_or(IrError::Decode)?.offset;
+            for cand in [target, after] {
+                if cand != loop_top && cand != keep_point && index.contains_key(&cand) {
+                    let ci = index[&cand];
+                    if ci >= start && ci < keep_idx {
+                        leaf_starts.push(cand);
+                    }
+                }
+            }
+        }
+        leaf_starts.sort();
+        leaf_starts.dedup();
+
+        let mut leaves: HashMap<Offset, FilterLeaf> = HashMap::new();
+        let mut leaf_index: HashMap<ValueId, usize> = HashMap::new();
+        let mut leaf_order: Vec<ValueId> = Vec::new();
+        for &leaf_start in &leaf_starts {
+            let mut j = index[&leaf_start];
+            self.start_block();
+            loop {
+                let m = region.get(j).ok_or(IrError::Decode)?.instr.opcode.mnemonic();
+                if matches!(m, Mnemonic::POP_JUMP_IF_TRUE | Mnemonic::POP_JUMP_IF_FALSE) {
+                    break;
+                }
+                // A filter predicate is straight-line value ops; any other control
+                // flow is a shape this folder does not model.
+                if is_control_flow(m) {
+                    return Err(IrError::Unsupported(m));
+                }
+                self.step(&region[j].instr, region[j].offset)?;
+                j += 1;
+            }
+            let value = self.pop()?;
+            if !self.stack_is_empty() {
+                return Err(IrError::Unsupported(Mnemonic::POP_JUMP_IF_FALSE));
+            }
+            leaf_index.entry(value).or_insert_with(|| {
+                leaf_order.push(value);
+                leaf_order.len() - 1
+            });
+            let kind = region[j].instr.opcode.mnemonic();
+            let target = Offset(region[j].instr.arg.ok_or(IrError::MissingOperand)? as u32);
+            let after = region.get(j + 1).ok_or(IrError::Decode)?.offset;
+            leaves.insert(leaf_start, FilterLeaf { value, kind, target, after });
+        }
+
+        // Translate the short-circuit graph to one boolean expression, then verify it
+        // against the original control flow by truth-table equivalence.
+        let mut structure: HashSet<ValueId> = HashSet::new();
+        let mut memo: HashMap<Offset, FilterVal> = HashMap::new();
+        let built = self.filter_eval(
+            start_off,
+            keep_point,
+            loop_top,
+            &leaves,
+            &mut memo,
+            &mut structure,
+        )?;
+        let FilterVal::Val(value) = built else {
+            // A filter that collapses to a constant is not a real condition.
+            return Err(IrError::Unsupported(Mnemonic::POP_JUMP_IF_FALSE));
+        };
+
+        let k = leaf_order.len();
+        if k > 16 {
+            return Err(IrError::Unsupported(Mnemonic::POP_JUMP_IF_FALSE));
+        }
+        for bits in 0..(1u32 << k) {
+            let assign: Vec<bool> = (0..k).map(|b| (bits >> b) & 1 == 1).collect();
+            let cfg = filter_cfg_sim(start_off, keep_point, loop_top, &leaves, &leaf_index, &assign)
+                .ok_or(IrError::Unsupported(Mnemonic::POP_JUMP_IF_FALSE))?;
+            let exp = self
+                .filter_expr_eval(value, &leaf_index, &structure, &assign)
+                .ok_or(IrError::Unsupported(Mnemonic::POP_JUMP_IF_FALSE))?;
+            if cfg != exp {
+                return Err(IrError::Unsupported(Mnemonic::POP_JUMP_IF_FALSE));
+            }
+        }
+        Ok(Some((value, keep_idx)))
+    }
+
+    /// Recursive translation of a comprehension filter rooted at `start` (see
+    /// [`Self::reconstruct_comp_filter`]). The keep point is the `True` terminal and
+    /// the loop top the `False` terminal.
+    fn filter_eval(
+        &mut self,
+        start: Offset,
+        keep_point: Offset,
+        loop_top: Offset,
+        leaves: &HashMap<Offset, FilterLeaf>,
+        memo: &mut HashMap<Offset, FilterVal>,
+        structure: &mut HashSet<ValueId>,
+    ) -> Result<FilterVal, IrError> {
+        if start == keep_point {
+            return Ok(FilterVal::True);
+        }
+        if start == loop_top {
+            return Ok(FilterVal::False);
+        }
+        if let Some(v) = memo.get(&start) {
+            return Ok(*v);
+        }
+        let leaf = leaves.get(&start).ok_or(IrError::Unsupported(Mnemonic::POP_JUMP_IF_FALSE))?;
+        let cond = leaf.value;
+        let (target, after) = (leaf.target, leaf.after);
+        // POP_JUMP_IF_TRUE: cond true takes the target, false falls through; for
+        // POP_JUMP_IF_FALSE the two are swapped.
+        let (when_true, when_false) = match leaf.kind {
+            Mnemonic::POP_JUMP_IF_TRUE => (target, after),
+            Mnemonic::POP_JUMP_IF_FALSE => (after, target),
+            other => return Err(IrError::Unsupported(other)),
+        };
+        let then = self.filter_eval(when_true, keep_point, loop_top, leaves, memo, structure)?;
+        let otherwise =
+            self.filter_eval(when_false, keep_point, loop_top, leaves, memo, structure)?;
+        let value = self.build_filter_cond(cond, then, otherwise, structure);
+        memo.insert(start, value);
+        Ok(value)
+    }
+
+    /// Builds `cond ? then : otherwise` for a filter, folding the `True`/`False`
+    /// control terminals into `and`/`or`/`not` so the result is idiomatic boolean
+    /// source rather than a ternary over constants.
+    fn build_filter_cond(
+        &mut self,
+        cond: ValueId,
+        then: FilterVal,
+        otherwise: FilterVal,
+        structure: &mut HashSet<ValueId>,
+    ) -> FilterVal {
+        let not = |s: &mut Self, structure: &mut HashSet<ValueId>, v: ValueId| {
+            let n = s.arena.alloc(Expr::Unary(UnaryOp::Not, v));
+            structure.insert(n);
+            n
+        };
+        match (then, otherwise) {
+            (FilterVal::True, FilterVal::True) => FilterVal::True,
+            (FilterVal::False, FilterVal::False) => FilterVal::False,
+            // cond ? True : False == cond; cond ? False : True == not cond.
+            (FilterVal::True, FilterVal::False) => FilterVal::Val(cond),
+            (FilterVal::False, FilterVal::True) => FilterVal::Val(not(self, structure, cond)),
+            // cond ? True : x == cond or x; cond ? x : False == cond and x.
+            (FilterVal::True, FilterVal::Val(x)) => {
+                let r = self.combine_bool(BoolKind::Or, cond, x);
+                structure.insert(r);
+                FilterVal::Val(r)
+            }
+            (FilterVal::Val(x), FilterVal::False) => {
+                let r = self.combine_bool(BoolKind::And, cond, x);
+                structure.insert(r);
+                FilterVal::Val(r)
+            }
+            // cond ? False : x == not cond and x; cond ? x : True == not cond or x.
+            (FilterVal::False, FilterVal::Val(x)) => {
+                let n = not(self, structure, cond);
+                let r = self.combine_bool(BoolKind::And, n, x);
+                structure.insert(r);
+                FilterVal::Val(r)
+            }
+            (FilterVal::Val(x), FilterVal::True) => {
+                let n = not(self, structure, cond);
+                let r = self.combine_bool(BoolKind::Or, n, x);
+                structure.insert(r);
+                FilterVal::Val(r)
+            }
+            (FilterVal::Val(t), FilterVal::Val(e)) => {
+                let id = self.arena.alloc(Expr::Ternary { cond, then: t, otherwise: e });
+                structure.insert(id);
+                FilterVal::Val(id)
+            }
+        }
+    }
+
+    /// Evaluates the reconstructed filter expression to a truth value under a leaf
+    /// assignment, returning `(result, leaves evaluated in order)` for the truth-table
+    /// gate. Structure nodes are the `and`/`or`/`not`/ternary built above; anything
+    /// else is an opaque leaf condition.
+    fn filter_expr_eval(
+        &self,
+        value: ValueId,
+        leaf_index: &HashMap<ValueId, usize>,
+        structure: &HashSet<ValueId>,
+        assign: &[bool],
+    ) -> Option<(bool, Vec<usize>)> {
+        if !structure.contains(&value) {
+            let idx = *leaf_index.get(&value)?;
+            return Some((assign[idx], vec![idx]));
+        }
+        match self.arena.get(value) {
+            Expr::Unary(UnaryOp::Not, inner) => {
+                let (b, order) = self.filter_expr_eval(*inner, leaf_index, structure, assign)?;
+                Some((!b, order))
+            }
+            Expr::BoolOp(kind, ops) => {
+                let mut order = Vec::new();
+                let mut last = matches!(kind, BoolKind::And);
+                for &op in ops {
+                    let (b, o) = self.filter_expr_eval(op, leaf_index, structure, assign)?;
+                    order.extend(o);
+                    last = b;
+                    let short = match kind {
+                        BoolKind::Or => b,
+                        BoolKind::And => !b,
+                    };
+                    if short {
+                        return Some((b, order));
+                    }
+                }
+                Some((last, order))
+            }
+            Expr::Ternary { cond, then, otherwise } => {
+                let (bc, mut order) = self.filter_expr_eval(*cond, leaf_index, structure, assign)?;
+                let branch = if bc { *then } else { *otherwise };
+                let (b, rest) = self.filter_expr_eval(branch, leaf_index, structure, assign)?;
+                order.extend(rest);
+                Some((b, order))
+            }
+            _ => None,
+        }
     }
 
     /// Recovers a function whose body is a leading run of straight-line statements
@@ -1418,6 +1749,25 @@ struct LeafRec {
     term: LeafTerm,
 }
 
+/// A reconstructed list-comprehension filter sub-result: a `True`/`False` control
+/// terminal (the keep point / the loop top), or a real condition value.
+#[derive(Clone, Copy)]
+enum FilterVal {
+    True,
+    False,
+    Val(ValueId),
+}
+
+/// One lowered leaf of a comprehension filter: its condition value and the
+/// short-circuit jump that ends it (`POP_JUMP_IF_TRUE`/`FALSE` -- filters discard the
+/// tested value, so the value-keeping `JUMP_IF_*_OR_POP` forms never appear here).
+struct FilterLeaf {
+    value: ValueId,
+    kind: Mnemonic,
+    target: Offset,
+    after: Offset,
+}
+
 /// Whether a mnemonic is a short-circuit jump connecting boolean-expression operands.
 fn is_bool_jump(m: Mnemonic) -> bool {
     matches!(
@@ -1454,6 +1804,39 @@ fn is_control_flow(m: Mnemonic) -> bool {
 /// Simulates the original boolean region's control flow under a leaf-truthiness
 /// assignment, returning `(result leaf index, leaves evaluated in order)`. Compared
 /// against [`Unstacker::expr_sim`] to verify the reconstruction.
+/// Simulates a comprehension filter's control flow under a leaf assignment, returning
+/// `(reaches keep point, leaves evaluated in order)`. Compared against
+/// [`Unstacker::filter_expr_eval`] to verify the reconstruction.
+fn filter_cfg_sim(
+    start: Offset,
+    keep_point: Offset,
+    loop_top: Offset,
+    leaves: &HashMap<Offset, FilterLeaf>,
+    leaf_index: &HashMap<ValueId, usize>,
+    assign: &[bool],
+) -> Option<(bool, Vec<usize>)> {
+    let mut cur = start;
+    let mut order = Vec::new();
+    for _ in 0..=leaves.len() {
+        if cur == keep_point {
+            return Some((true, order));
+        }
+        if cur == loop_top {
+            return Some((false, order));
+        }
+        let leaf = leaves.get(&cur)?;
+        let li = *leaf_index.get(&leaf.value)?;
+        order.push(li);
+        let t = assign[li];
+        cur = match leaf.kind {
+            Mnemonic::POP_JUMP_IF_TRUE => if t { leaf.target } else { leaf.after },
+            Mnemonic::POP_JUMP_IF_FALSE => if t { leaf.after } else { leaf.target },
+            _ => return None,
+        };
+    }
+    None
+}
+
 fn cfg_sim(
     instrs: &[OffsetInstr],
     index: &HashMap<Offset, usize>,

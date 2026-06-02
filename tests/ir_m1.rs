@@ -457,6 +457,36 @@ fn list_comp_ternary_element() {
 }
 
 #[test]
+fn list_comp_or_filter() {
+    // def f(xs, a, b): return [x for x in xs if a or b]
+    // The filter is a short-circuit `or`: `a` keeps the element (jumps forward to the
+    // element), `b` decides keep/skip. reconstruct_comp_filter folds it to one If.
+    let code = Builder::new("f", 3, &["xs", "a", "b", "x"], &[], vec![Obj::None])
+        .arg(Standard::BUILD_LIST, 0)
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::GET_ITER)
+        .label("loop")
+        .jump(Standard::FOR_ITER, "done")
+        .arg(Standard::STORE_FAST, 3)
+        .arg(Standard::LOAD_FAST, 1)
+        .jump(Standard::POP_JUMP_IF_TRUE, "keep")
+        .arg(Standard::LOAD_FAST, 2)
+        .jump(Standard::POP_JUMP_IF_FALSE, "loop")
+        .label("keep")
+        .arg(Standard::LOAD_FAST, 3)
+        .arg(Standard::LIST_APPEND, 2)
+        .jump(Standard::JUMP_ABSOLUTE, "loop")
+        .label("done")
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(xs, a, b):\n    return [x for x in xs if a or b]\n"
+    );
+}
+
+#[test]
 fn raise_statement() {
     // def f(): raise Boom
     let code = Builder::new("f", 0, &[], &["Boom"], vec![Obj::None])
