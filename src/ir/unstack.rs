@@ -1162,7 +1162,7 @@ impl Unstacker {
     /// where all its short-circuit paths converge; values below it on the stack are
     /// preserved. Verified by the truth-table gate; None on any mismatch or unsupported
     /// shape. See [`Self::recover_straightline_bools`].
-    fn fold_bool_region(
+    pub(crate) fn fold_bool_region(
         &mut self,
         instrs: &[OffsetInstr],
         index: &HashMap<Offset, usize>,

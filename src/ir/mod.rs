@@ -135,6 +135,14 @@ impl DecodedFunction {
                         body,
                     });
                 }
+                // Rebuild keeping pure short-circuit boolean regions in one block, so a
+                // boolean embedded in a statement (an `if` arm, a call argument) the
+                // block path split and could not rejoin folds into one verified value.
+                if let Ok((arena, body)) =
+                    Cfg::build_bool_regions(&self.instrs).and_then(|cfg| self.structure_with(cfg))
+                {
+                    return Ok(StructuredFunction { code: self.code, arena, body });
+                }
                 Err(err)
             }
         }

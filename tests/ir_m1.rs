@@ -538,6 +538,36 @@ fn multi_return_boolean_as_if() {
 }
 
 #[test]
+fn shared_else_boolean_in_statement() {
+    // def f(c, d, a, b): if c: g((a or b) if d else b)
+    // The call argument is a shared-else short-circuit (no JUMP_FORWARD); the block
+    // path splits it and fails, so the post-failure rebuild keeps the region in one
+    // block and folds it while the surrounding `if` structures normally.
+    let code = Builder::new("f", 4, &["c", "d", "a", "b"], &["g"], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::POP_JUMP_IF_FALSE, "end")
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::LOAD_FAST, 1)
+        .jump(Standard::POP_JUMP_IF_FALSE, "elseb")
+        .arg(Standard::LOAD_FAST, 2)
+        .jump(Standard::JUMP_IF_TRUE_OR_POP, "callit")
+        .label("elseb")
+        .arg(Standard::LOAD_FAST, 3)
+        .label("callit")
+        .arg(Standard::CALL_FUNCTION, 1)
+        .op(Standard::POP_TOP)
+        .label("end")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(c, d, a, b):\n    if c:\n        g(a or b if d else b)\n\n    return None\n",
+    );
+}
+
+#[test]
 fn raise_statement() {
     // def f(): raise Boom
     let code = Builder::new("f", 0, &[], &["Boom"], vec![Obj::None])

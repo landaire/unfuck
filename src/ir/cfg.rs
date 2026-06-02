@@ -133,6 +133,18 @@ impl Block {
     }
 }
 
+/// Which structuring strategy [`Cfg::build_with`] uses.
+enum BuildMode {
+    /// An ordinary function or module body.
+    Normal,
+    /// A comprehension code object (its accumulator and `*_ADD` ops lower to element
+    /// statements).
+    Comprehension,
+    /// A post-failure rebuild that keeps pure short-circuit boolean regions inside one
+    /// block so the feed can fold them (see [`find_bool_regions`]).
+    BoolRegions,
+}
+
 /// A function lowered to a control-flow graph of statement blocks.
 pub struct Cfg {
     pub blocks: Vec<Block>,
@@ -156,16 +168,25 @@ impl Cfg {
 
     /// Builds the graph from a decoded instruction stream.
     pub fn build(instrs: &[OffsetInstr]) -> Result<Cfg, IrError> {
-        Cfg::build_with(instrs, false)
+        Cfg::build_with(instrs, BuildMode::Normal)
     }
 
     /// Builds the graph for a comprehension code object, lowering its accumulator
     /// and `SET_ADD`/`MAP_ADD` instructions into comprehension element statements.
     pub fn build_comp(instrs: &[OffsetInstr]) -> Result<Cfg, IrError> {
-        Cfg::build_with(instrs, true)
+        Cfg::build_with(instrs, BuildMode::Comprehension)
     }
 
-    fn build_with(instrs: &[OffsetInstr], comp: bool) -> Result<Cfg, IrError> {
+    /// Builds the graph keeping pure short-circuit boolean regions inside one block so
+    /// the feed can fold them (see [`find_bool_regions`]). Used only as a post-failure
+    /// rebuild, so it cannot change a function the normal build already structures.
+    pub fn build_bool_regions(instrs: &[OffsetInstr]) -> Result<Cfg, IrError> {
+        Cfg::build_with(instrs, BuildMode::BoolRegions)
+    }
+
+    fn build_with(instrs: &[OffsetInstr], mode: BuildMode) -> Result<Cfg, IrError> {
+        let comp = matches!(mode, BuildMode::Comprehension);
+        let use_bool_regions = matches!(mode, BuildMode::BoolRegions);
         let mut ternaries = find_ternaries(instrs);
         let (tries, mut excluded) = recover_tries(instrs)?;
         let (withs, with_excluded) = recover_withs(instrs)?;
@@ -190,12 +211,22 @@ impl Cfg {
         // stay inside one block and never become block leaders or for-loops. A
         // comprehension used as a ternary then-arm also marks its condition as a
         // ternary diamond, and records the merge where the unstacker completes it.
-        let (list_comps, list_interior, comp_ternaries) = find_list_comps(instrs);
+        let (list_comps, mut list_interior, comp_ternaries) = find_list_comps(instrs);
         let mut comp_then_merges: HashMap<Offset, Offset> = HashMap::new();
         for (build, (cond, merge)) in &comp_ternaries {
             ternaries.insert(*cond);
             comp_then_merges.insert(*build, *merge);
         }
+        // Post-failure only: keep pure short-circuit boolean regions in one block (their
+        // interior never starts a block) and fold them in the feed. Empty otherwise, so
+        // the normal build is unaffected.
+        let bool_regions = if use_bool_regions {
+            let (regions, interior) = find_bool_regions(instrs);
+            list_interior.extend(interior);
+            regions
+        } else {
+            HashMap::new()
+        };
         let breaks = break_targets(instrs);
         let leaders = block_leaders(
             instrs,
@@ -211,6 +242,9 @@ impl Cfg {
         for (idx, leader) in leaders.iter().enumerate() {
             by_offset.insert(*leader, BlockId(idx as u32));
         }
+        // Offset -> instruction index, for folding boolean regions in the feed.
+        let instr_index: HashMap<Offset, usize> =
+            instrs.iter().enumerate().map(|(idx, it)| (it.offset, idx)).collect();
 
         // The instruction after a FOR_ITER begins the loop body with the loop
         // target's store; map that body leader back to its header offset. A list
@@ -268,6 +302,9 @@ impl Cfg {
                 &breaks,
                 &else_feeds,
                 &comp_then_merges,
+                instrs,
+                &instr_index,
+                &bool_regions,
             )
             // A block that does not lower (an unsupported opcode, a stack error) is
             // kept as a poison dead-end rather than failing the whole function, so
@@ -656,6 +693,9 @@ fn lower_block(
     breaks: &HashMap<Offset, Offset>,
     else_feeds: &HashMap<Offset, Vec<&OffsetInstr>>,
     comp_then_merges: &HashMap<Offset, Offset>,
+    instrs: &[OffsetInstr],
+    instr_index: &HashMap<Offset, usize>,
+    bool_regions: &HashMap<Offset, Offset>,
 ) -> Result<Block, IrError> {
     unstacker.start_block();
 
@@ -704,6 +744,20 @@ fn lower_block(
             if let Some(&merge) = comp_then_merges.get(&item.offset) {
                 unstacker.set_comp_ternary_then(merge)?;
             }
+            i = span;
+            continue;
+        }
+        // A pure short-circuit boolean region (post-failure rebuild only) whose tested
+        // value is now on the stack: fold it to one verified value and skip to its
+        // merge, the same reconstruction the returned-boolean fast path uses.
+        if let Some(&merge) = bool_regions.get(&item.offset) {
+            unstacker
+                .fold_bool_region(instrs, instr_index, instr_index[&item.offset])
+                .ok_or(IrError::Unsupported(Mnemonic::JUMP_IF_FALSE_OR_POP))?;
+            let span = feed[i..]
+                .iter()
+                .position(|it| it.offset >= merge)
+                .map_or(feed.len(), |pos| i + pos);
             i = span;
             continue;
         }
@@ -872,6 +926,91 @@ fn terminator_kind(mnemonic: Mnemonic) -> Result<TerminatorKind, IrError> {
 /// `JUMP_FORWARD` to a later merge, with both arms made only of value-producing
 /// opcodes. Anything more complex (statements, nested branches) fails the check and
 /// is left to structure as an ordinary `if`.
+/// Detects pure short-circuit boolean regions whose then arm exits through a
+/// `JUMP_IF_*_OR_POP` to the region's merge rather than a `JUMP_FORWARD` (so its else
+/// arm is shared with the `or`'s fall-through, e.g. `(a or b) if c else b`). The
+/// block path's in-block ternary folding cannot reconstruct these (the diamond has no
+/// `JUMP_FORWARD` to record the then operand), and [`find_ternaries`] -- which requires
+/// that `JUMP_FORWARD` -- skips them.
+///
+/// Returns a map from each region's first short-circuit jump to its merge offset, and
+/// the interior offsets to keep inside one block. Used ONLY by the post-failure
+/// rebuild ([`Cfg::build_bool_regions`]): the feed folds each region with the same
+/// truth-table-verified reconstruction as the returned-boolean fast path, so a region
+/// that does not verify simply poisons its block (the function stays failed). A region
+/// is self-contained -- every short-circuit jump targets forward within `(start,
+/// merge]` -- so the reconstruction models the real control flow exactly.
+fn find_bool_regions(instrs: &[OffsetInstr]) -> (HashMap<Offset, Offset>, HashSet<Offset>) {
+    let index: HashMap<Offset, usize> = instrs
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| (item.offset, idx))
+        .collect();
+    let mut regions = HashMap::new();
+    let mut interior = HashSet::new();
+    let mut i = 0;
+    while i < instrs.len() {
+        let mnemonic = instrs[i].instr.opcode.mnemonic();
+        if matches!(mnemonic, Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE) {
+            if let Some((merge_idx, has_or_pop)) = scan_bool_region(instrs, i) {
+                if has_or_pop {
+                    regions.insert(instrs[i].offset, instrs[merge_idx].offset);
+                    for item in &instrs[i..merge_idx] {
+                        interior.insert(item.offset);
+                    }
+                    i = merge_idx;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    let _ = index;
+    (regions, interior)
+}
+
+/// Scans a candidate boolean region beginning at the short-circuit jump `start`,
+/// returning `(merge index, saw a JUMP_IF_*_OR_POP)` when it is a self-contained pure
+/// short-circuit region, else None. The merge is where the running furthest target is
+/// reached; only value ops and forward short-circuit jumps (plus interior RETURNs --
+/// early-return branches) may appear, never a `JUMP_FORWARD`/`JUMP_ABSOLUTE`,
+/// statement, loop, or block setup.
+fn scan_bool_region(instrs: &[OffsetInstr], start: usize) -> Option<(usize, bool)> {
+    let mut max_target = 0u32;
+    let mut has_or_pop = false;
+    let mut k = start;
+    loop {
+        let item = instrs.get(k)?;
+        if k > start && item.offset.0 == max_target {
+            return Some((k, has_or_pop));
+        }
+        let mnemonic = item.instr.opcode.mnemonic();
+        match mnemonic {
+            Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE => {
+                let t = branch_target(item).ok()?;
+                if t.0 <= item.offset.0 {
+                    return None;
+                }
+                max_target = max_target.max(t.0);
+            }
+            Mnemonic::JUMP_IF_FALSE_OR_POP | Mnemonic::JUMP_IF_TRUE_OR_POP => {
+                let t = branch_target(item).ok()?;
+                if t.0 <= item.offset.0 {
+                    return None;
+                }
+                max_target = max_target.max(t.0);
+                has_or_pop = true;
+            }
+            Mnemonic::RETURN_VALUE => {
+                // An early-return exit from a branch; a terminal inside the region.
+            }
+            other if is_statement_or_control(other) => return None,
+            _ => {}
+        }
+        k += 1;
+    }
+}
+
 fn find_ternaries(instrs: &[OffsetInstr]) -> HashSet<Offset> {
     let index: HashMap<Offset, usize> = instrs
         .iter()
