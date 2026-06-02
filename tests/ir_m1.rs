@@ -957,6 +957,34 @@ fn mergeless_except_in_finally_is_rejected() {
 }
 
 #[test]
+fn with_binding_to_attribute() {
+    // def f(self, cm): with cm as self.resource: g()
+    // The `as` target is an attribute (STORE_ATTR), not a simple name; recover_with
+    // lowers the object expression and builds an Attr lvalue.
+    let code = Builder::new("f", 2, &["self", "cm"], &["resource", "g"], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 1)
+        .jump(Standard::SETUP_WITH, "cleanup")
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::STORE_ATTR, 0)
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_BLOCK)
+        .arg(Standard::LOAD_CONST, 0)
+        .label("cleanup")
+        .op(Standard::WITH_CLEANUP)
+        .op(Standard::END_FINALLY)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(self, cm):\n    with cm as self.resource:\n        g()\n\n    return None\n"
+    );
+}
+
+#[test]
 fn mergeless_with() {
     // A with-body that always returns: the deob drops the unreachable normal-exit
     // POP_BLOCK; LOAD_CONST None, leaving no body POP_BLOCK. The WITH_CLEANUP runs

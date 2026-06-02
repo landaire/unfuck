@@ -237,7 +237,7 @@ impl Cfg {
         // lowered through the shared unstacker so they enter the same arena the
         // block bodies use.
         let try_terminators = build_try_terminators(&mut unstacker, instrs, &tries)?;
-        let with_terminators = build_with_terminators(&withs);
+        let with_terminators = build_with_terminators(&mut unstacker, instrs, &withs)?;
         let finally_terminators = build_finally_terminators(&finallys);
 
         let mut blocks = Vec::with_capacity(leaders.len());
@@ -1136,8 +1136,13 @@ struct WithShape {
     body_entry: Offset,
     /// Merge point reached after the construct (past `END_FINALLY`).
     end: Offset,
-    /// The `as` target, or `None` when the manager's value is discarded.
+    /// The `as` target for a discard (`None`) or a simple-name store. An attribute
+    /// target (`with x as obj.attr:`) is carried by `attr_bind` instead, since its
+    /// object expression must be lowered through the unstacker.
     target: Option<LValue>,
+    /// An attribute `as` target: the `[start, end)` instruction range of the pure
+    /// attribute-chain load that produces the object, and the stored attribute name.
+    attr_bind: Option<(usize, usize, NameId)>,
 }
 
 /// Recovers every `with` region and the structural instruction offsets to drop from
@@ -1174,15 +1179,33 @@ fn recover_with(
     let cleanup_idx = skip_nops(instrs, cleanup_target_idx);
     // The `as` binding (or a discarding POP_TOP) immediately follows SETUP_WITH.
     let bind_idx = setup_idx + 1;
+    // The last instruction of the `as` binding; `body_entry` is the one after it.
+    let mut bind_end = bind_idx;
+    let mut attr_bind = None;
     let target = match mnemonic_at(instrs, bind_idx)? {
         Mnemonic::POP_TOP => None,
         Mnemonic::STORE_FAST
         | Mnemonic::STORE_NAME
         | Mnemonic::STORE_GLOBAL
         | Mnemonic::STORE_DEREF => Some(store_target(&instrs[bind_idx].instr)?),
-        _ => return Err(IrError::HasControlFlow(Mnemonic::SETUP_WITH)),
+        // `with x as obj.attr:` stores into an attribute: a pure attribute-chain
+        // load of the object, then STORE_ATTR. Lower the object later (it needs the
+        // unstacker); reject anything that is not a clean load chain.
+        _ => {
+            let mut i = bind_idx;
+            while is_attr_chain_load(mnemonic_at(instrs, i)?) {
+                i += 1;
+            }
+            if i == bind_idx || mnemonic_at(instrs, i)? != Mnemonic::STORE_ATTR {
+                return Err(IrError::HasControlFlow(Mnemonic::SETUP_WITH));
+            }
+            let name = NameId(instrs[i].instr.arg.ok_or(IrError::MissingOperand)?);
+            attr_bind = Some((bind_idx, i, name));
+            bind_end = i;
+            None
+        }
     };
-    let body_entry = instrs.get(bind_idx + 1).ok_or(IrError::Unstructurable)?.offset;
+    let body_entry = instrs.get(bind_end + 1).ok_or(IrError::Unstructurable)?.offset;
     // The body exits through POP_BLOCK; find it at block-nesting depth 0 so a nested
     // try/with inside the body does not steal it.
     let mut depth = 0i32;
@@ -1248,28 +1271,57 @@ fn recover_with(
         .get(skip_nops(instrs, cleanup_idx + 2))
         .ok_or(IrError::Unstructurable)?
         .offset;
-    // Drop the binding and the cleanup machinery so they never form blocks.
-    for off in [
-        instrs[bind_idx].offset,
-        instrs[cleanup_idx].offset,
-        instrs[cleanup_idx + 1].offset,
-    ] {
+    // Drop the binding (all of it, for an attribute target) and the cleanup
+    // machinery so they never form blocks.
+    for i in bind_idx..=bind_end {
+        excluded.insert(instrs[i].offset);
+    }
+    for off in [instrs[cleanup_idx].offset, instrs[cleanup_idx + 1].offset] {
         excluded.insert(off);
     }
-    Ok(WithShape { setup: setup.offset, body_entry, end, target })
+    Ok(WithShape { setup: setup.offset, body_entry, end, target, attr_bind })
 }
 
-/// Builds each `with` block's `With` terminator from its recovered shape.
-fn build_with_terminators(withs: &[WithShape]) -> HashMap<Offset, Terminator> {
-    withs
-        .iter()
-        .map(|w| {
-            (
-                w.setup,
-                Terminator::With { body: w.body_entry, end: w.end, target: w.target.clone() },
-            )
-        })
-        .collect()
+/// Whether an opcode is a pure load that can build a `with`-target attribute chain
+/// (`obj.a.b` in `with x as obj.a.b.c:`): a name/const load or an attribute access.
+fn is_attr_chain_load(mnemonic: Mnemonic) -> bool {
+    matches!(
+        mnemonic,
+        Mnemonic::LOAD_FAST
+            | Mnemonic::LOAD_DEREF
+            | Mnemonic::LOAD_NAME
+            | Mnemonic::LOAD_GLOBAL
+            | Mnemonic::LOAD_CONST
+            | Mnemonic::LOAD_ATTR
+    )
+}
+
+/// Builds each `with` block's `With` terminator from its recovered shape. An
+/// attribute `as` target has its object expression lowered through the shared
+/// unstacker here (the pre-pass has no arena), mirroring `build_try_terminators`.
+fn build_with_terminators(
+    unstacker: &mut Unstacker,
+    instrs: &[OffsetInstr],
+    withs: &[WithShape],
+) -> Result<HashMap<Offset, Terminator>, IrError> {
+    let mut terminators = HashMap::new();
+    for w in withs {
+        let target = match w.attr_bind {
+            Some((start, end, name)) => {
+                unstacker.start_block();
+                for item in &instrs[start..end] {
+                    unstacker.step(&item.instr, item.offset)?;
+                }
+                let obj = unstacker.pop_value()?;
+                // The loads are pure; drop any stray statements so they never leak.
+                let _ = unstacker.take_stmts();
+                Some(LValue::Attr(obj, name))
+            }
+            None => w.target.clone(),
+        };
+        terminators.insert(w.setup, Terminator::With { body: w.body_entry, end: w.end, target });
+    }
+    Ok(terminators)
 }
 
 /// A recovered `try`/`finally` region over the raw instruction stream.
