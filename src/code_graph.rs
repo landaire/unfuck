@@ -1694,6 +1694,80 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         }
     }
 
+    /// Strips the obfuscator's dead-store junk wedged between an `IMPORT_NAME` and its
+    /// `IMPORT_FROM`. In clean CPython 2.7 a `from m import a` lowers to
+    /// `IMPORT_NAME m; IMPORT_FROM a; STORE_NAME a` with nothing between the name and the
+    /// from -- `IMPORT_FROM` peeks the module the `IMPORT_NAME` left on the stack. The
+    /// obfuscator wedges dead `unknown_N = <const/arith>` stores there, whose net stack
+    /// effect leaves stray values ON TOP of the module, so `IMPORT_FROM` reads garbage
+    /// instead of the module and the unstacker rejects it. (Companion to
+    /// `strip_import_store_junk`, which handles the junk on the `IMPORT_FROM`..`STORE_NAME`
+    /// side.) Remove the whole region so `IMPORT_NAME` leads straight into `IMPORT_FROM`.
+    ///
+    /// Conservative in the same way as `strip_build_class_junk`: only pure-data junk ops
+    /// between, and a name read outside the region keeps its store. Offsets are stale
+    /// after removal, so an `update_bb_offsets` must follow.
+    pub(crate) fn strip_import_name_junk(&mut self) {
+        let mut name_reads: HashMap<u16, Vec<(NodeIndex, usize)>> = HashMap::new();
+        for node in self.graph.node_indices() {
+            for (i, instr) in self.graph[node].instrs.iter().enumerate() {
+                if let Some(instr) = instr.get()
+                    && matches!(
+                        instr.opcode.mnemonic(),
+                        Mnemonic::LOAD_NAME | Mnemonic::LOAD_GLOBAL
+                    )
+                    && let Some(arg) = instr.arg
+                {
+                    name_reads.entry(arg).or_default().push((node, i));
+                }
+            }
+        }
+
+        let mut to_remove: HashMap<NodeIndex, Vec<usize>> = HashMap::new();
+        for node in self.graph.node_indices() {
+            let instrs = &self.graph[node].instrs;
+            for i in 0..instrs.len() {
+                if instrs[i].get().map(|x| x.opcode.mnemonic()) != Some(Mnemonic::IMPORT_NAME) {
+                    continue;
+                }
+                // Scan forward over pure-data junk to the first IMPORT_FROM (the anchor).
+                let mut j = i + 1;
+                while j < instrs.len()
+                    && instrs[j].get().is_some_and(|x| is_class_junk_op(x.opcode.mnemonic()))
+                {
+                    j += 1;
+                }
+                if j == i + 1 || instrs.get(j).and_then(|x| x.get()).map(|x| x.opcode.mnemonic())
+                    != Some(Mnemonic::IMPORT_FROM)
+                {
+                    continue; // already clean, or not the import-junk shape
+                }
+                let stored = (i + 1..j).filter_map(|k| {
+                    let instr = instrs[k].get()?;
+                    (instr.opcode.mnemonic() == Mnemonic::STORE_NAME)
+                        .then_some(())
+                        .and(instr.arg)
+                });
+                let live = stored.clone().any(|name| {
+                    name_reads.get(&name).is_some_and(|reads| {
+                        reads.iter().any(|&(rn, ri)| rn != node || !(i + 1..j).contains(&ri))
+                    })
+                });
+                if live {
+                    continue;
+                }
+                to_remove.entry(node).or_default().extend(i + 1..j);
+            }
+        }
+        for (node, mut indices) in to_remove {
+            indices.sort_unstable();
+            let block = &mut self.graph[node];
+            for k in indices.into_iter().rev() {
+                block.instrs.remove(k);
+            }
+        }
+    }
+
     /// Ensure every leaf node (no outgoing edges) ends with RETURN_VALUE.
     /// Python's compiler always emits an implicit 'return None' at the end of
     /// every code object.  If the deobfuscator removes dead code that contained
@@ -2720,6 +2794,60 @@ pub(crate) mod tests {
         let make = body.iter().position(|m| *m == Mnemonic::MAKE_FUNCTION).unwrap();
         assert_eq!(body[make + 1], Mnemonic::CALL_FUNCTION, "call must follow make: {:?}", body);
         assert_eq!(body[make + 2], Mnemonic::BUILD_CLASS, "build_class must follow call: {:?}", body);
+    }
+
+    #[test]
+    fn strips_import_name_junk() {
+        // from m import a, with obfuscator junk wedged between IMPORT_NAME and IMPORT_FROM
+        // (dead store, INPLACE, and a stray LOAD_NAME on top of the module). The junk must
+        // be removed so IMPORT_NAME leads straight into IMPORT_FROM.
+        let mut code = default_code_obj();
+        Arc::get_mut(&mut code).unwrap().consts =
+            Arc::new(vec![Obj::None, Obj::None, crate::Long!(99i64), Obj::None]);
+        // names: 0=module, 1=imported attr, 2=unknown_0 (junk)
+        let instrs = [
+            Instr!(TargetOpcode::LOAD_CONST, 0),  // -1 import level
+            Instr!(TargetOpcode::LOAD_CONST, 1),  // fromlist
+            Instr!(TargetOpcode::IMPORT_NAME, 0), // module on stack
+            // --- junk between IMPORT_NAME and IMPORT_FROM ---
+            Instr!(TargetOpcode::LOAD_CONST, 2),
+            Instr!(TargetOpcode::STORE_NAME, 2),  // unknown_0 = 99
+            Instr!(TargetOpcode::LOAD_NAME, 2),
+            Instr!(TargetOpcode::LOAD_CONST, 2),
+            Instr!(TargetOpcode::INPLACE_ADD),
+            Instr!(TargetOpcode::STORE_NAME, 2),
+            Instr!(TargetOpcode::LOAD_NAME, 2),   // stray value on top of the module
+            Instr!(TargetOpcode::IMPORT_FROM, 1), // anchor: must peek the module
+            Instr!(TargetOpcode::STORE_NAME, 1),  // a = <attr>
+            Instr!(TargetOpcode::POP_TOP),
+            Instr!(TargetOpcode::LOAD_CONST, 3),
+            Instr!(TargetOpcode::RETURN_VALUE),
+        ];
+        change_code_instrs(&mut code, &instrs[..]);
+
+        let mut code_graph =
+            CodeGraph::<'_, TargetOpcode>::from_code(code, 0, false, None, None).unwrap();
+        code_graph.strip_import_name_junk();
+
+        let body: Vec<_> = code_graph
+            .graph
+            .node_indices()
+            .flat_map(|nx| code_graph.graph[nx].instrs.iter().filter_map(|i| i.get()))
+            .map(|i| i.opcode.mnemonic())
+            .collect();
+
+        assert!(
+            !body.iter().any(|m| *m == Mnemonic::INPLACE_ADD),
+            "junk arithmetic should be gone: {:?}",
+            body
+        );
+        let imp = body.iter().position(|m| *m == Mnemonic::IMPORT_NAME).unwrap();
+        assert_eq!(
+            body[imp + 1],
+            Mnemonic::IMPORT_FROM,
+            "IMPORT_FROM must follow IMPORT_NAME: {:?}",
+            body
+        );
     }
 
     #[test]

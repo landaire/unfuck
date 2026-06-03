@@ -127,6 +127,10 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             // by the update_bb_offsets below.
             code_graph.strip_build_class_junk();
 
+            // Likewise for junk between an IMPORT_NAME and its IMPORT_FROM, which leaves
+            // stray values on top of the module so IMPORT_FROM reads garbage.
+            code_graph.strip_import_name_junk();
+
             // update BB offsets
             //insert_jump_0(root_node_id, &mut code_graph);
             code_graph.update_bb_offsets();
