@@ -452,6 +452,7 @@ impl<'a> Emitter<'a> {
                 | Stmt::While { .. }
                 | Stmt::Loop { .. }
                 | Stmt::For { .. }
+                | Stmt::ForElse { .. }
                 | Stmt::Try { .. }
                 | Stmt::With { .. }
                 | Stmt::TryFinally { .. }
@@ -566,6 +567,17 @@ impl<'a> Emitter<'a> {
                 let rendered = format!("for {} in {}:", self.lvalue(target), self.expr(*iter, 0));
                 self.line(&rendered);
                 self.block(body);
+            }
+            Stmt::ForElse { target, iter, body, els } => {
+                let rendered = format!("for {} in {}:", self.lvalue(target), self.expr(*iter, 0));
+                self.line(&rendered);
+                self.block(body);
+                // An empty else clause (its region held only dead code, pruned by cleanup)
+                // is a no-op; emit a plain `for` rather than a redundant `else: pass`.
+                if !els.is_empty() {
+                    self.line("else:");
+                    self.block(els);
+                }
             }
             Stmt::Try { body, handlers } => {
                 self.line("try:");

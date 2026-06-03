@@ -336,6 +336,9 @@ fn has_module_scope_return(stmts: &[Stmt]) -> bool {
         | Stmt::Loop { body }
         | Stmt::For { body, .. }
         | Stmt::With { body, .. } => has_module_scope_return(body),
+        Stmt::ForElse { body, els, .. } => {
+            has_module_scope_return(body) || has_module_scope_return(els)
+        }
         Stmt::Try { body, handlers } => {
             has_module_scope_return(body)
                 || handlers.iter().any(|handler| has_module_scope_return(&handler.body))

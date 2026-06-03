@@ -154,6 +154,10 @@ pub struct Cfg {
     /// For each `ForIter` header block, the loop target assigned from the next
     /// item (the `STORE` that follows `FOR_ITER`).
     pub for_targets: HashMap<BlockId, LValue>,
+    /// For a `for ... else:` loop, maps the `FOR_ITER` exit block (the structurer's
+    /// loop follow, where the else clause begins) to the real follow block past the
+    /// else, which is also where `break` lands.
+    pub for_else: HashMap<BlockId, BlockId>,
 }
 
 impl Cfg {
@@ -230,7 +234,7 @@ impl Cfg {
         } else {
             HashMap::new()
         };
-        let breaks = break_targets(instrs);
+        let (breaks, for_else_offsets) = break_targets(instrs);
         let leaders = block_leaders(
             instrs,
             &ternaries,
@@ -347,12 +351,19 @@ impl Cfg {
             blocks.push(block);
         }
 
+        // Map the for...else (FOR_ITER exit -> real follow) offsets to block ids.
+        let for_else = for_else_offsets
+            .into_iter()
+            .filter_map(|(exit, follow)| Some((*by_offset.get(&exit)?, *by_offset.get(&follow)?)))
+            .collect();
+
         Ok(Cfg {
             blocks,
             entry: BlockId(0),
             by_offset,
             arena: unstacker.into_arena(),
             for_targets,
+            for_else,
         })
     }
 }
@@ -2355,29 +2366,84 @@ fn find_chained_comparisons(
 /// the enclosing `SETUP_LOOP`'s follow, which is the loop's follow as the
 /// structurer computes it (a `for` loop's `FOR_ITER` exit, a `while` loop's
 /// condition-false target). A `break` to that block becomes a `break` statement.
-fn break_targets(instrs: &[OffsetInstr]) -> HashMap<Offset, Offset> {
+///
+/// Also detects `for ... else:`. A plain loop's `FOR_ITER` exit `E` is immediately
+/// before the `SETUP_LOOP` follow `F` (`E == instrs[F-1]`, the `POP_BLOCK`). When an
+/// `else` clause is present it sits between, so `E != instrs[F-1]`; then `break` must
+/// jump past the else to `F` (not to `instrs[F-1]`, which lands in the else's dead
+/// epilogue), and `[E, F)` is the else region. The second returned map records, per
+/// `FOR_ITER` exit `E` (which is the structurer's loop follow), the real follow `F`.
+fn break_targets(instrs: &[OffsetInstr]) -> (HashMap<Offset, Offset>, HashMap<Offset, Offset>) {
     let index: HashMap<Offset, usize> = instrs
         .iter()
         .enumerate()
         .map(|(idx, item)| (item.offset, idx))
         .collect();
     let mut targets = HashMap::new();
-    let mut loops: Vec<Offset> = Vec::new();
+    let mut for_else = HashMap::new();
+    // Each open loop: (SETUP_LOOP follow F, this loop's FOR_ITER exit E if seen).
+    let mut loops: Vec<(Offset, Option<Offset>)> = Vec::new();
     for item in instrs {
-        while loops.last().is_some_and(|&follow| item.offset >= follow) {
+        while loops.last().is_some_and(|&(follow, _)| item.offset >= follow) {
             loops.pop();
         }
         match item.instr.opcode.mnemonic() {
             Mnemonic::SETUP_LOOP => {
                 if let Ok(follow) = branch_target(item) {
-                    loops.push(follow);
+                    loops.push((follow, None));
+                }
+            }
+            Mnemonic::FOR_ITER => {
+                if let Some(top) = loops.last_mut() {
+                    if top.1.is_none() {
+                        top.1 = branch_target(item).ok();
+                    }
                 }
             }
             Mnemonic::BREAK_LOOP => {
-                if let Some(&follow) = loops.last() {
+                if let Some(&(follow, for_iter_exit)) = loops.last() {
                     if let Some(&idx) = index.get(&follow) {
                         if idx > 0 {
-                            targets.insert(item.offset, instrs[idx - 1].offset);
+                            let natural = instrs[idx - 1].offset;
+                            // for...else: the FOR_ITER exit is not adjacent to the follow,
+                            // so an else clause sits between. Break past it to `follow`.
+                            // Only model a clean for...else: the else region [exit, follow)
+                            // must not branch PAST `follow`. The relinearizer can place the
+                            // real convergence point beyond the SETUP_LOOP follow (the else
+                            // ends in `JUMP_FORWARD <past follow>`), so `follow` is not the
+                            // true end; treating it as the else end would absorb the
+                            // after-loop code. Fall back to the plain break in that case.
+                            let clean_else = |exit: Offset| {
+                                let (Some(&ei), Some(&fi)) =
+                                    (index.get(&exit), index.get(&follow))
+                                else {
+                                    return false;
+                                };
+                                !instrs[ei..fi].iter().any(|it| {
+                                    let m = it.instr.opcode.mnemonic();
+                                    // A jump past the follow means the relinearizer placed
+                                    // the real convergence beyond it; loop machinery
+                                    // (BREAK/CONTINUE/a nested SETUP_LOOP) means the region
+                                    // is not a real else but a nested loop's break path. In
+                                    // either case `follow` is not the clean else end.
+                                    matches!(
+                                        m,
+                                        Mnemonic::BREAK_LOOP
+                                            | Mnemonic::CONTINUE_LOOP
+                                            | Mnemonic::SETUP_LOOP
+                                    ) || (it.instr.opcode.is_jump()
+                                        && branch_target(it).is_ok_and(|t| t > follow))
+                                })
+                            };
+                            match for_iter_exit {
+                                Some(exit) if exit != natural && clean_else(exit) => {
+                                    targets.insert(item.offset, follow);
+                                    for_else.insert(exit, follow);
+                                }
+                                _ => {
+                                    targets.insert(item.offset, natural);
+                                }
+                            }
                         }
                     }
                 }
@@ -2385,7 +2451,7 @@ fn break_targets(instrs: &[OffsetInstr]) -> HashMap<Offset, Offset> {
             _ => {}
         }
     }
-    targets
+    (targets, for_else)
 }
 
 /// Computes the absolute target offset of a branch instruction.

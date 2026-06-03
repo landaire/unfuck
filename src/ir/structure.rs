@@ -77,6 +77,11 @@ fn cleanup(stmts: &mut Vec<Stmt>) {
                 cleanup(body);
                 strip_tail_continue(body);
             }
+            Stmt::ForElse { body, els, .. } => {
+                cleanup(body);
+                strip_tail_continue(body);
+                cleanup(els);
+            }
             Stmt::Try { body, handlers } => {
                 cleanup(body);
                 for handler in handlers {
@@ -157,7 +162,14 @@ impl Structurer<'_> {
 
         let mut out = Vec::new();
         let mut cursor = Some(start);
+        let mut visited: HashSet<BlockId> = HashSet::new();
         while let Some(current) = cursor {
+            // A region is a forward walk; revisiting a block means the control flow did
+            // not reduce (a mis-structured loop follow that cycles). Reject rather than
+            // spin forever.
+            if !visited.insert(current) {
+                return Err(IrError::Unstructurable);
+            }
             if stop == Point::Block(current) {
                 break;
             }
@@ -366,6 +378,18 @@ impl Structurer<'_> {
                     .last()
                     .copied()
                     .ok_or(IrError::Unstructurable)?;
+                // `for ... else:`: this loop's follow (the FOR_ITER exit) begins an else
+                // clause that runs only on normal completion; `break` skips past it to the
+                // real follow. Structure the body with `break` bound to the real follow and
+                // the else as the region between the FOR_ITER exit and that follow.
+                if let Point::Block(exit_block) = follow {
+                    if let Some(&real_follow) = self.cfg.for_else.get(&exit_block) {
+                        let real = Point::Block(real_follow);
+                        let body = self.loop_body(header, body_entry, real, depth)?;
+                        let els = self.region(exit_block, real, depth + 1)?;
+                        return Ok((Stmt::ForElse { target, iter, body, els }, real));
+                    }
+                }
                 let body = self.loop_body(header, body_entry, follow, depth)?;
                 Ok((Stmt::For { target, iter, body }, follow))
             }

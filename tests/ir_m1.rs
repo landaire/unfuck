@@ -980,6 +980,46 @@ fn while_loop() {
 }
 
 #[test]
+fn for_else_loop() {
+    // def f(xs, y):
+    //     for x in xs:
+    //         if x == y: break
+    //     else:
+    //         y = 0
+    //     return y
+    // The else clause sits at the FOR_ITER exit; break skips past it to the follow.
+    let code = Builder::new("f", 2, &["xs", "y", "x"], &[], vec![long(0)])
+        .jump(Standard::SETUP_LOOP, "follow")
+        .arg(Standard::LOAD_FAST, 0) // xs
+        .op(Standard::GET_ITER)
+        .label("loop")
+        .jump(Standard::FOR_ITER, "forexit")
+        .arg(Standard::STORE_FAST, 2) // x
+        .arg(Standard::LOAD_FAST, 2) // x
+        .arg(Standard::LOAD_FAST, 1) // y
+        .arg(Standard::COMPARE_OP, 2) // ==
+        .jump(Standard::POP_JUMP_IF_FALSE, "loop") // mismatch -> continue
+        .op(Standard::BREAK_LOOP)
+        .jump(Standard::JUMP_ABSOLUTE, "loop")
+        .label("forexit")
+        .op(Standard::POP_BLOCK)
+        .arg(Standard::LOAD_CONST, 0) // 0
+        .arg(Standard::STORE_FAST, 1) // y = 0  (else)
+        .label("follow")
+        .arg(Standard::LOAD_FAST, 1) // y
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    let out = decompile(code);
+    assert!(!out.contains("__unrecovered__"), "for...else failed:\n{}", out);
+    assert!(out.contains("for x in xs:"), "missing for header:\n{}", out);
+    assert!(out.contains("if x == y:"), "missing if:\n{}", out);
+    assert!(out.contains("        break"), "missing break:\n{}", out);
+    assert!(out.contains("else:"), "missing else clause:\n{}", out);
+    assert!(out.contains("y = 0"), "missing else body:\n{}", out);
+}
+
+#[test]
 fn tuple_assignment() {
     // def f(p): a, b = p; return a
     let code = Builder::new("f", 1, &["p", "a", "b"], &[], vec![Obj::None])

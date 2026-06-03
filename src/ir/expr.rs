@@ -341,6 +341,15 @@ pub enum Stmt {
         iter: ValueId,
         body: Vec<Stmt>,
     },
+    /// `for target in iter: body else: els`. The `else` clause runs only when the loop
+    /// completes without `break` (it sits at the `FOR_ITER` exit, before the real
+    /// follow that `break` skips to).
+    ForElse {
+        target: LValue,
+        iter: ValueId,
+        body: Vec<Stmt>,
+        els: Vec<Stmt>,
+    },
     /// `try: ... except [type [as name]]: ...`. The handlers are emitted in source
     /// order; a handler with no `exc_type` is a bare `except:`.
     Try {
