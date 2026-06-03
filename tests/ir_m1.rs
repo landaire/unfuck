@@ -1131,6 +1131,45 @@ fn opaque_predicate_prunes_unlowerable_junk() {
 }
 
 #[test]
+fn strips_opaque_predicate_with_out_of_range_jump() {
+    // The obfuscator splices a dead predicate after real code: it unpacks its marker
+    // tuple (5 ints ending in 255) into temps, grinds set arithmetic over them, compares,
+    // and branches on a target PAST the end of the code -- a jump that can never be taken
+    // (CPython would fault), so the whole self-contained predicate is dead injection. It
+    // must be stripped, leaving just `x = 5` and the return.
+    let tuple = Obj::Tuple(Arc::new(RwLock::new(vec![
+        long(189),
+        long(23),
+        long(39),
+        long(61),
+        long(255),
+    ])));
+    let code = Builder::new("f", 0, &[], &["x", "a", "b", "c", "d", "e"], vec![Obj::None, long(5), tuple])
+        .arg(Standard::LOAD_CONST, 1) // 5
+        .arg(Standard::STORE_NAME, 0) // x = 5
+        .arg(Standard::LOAD_CONST, 2) // marker tuple
+        .arg(Standard::UNPACK_SEQUENCE, 5)
+        .arg(Standard::STORE_NAME, 1) // a
+        .arg(Standard::STORE_NAME, 2) // b
+        .arg(Standard::STORE_NAME, 3) // c
+        .arg(Standard::STORE_NAME, 4) // d
+        .arg(Standard::STORE_NAME, 5) // e
+        .arg(Standard::LOAD_NAME, 1)
+        .arg(Standard::LOAD_NAME, 2)
+        .arg(Standard::BUILD_SET, 2)
+        .arg(Standard::LOAD_NAME, 3)
+        .arg(Standard::LOAD_NAME, 4)
+        .arg(Standard::BUILD_SET, 2)
+        .arg(Standard::COMPARE_OP, 3) // !=
+        .arg(Standard::POP_JUMP_IF_TRUE, 9999) // out-of-range: dead branch
+        .arg(Standard::LOAD_CONST, 0) // None
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f():\n    x = 5\n    return None\n");
+}
+
+#[test]
 fn swap_is_recovered() {
     // A ROT_TWO swap (`a, b = b, a`) is a two-element parallel assignment: the
     // compiler loads both values then rotates so the stores take them in order.

@@ -459,8 +459,26 @@ fn opaque_block_end(instrs: &[OffsetInstr], start: usize, code: &Code) -> Option
     // consumer (see `is_safe_consumer`). Stopping at an unrecognized arithmetic op
     // would mean an incomplete junk block, so it is rejected rather than half-removed.
     let mut stopped_below_entry = false;
+    // Set when the block ends in the obfuscator's dead predicate branch (below): a fully
+    // self-contained junk computation that grinds its temps and discards the result,
+    // rather than one that buries a real operand beneath leftover junk.
+    let mut dead_predicate = false;
     for (idx, item) in instrs.iter().enumerate().skip(start) {
         let mnemonic = item.instr.opcode.mnemonic();
+        // The obfuscator's dead predicate branch: a conditional jump whose target is
+        // past the end of the code can never be taken (CPython would fault on it), so it
+        // only pops the comparison the junk arithmetic just built. When the block is
+        // balanced up to here, this is its clean terminus -- the entire predicate (the
+        // unpack, the set/arithmetic grind, the compare, and this jump) is dead injection.
+        if matches!(mnemonic, Mnemonic::POP_JUMP_IF_TRUE | Mnemonic::POP_JUMP_IF_FALSE)
+            && item.instr.arg.is_some_and(|t| (t as usize) >= code.code.len())
+            && depth >= 1
+        {
+            depth -= 1;
+            end = idx + 1;
+            dead_predicate = true;
+            break;
+        }
         // `pops` is how many stack values the instruction consumes, or `None` if it is
         // not a junk-block opcode (so it terminates the block).
         let pops: Option<isize> = if let Some(p) = pure_value_pops(&item.instr) {
@@ -510,36 +528,46 @@ fn opaque_block_end(instrs: &[OffsetInstr], start: usize, code: &Code) -> Option
         }
     }
 
-    // The block must leave junk behind (the buried operand sits below it), and that
-    // junk must come from real opaque work: either arithmetic/set grinding over the
-    // temps, or an incomplete unpack (more values produced than stored -- a shape
-    // real code never emits). This rejects an ordinary `a, b, c, d, e = (..., 255)`
-    // unpack whose values are then used, which leaves no junk and stores every one.
-    if depth < 1 || !(saw_op || pending_unpack > 0) {
-        return None;
-    }
-    // The boundary must be trustworthy: either a below-entry consumer, or a known
-    // non-arithmetic consumer opcode. If the scan stopped at some opcode we do not
-    // model (an arithmetic op missing from `pure_value_pops`), the block would be
-    // only partially recognized and removing it could corrupt the stack, so bail.
-    let safe_boundary =
-        stopped_below_entry || (end < instrs.len() && is_safe_consumer(instrs[end].instr.opcode.mnemonic()));
-    if !safe_boundary {
-        return None;
-    }
-    // Trailing constant loads belong to the consumer that follows the block, not to
-    // the junk: when the obfuscator splices its block into the middle of an operand
-    // setup (e.g. between an import's level and its fromlist), the trailing
-    // `LOAD_CONST` is the next real operand. A constant load pushes without consuming,
-    // so leaving it in place is always safe; removing it would underflow the consumer.
-    while end > start && instrs[end - 1].instr.opcode.mnemonic() == Mnemonic::LOAD_CONST {
-        end -= 1;
-        depth -= 1;
-    }
-    // After trimming, the block must still leave junk behind (depth >= 1) and end on a
-    // junk-consuming op, not have collapsed to bare setup.
-    if depth < 1 {
-        return None;
+    if dead_predicate {
+        // A fully self-contained dead predicate (depth returned to 0): it must have done
+        // real opaque work (set/arithmetic grinding), not be a bare unpack. Its terminus
+        // (the out-of-range jump) is its own clean boundary, so the buried-operand and
+        // trailing-LOAD_CONST handling below does not apply.
+        if !saw_op {
+            return None;
+        }
+    } else {
+        // The block must leave junk behind (the buried operand sits below it), and that
+        // junk must come from real opaque work: either arithmetic/set grinding over the
+        // temps, or an incomplete unpack (more values produced than stored -- a shape
+        // real code never emits). This rejects an ordinary `a, b, c, d, e = (..., 255)`
+        // unpack whose values are then used, which leaves no junk and stores every one.
+        if depth < 1 || !(saw_op || pending_unpack > 0) {
+            return None;
+        }
+        // The boundary must be trustworthy: either a below-entry consumer, or a known
+        // non-arithmetic consumer opcode. If the scan stopped at some opcode we do not
+        // model (an arithmetic op missing from `pure_value_pops`), the block would be
+        // only partially recognized and removing it could corrupt the stack, so bail.
+        let safe_boundary = stopped_below_entry
+            || (end < instrs.len() && is_safe_consumer(instrs[end].instr.opcode.mnemonic()));
+        if !safe_boundary {
+            return None;
+        }
+        // Trailing constant loads belong to the consumer that follows the block, not to
+        // the junk: when the obfuscator splices its block into the middle of an operand
+        // setup (e.g. between an import's level and its fromlist), the trailing
+        // `LOAD_CONST` is the next real operand. A constant load pushes without consuming,
+        // so leaving it in place is always safe; removing it would underflow the consumer.
+        while end > start && instrs[end - 1].instr.opcode.mnemonic() == Mnemonic::LOAD_CONST {
+            end -= 1;
+            depth -= 1;
+        }
+        // After trimming, the block must still leave junk behind (depth >= 1) and end on a
+        // junk-consuming op, not have collapsed to bare setup.
+        if depth < 1 {
+            return None;
+        }
     }
     // The temps it computes must be dead: if any is read outside the block, it is a
     // real variable and removing its stores would change behavior. Together with the
