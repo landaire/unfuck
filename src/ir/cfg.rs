@@ -1292,8 +1292,17 @@ fn pure_ternary_arm(
                     }
                 }
             }
-            if mnemonic == Mnemonic::JUMP_FORWARD && branch_target(item).ok() == Some(merge) {
-                return true;
+            if mnemonic == Mnemonic::JUMP_FORWARD {
+                if let Ok(target) = branch_target(item) {
+                    // The closing jump of a nested sub-ternary inside this arm jumps to
+                    // that sub-ternary's OWN merge, which lies within this arm (target <=
+                    // end) -- distinct from a chained ternary's then-jump to the shared
+                    // outer merge. Both are value-level control flow the unstacker folds
+                    // (it keeps a stack of pending ternaries, each with its own merge).
+                    if target == merge || (target > item.offset && target <= end) {
+                        return true;
+                    }
+                }
             }
             !is_statement_or_control(mnemonic)
         })

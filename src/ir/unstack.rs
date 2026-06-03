@@ -42,6 +42,11 @@ struct PendingTernary {
     cond: ValueId,
     then: Option<ValueId>,
     merge: Offset,
+    /// The diamond's else target -- where the `POP_JUMP_IF_*` branches when the test
+    /// fails. A following `POP_JUMP` that branches to the SAME target (and whose `then`
+    /// is not yet set) is an `and`-chain continuation of this ternary's condition; one
+    /// that branches elsewhere begins a nested ternary inside this arm.
+    else_target: Offset,
 }
 
 /// A `from module import ...` under construction. `IMPORT_NAME` leaves the module
@@ -1712,13 +1717,22 @@ impl Unstacker {
                 if mnemonic == Mnemonic::POP_JUMP_IF_TRUE {
                     cond = self.arena.alloc(Expr::Unary(UnaryOp::Not, cond));
                 }
+                // POP_JUMP_IF_* branches absolutely in 2.7: the operand is the else target.
+                let else_target = Offset(arg_u16(arg)? as u32);
                 // The innermost pending ternary with no `then` yet is still gathering its
-                // condition: another POP_JUMP folds in as a compound `and` test. If the
-                // top ternary already has its `then` (we are in its else arm) or the stack
-                // is empty, this POP_JUMP begins a new (nested) ternary -- a chained
-                // `a if c1 else b if c2 else d` -- so push it. All share the merge and
-                // resolve there innermost-first.
-                if self.ternary.last().is_some_and(|p| p.then.is_none()) {
+                // condition -- BUT only a POP_JUMP that branches to the SAME else target is a
+                // compound `and` continuation of it. A POP_JUMP to a DIFFERENT target opens a
+                // nested ternary inside the cond/value region (e.g. a subscript key computed
+                // by an inner ternary, `d[k1 if c else k2] if outer else e`), whose then is
+                // also unset at this point; folding it into the `and` would be wrong. If the
+                // top ternary already has its `then` (we are in its else arm), the POP_JUMP
+                // likewise begins a nested ternary -- a chained `a if c1 else b if c2 else d`.
+                // Nested ternaries push and resolve innermost-first at their own merge.
+                if self
+                    .ternary
+                    .last()
+                    .is_some_and(|p| p.then.is_none() && p.else_target == else_target)
+                {
                     let prev = self.ternary.last().unwrap().cond;
                     let merged = self.and_chain(prev, cond);
                     self.ternary.last_mut().unwrap().cond = merged;
@@ -1727,6 +1741,7 @@ impl Unstacker {
                         cond,
                         then: None,
                         merge: Offset(0),
+                        else_target,
                     });
                 }
             }
