@@ -1170,6 +1170,47 @@ fn strips_opaque_predicate_with_out_of_range_jump() {
 }
 
 #[test]
+fn ternary_arm_with_chained_comparison() {
+    // def f(c, p, q, r): return 1 if c else 2 if p <= q < r else 3
+    // The outer ternary's else arm holds a nested ternary whose condition is a chained
+    // comparison (`p <= q < r`). That comparison short-circuits to its OWN cleanup
+    // (ROT_TWO; POP_TOP), not the ternary merge, so pure_ternary_arm must treat the whole
+    // chained-comparison machinery as a pure value rather than reject the arm.
+    let code = Builder::new("f", 4, &["c", "p", "q", "r"], &[], vec![long(1), long(2), long(3)])
+        .arg(Standard::LOAD_FAST, 0) // c
+        .jump(Standard::POP_JUMP_IF_FALSE, "else_outer")
+        .arg(Standard::LOAD_CONST, 0) // 1
+        .jump(Standard::JUMP_FORWARD, "merge_outer")
+        .label("else_outer")
+        .arg(Standard::LOAD_FAST, 1) // p
+        .arg(Standard::LOAD_FAST, 2) // q
+        .op(Standard::DUP_TOP)
+        .op(Standard::ROT_THREE)
+        .arg(Standard::COMPARE_OP, 1) // <=
+        .jump(Standard::JUMP_IF_FALSE_OR_POP, "cleanup")
+        .arg(Standard::LOAD_FAST, 3) // r
+        .arg(Standard::COMPARE_OP, 0) // <
+        .jump(Standard::JUMP_FORWARD, "merge_inner")
+        .label("cleanup")
+        .op(Standard::ROT_TWO)
+        .op(Standard::POP_TOP)
+        .label("merge_inner")
+        .jump(Standard::POP_JUMP_IF_FALSE, "else_inner")
+        .arg(Standard::LOAD_CONST, 1) // 2
+        .jump(Standard::JUMP_FORWARD, "merge_outer")
+        .label("else_inner")
+        .arg(Standard::LOAD_CONST, 2) // 3
+        .label("merge_outer")
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(c, p, q, r):\n    return 1 if c else 2 if p <= q < r else 3\n"
+    );
+}
+
+#[test]
 fn swap_is_recovered() {
     // A ROT_TWO swap (`a, b = b, a`) is a two-element parallel assignment: the
     // compiler loads both values then rotates so the stores take them in order.

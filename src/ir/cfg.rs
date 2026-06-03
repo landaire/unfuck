@@ -199,15 +199,24 @@ impl Cfg {
         // comp (whose loop STOREs / LIST_APPEND are part of a folded value, not
         // statements) is still recognised as a pure value arm.
         let (list_comps, mut list_interior, comp_ternaries) = find_list_comps(instrs);
-        let mut ternaries = find_ternaries(instrs, &list_interior);
+        // A chained comparison's short-circuit lands past its cleanup; record the
+        // merge override and drop the cleanup/forward-jump instructions. Computed before
+        // find_ternaries so a ternary arm holding a chained comparison (whose short-circuit
+        // JUMP_IF_*_OR_POP targets its own cleanup, not the ternary merge) is still seen as
+        // a pure value arm rather than rejected on that jump.
+        let (merge_overrides, chained_excluded) = find_chained_comparisons(instrs);
+        // The interior of every chained comparison: its short-circuit jumps (the override
+        // keys) and its cleanup (ROT_TWO; POP_TOP; the closing JUMP_FORWARD, in
+        // chained_excluded). All are value-level machinery the unstacker folds to one
+        // comparison, so a ternary arm containing them stays a pure value arm.
+        let mut chained_interior: HashSet<Offset> = merge_overrides.keys().copied().collect();
+        chained_interior.extend(chained_excluded.iter().copied());
+        let mut ternaries = find_ternaries(instrs, &list_interior, &chained_interior);
         let (tries, mut excluded) = recover_tries(instrs)?;
         let (withs, with_excluded) = recover_withs(instrs)?;
         excluded.extend(with_excluded);
         let (finallys, finally_excluded) = recover_finallys(instrs)?;
         excluded.extend(finally_excluded);
-        // A chained comparison's short-circuit lands past its cleanup; record the
-        // merge override and drop the cleanup/forward-jump instructions.
-        let (merge_overrides, chained_excluded) = find_chained_comparisons(instrs);
         excluded.extend(chained_excluded);
         // A reordered ternary's else arm is excluded from block formation and fed at
         // the merge instead, so the existing in-block ternary folding applies.
@@ -1177,7 +1186,11 @@ fn scan_bool_region(instrs: &[OffsetInstr], start: usize) -> Option<(usize, bool
     }
 }
 
-fn find_ternaries(instrs: &[OffsetInstr], list_interior: &HashSet<Offset>) -> HashSet<Offset> {
+fn find_ternaries(
+    instrs: &[OffsetInstr],
+    list_interior: &HashSet<Offset>,
+    chained: &HashSet<Offset>,
+) -> HashSet<Offset> {
     let index: HashMap<Offset, usize> = instrs
         .iter()
         .enumerate()
@@ -1220,8 +1233,8 @@ fn find_ternaries(instrs: &[OffsetInstr], list_interior: &HashSet<Offset>) -> Ha
         if then_start >= jump.offset {
             continue;
         }
-        if pure_ternary_arm(instrs, then_start, jump.offset, merge, list_interior)
-            && pure_ternary_arm(instrs, else_target, merge, merge, list_interior)
+        if pure_ternary_arm(instrs, then_start, jump.offset, merge, list_interior, chained)
+            && pure_ternary_arm(instrs, else_target, merge, merge, list_interior, chained)
         {
             ternaries.insert(item.offset);
             ternaries.insert(jump.offset);
@@ -1273,6 +1286,7 @@ fn pure_ternary_arm(
     end: Offset,
     merge: Offset,
     list_interior: &HashSet<Offset>,
+    chained: &HashSet<Offset>,
 ) -> bool {
     instrs
         .iter()
@@ -1284,6 +1298,13 @@ fn pure_ternary_arm(
             // statements. Skip them so `str([x for x in xs]) if cond else ''` is a pure
             // value arm rather than rejected on the comprehension's STORE_FAST.
             if list_interior.contains(&item.offset) {
+                return true;
+            }
+            // A chained comparison (`a <= b < c`) inside the arm short-circuits to its OWN
+            // cleanup, not the ternary merge, and ends in a ROT_TWO; POP_TOP the iteration
+            // below would otherwise reject. find_chained_comparisons recorded all of that
+            // machinery; the unstacker folds it to one comparison value, so skip it.
+            if chained.contains(&item.offset) {
                 return true;
             }
             if matches!(
