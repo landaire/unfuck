@@ -656,7 +656,7 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    fn lvalue(&self, target: &LValue) -> String {
+    pub(crate) fn lvalue(&self, target: &LValue) -> String {
         match target {
             LValue::Local(var) => self.varname(*var),
             LValue::Deref(deref) => self.derefname(*deref),

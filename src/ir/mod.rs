@@ -26,7 +26,7 @@ use py27_marshal::{Code, CodeFlags, Obj};
 use pydis::opcode::py27::Mnemonic;
 
 use cfg::{Cfg, OffsetInstr};
-use expr::{ExprArena, Stmt};
+use expr::{Expr, ExprArena, LValue, Stmt};
 
 /// Reasons the IR pipeline can reject or fail on a code object.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,6 +177,9 @@ impl StructuredFunction {
         }
         source.push_str(&self.signature(defaults));
         source.push('\n');
+        // A `def` keeps the compiler's own form for tuple parameters -- a synthetic `.N`
+        // positional arg plus the leading unpack as a body statement -- which is valid
+        // (if unsugared) Python, so the whole body is emitted as-is.
         let body = emit::Emitter::new(&self.code, &self.arena).render_body(&self.body);
         source.push_str(&body);
         source
@@ -259,6 +262,92 @@ impl StructuredFunction {
     /// Builds the parameter list (positional with defaults, then `*args`/`**kwargs`)
     /// from the code object's metadata. Shared by [`Self::signature`] and lambda
     /// rendering. `defaults` are already rendered in the enclosing scope.
+    /// Python 2 tuple parameters (`def f((a, b)):`, `lambda (a, b): ...`) compile to a
+    /// synthetic positional argument named `.N` that the body unpacks immediately into
+    /// the real names. Returns the rendered `(a, b)` text per affected parameter index
+    /// and the count of leading unpack statements that belong to those parameters --
+    /// they are the signature, not body statements, so the body rendering drops them.
+    fn tuple_params(&self) -> (Vec<(usize, String)>, usize) {
+        let argcount = self.code.argcount as usize;
+        let emitter = emit::Emitter::new(&self.code, &self.arena);
+        let mut tuples = Vec::new();
+        let mut skip = 0;
+        for stmt in &self.body {
+            let Stmt::Assign(target, value) = stmt else { break };
+            if !matches!(target, LValue::Tuple(_)) {
+                break;
+            }
+            let Expr::Local(var) = self.arena.get(*value) else { break };
+            let idx = var.0 as usize;
+            // Only a synthetic `.N` tuple-parameter name starts with a dot (a real
+            // parameter is a valid identifier), and it must be a positional parameter.
+            let synthetic = idx < argcount
+                && self
+                    .code
+                    .varnames
+                    .get(idx)
+                    .is_some_and(|n| n.to_string().starts_with('.'));
+            if !synthetic {
+                break;
+            }
+            tuples.push((idx, format!("({})", emitter.lvalue(target))));
+            skip += 1;
+        }
+        (tuples, skip)
+    }
+
+    /// The body with the leading tuple-parameter unpack statements removed (they are
+    /// rendered in the signature instead).
+    fn body_without_param_unpacks(&self) -> &[Stmt] {
+        &self.body[self.tuple_params().1..]
+    }
+
+    /// Whether two parameters render to the same identifier. The deobfuscator maps an
+    /// unrecoverable parameter name to a placeholder (commonly `_`), so two distinct
+    /// obfuscated names can collide -- `def f(_, _)` / `lambda (_, _): ...` is a
+    /// SyntaxError. Such a signature cannot be emitted faithfully, so the function is
+    /// rejected (kept as a graceful failure) rather than rendered as invalid Python.
+    fn has_duplicate_params(&self) -> bool {
+        fn collect(lv: &LValue, code: &Code, out: &mut Vec<String>) {
+            match lv {
+                LValue::Local(v) => out.push(code.varnames.get(v.0 as usize).map_or_else(
+                    || format!("var{}", v.0),
+                    |n| emit::sanitize_identifier(&n.to_string()),
+                )),
+                LValue::Tuple(items) => items.iter().for_each(|i| collect(i, code, out)),
+                _ => {}
+            }
+        }
+        let argcount = self.code.argcount as usize;
+        let skip = self.tuple_params().1;
+        let mut names = Vec::new();
+        // Leaf targets of the tuple parameters (their unpack statements).
+        for stmt in self.body.iter().take(skip) {
+            if let Stmt::Assign(target, _) = stmt {
+                collect(target, &self.code, &mut names);
+            }
+        }
+        // Plain positional parameters (the synthetic `.N` tuple slots are covered above).
+        for name in self.code.varnames.iter().take(argcount) {
+            let name = name.to_string();
+            if !name.starts_with('.') {
+                names.push(emit::sanitize_identifier(&name));
+            }
+        }
+        // `*args` / `**kwargs`.
+        let mut extra = argcount;
+        for flag in [CodeFlags::VARARGS, CodeFlags::VARKEYWORDS] {
+            if self.code.flags.contains(flag) {
+                if let Some(name) = self.code.varnames.get(extra) {
+                    names.push(emit::sanitize_identifier(&name.to_string()));
+                }
+                extra += 1;
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        names.iter().any(|n| !seen.insert(n.clone()))
+    }
+
     fn params(&self, defaults: &[String]) -> Vec<String> {
         let ident = |name: &str| emit::sanitize_identifier(name);
         let argcount = self.code.argcount as usize;
@@ -302,9 +391,24 @@ impl StructuredFunction {
     /// caller can fall back to rejecting the construct.
     fn lambda_source(&self, defaults: &[String]) -> Option<String> {
         // A lambda body is a single expression, but the compiler lowers a ternary in
-        // it to `if c: return a else: return b`; accept that shape as well.
-        let body = emit::Emitter::new(&self.code, &self.arena).body_as_expr(&self.body, 0)?;
-        let params = self.params(defaults).join(", ");
+        // it to `if c: return a else: return b`; accept that shape as well. A lambda
+        // cannot hold the body statements a `def` uses, so a tuple parameter
+        // (`lambda (a, b): ...`) must be rendered in the parameter list with its leading
+        // unpack dropped from the body. Colliding parameter names make the lambda invalid
+        // (`lambda (_, _): ...`), so reject those.
+        if self.has_duplicate_params() {
+            return None;
+        }
+        let (tuples, _) = self.tuple_params();
+        let mut params = self.params(defaults);
+        for (idx, rendered) in tuples {
+            if let Some(param) = params.get_mut(idx) {
+                *param = rendered;
+            }
+        }
+        let body = emit::Emitter::new(&self.code, &self.arena)
+            .body_as_expr(self.body_without_param_unpacks(), 0)?;
+        let params = params.join(", ");
         Some(if params.is_empty() {
             format!("lambda: {}", body)
         } else {

@@ -1266,6 +1266,34 @@ fn nested_loop_inner_if_breaks() {
 }
 
 #[test]
+fn lambda_with_tuple_parameter() {
+    // def f(): return lambda (a, b): a + b
+    // A Python 2 tuple parameter compiles to a synthetic `.0` arg the body unpacks. A
+    // lambda cannot hold the unpack as a statement, so it must render in the parameter
+    // list (`lambda (a, b): ...`) with the unpack dropped from the body; previously the
+    // leading unpack made body_as_expr reject the lambda as __unrecovered__.
+    // PackItemInfo.create's ifilter predicate.
+    let lam = Builder::new("<lambda>", 1, &[".0", "a", "b"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 0) // .0 (the tuple arg)
+        .arg(Standard::UNPACK_SEQUENCE, 2)
+        .arg(Standard::STORE_FAST, 1) // a
+        .arg(Standard::STORE_FAST, 2) // b
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::LOAD_FAST, 2)
+        .op(Standard::BINARY_ADD)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+    let lam_obj = Obj::Code(Arc::new(RwLock::new((*lam).clone())));
+    let code = Builder::new("f", 0, &[], &[], vec![Obj::None, lam_obj])
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::MAKE_FUNCTION, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f():\n    return lambda (a, b): a + b\n");
+}
+
+#[test]
 fn complex_constant() {
     // def f(): return (2+3j)  /  def g(): return -0j
     // A complex constant rendered as `__unrecovered___const_Complex` because render_obj
