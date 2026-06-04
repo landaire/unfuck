@@ -178,6 +178,26 @@ fn arithmetic_return() {
 }
 
 #[test]
+fn degenerate_predicate_is_stripped() {
+    // The obfuscator splices a conditional jump whose taken target IS its own
+    // fall-through (here `a % 2` tested by a POP_JUMP_IF_FALSE to the next
+    // instruction). It can never divert control, so the whole dead predicate -- the
+    // junk value and the jump -- is removed, leaving only the live `return a`. Left in
+    // place it would split the block and surface as an unsupported short-circuit.
+    let code = Builder::new("f", 1, &["a"], &[], vec![Obj::None, long(2)])
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::LOAD_CONST, 1)
+        .op(Standard::BINARY_MODULO)
+        .jump(Standard::POP_JUMP_IF_FALSE, "next")
+        .label("next")
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(a):\n    return a\n");
+}
+
+#[test]
 fn precedence_parenthesises() {
     // (1 + 2) * 3
     let code = Builder::new("f", 0, &[], &[], vec![Obj::None, long(1), long(2), long(3)])

@@ -424,6 +424,84 @@ pub fn strip_noop_jumps(instrs: &mut [OffsetInstr]) {
     }
 }
 
+/// The net stack effect (pushes minus pops) of a side-effect-free value opcode, or
+/// `None` for anything else. Only the opcodes an opaque predicate is built from are
+/// modelled, so a backward walk over a predicate stops the moment it leaves that
+/// vocabulary -- it never tries to reason about a call, a store, or control flow.
+fn opaque_value_delta(instr: &Instruction<Standard>) -> Option<isize> {
+    use Mnemonic::*;
+    Some(match instr.opcode.mnemonic() {
+        LOAD_CONST | LOAD_FAST | LOAD_NAME | LOAD_GLOBAL | LOAD_DEREF | DUP_TOP => 1,
+        UNARY_POSITIVE | UNARY_NEGATIVE | UNARY_NOT | UNARY_INVERT | UNARY_CONVERT | ROT_TWO
+        | ROT_THREE => 0,
+        BINARY_POWER | BINARY_MULTIPLY | BINARY_DIVIDE | BINARY_MODULO | BINARY_ADD
+        | BINARY_SUBTRACT | BINARY_SUBSC | BINARY_FLOOR_DIVIDE | BINARY_TRUE_DIVIDE
+        | BINARY_LSHIFT | BINARY_RSHIFT | BINARY_AND | BINARY_XOR | BINARY_OR | INPLACE_POWER
+        | INPLACE_MULTIPLY | INPLACE_DIVIDE | INPLACE_MODULO | INPLACE_ADD | INPLACE_SUBTRACT
+        | INPLACE_FLOOR_DIVIDE | INPLACE_TRUE_DIVIDE | INPLACE_LSHIFT | INPLACE_RSHIFT
+        | INPLACE_AND | INPLACE_XOR | INPLACE_OR | COMPARE_OP => -1,
+        BUILD_TUPLE | BUILD_LIST | BUILD_SET => 1 - instr.arg.unwrap_or(0) as isize,
+        _ => return None,
+    })
+}
+
+/// Neutralizes the obfuscator's degenerate opaque predicates. A conditional jump
+/// whose taken target is its own fall-through (the next instruction) proceeds to the
+/// same place whether or not the branch is taken, so it can never divert control: no
+/// real 2.7 compiler emits one, and it exists only to pop a junk comparison and split
+/// a block, defeating the unstacker's ternary/boolean folding (surfacing as the
+/// catch-all `Unsupported(JUMP_IF_FALSE_OR_POP)`).
+///
+/// The whole predicate -- the value it tests and the jump -- is removed by walking
+/// backward over the side-effect-free value opcodes that produce the jump's single
+/// popped operand until they balance to a self-contained run, then overwriting that
+/// run and the jump with `NOP`s (offset-preserving, like [`strip_noop_jumps`]). The
+/// walk is conservative: if it reaches an opcode outside the predicate vocabulary
+/// before the operand balances, nothing is touched, so a genuine (non-degenerate)
+/// computation is never disturbed.
+pub fn strip_degenerate_predicates(instrs: &mut [OffsetInstr]) {
+    for i in 0..instrs.len() {
+        if !matches!(
+            instrs[i].instr.opcode.mnemonic(),
+            Mnemonic::POP_JUMP_IF_TRUE | Mnemonic::POP_JUMP_IF_FALSE
+        ) {
+            continue;
+        }
+        // The fall-through is the next instruction; comparing offsets stays correct
+        // even after an earlier predicate was rewritten to shorter NOPs.
+        let Some(next_offset) = instrs.get(i + 1).map(|n| n.offset) else {
+            continue;
+        };
+        if branch_target(&instrs[i]) != Ok(next_offset) {
+            continue;
+        }
+        // Walk backward accumulating the net values produced; the jump pops one, so the
+        // predicate's value producer is the run that nets exactly +1. A `Some` delta
+        // keeps the walk inside the pure-value vocabulary; anything else aborts.
+        let mut produced = 0isize;
+        let mut start = None;
+        for j in (0..i).rev() {
+            let Some(delta) = opaque_value_delta(&instrs[j].instr) else {
+                break;
+            };
+            produced += delta;
+            if produced == 1 {
+                start = Some(j);
+                break;
+            }
+            if produced > 1 {
+                break;
+            }
+        }
+        if let Some(start) = start {
+            for slot in &mut instrs[start..=i] {
+                slot.instr.opcode = Standard::NOP;
+                slot.instr.arg = None;
+            }
+        }
+    }
+}
+
 /// Neutralizes the obfuscator's opaque-predicate stack injections.
 ///
 /// The obfuscator splices a block of the shape `LOAD_CONST <5-int tuple ending in
