@@ -2098,18 +2098,23 @@ fn recover_try(
     }
 
     // Merge-less rejection (see the `end` match above): a merge-less try whose handlers
-    // might fall through into an enclosing finally/with cleanup would be double-emitted
+    // might fall through into an *enclosing* finally/with cleanup would be double-emitted
     // (the finally/with structurer also emits that cleanup). Accept it only when every
     // handler provably terminates -- its body raises or returns before reaching any
-    // branch -- so none can fall through. An object with no SETUP_FINALLY/SETUP_WITH
-    // has no enclosing cleanup to clash with, so it needs no check.
+    // branch -- so none can fall through. The clash requires a cleanup that actually
+    // spans this try: a SETUP_FINALLY/SETUP_WITH before this setup whose protected range
+    // (up to its branch target) extends past it. A SETUP_FINALLY that sits *after* this
+    // try, or a sibling that ends before it, is not an enclosing cleanup and so does not
+    // need this guard -- declining those needlessly loses recoverable objects (whichdb).
+    let enclosed_by_cleanup = instrs.iter().any(|item| {
+        matches!(
+            item.instr.opcode.mnemonic(),
+            Mnemonic::SETUP_FINALLY | Mnemonic::SETUP_WITH
+        ) && item.offset < setup.offset
+            && branch_target(item).is_ok_and(|target| target > setup.offset)
+    });
     if end.is_none()
-        && instrs.iter().any(|item| {
-            matches!(
-                item.instr.opcode.mnemonic(),
-                Mnemonic::SETUP_FINALLY | Mnemonic::SETUP_WITH
-            )
-        })
+        && enclosed_by_cleanup
         && !clauses.iter().all(|c| clause_terminates(instrs, index, c.body_entry))
     {
         return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT));
