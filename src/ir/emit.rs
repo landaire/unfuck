@@ -284,14 +284,21 @@ impl<'a> Emitter<'a> {
                     return false;
                 };
                 let name = nested.name.to_string();
-                // A `<lambda>`/`<genexpr>` has no `def` form, and the target must name
-                // the function for `@deco def name` to be the original source. The
-                // deobfuscator renames the nested code object to `<name>_orig_<id>`
-                // while leaving the store at the clean name, so compare against the
-                // de-mangled form.
-                if name.starts_with('<')
-                    || self.lvalue(target) != strip_orig_suffix(&sanitize_identifier(&name))
-                {
+                // The target must name the function for `@deco def name` to be the
+                // original source. A clean co_name de-mangles to the target (the
+                // deobfuscator renames the code object to `<name>_orig_<id>` while
+                // leaving the store at the clean name). The obfuscator also rewrites a
+                // real method's co_name to a `<dictcomp>`/`<genexpr>` form; that is still
+                // a def named by its store target (`function_def` renames the header), so
+                // accept it -- but a `<lambda>` (rendered as an assignment, not a def, so
+                // `@deco` could not attach) and a genuine comprehension body (`.0` arg, no
+                // standalone def form) are not decorated defs.
+                let is_decorated_def = if name.starts_with('<') {
+                    name != "<lambda>" && !super::is_comprehension_body(&nested)
+                } else {
+                    self.lvalue(target) == strip_orig_suffix(&sanitize_identifier(&name))
+                };
+                if !is_decorated_def {
                     return false;
                 }
                 self.emit_decorators(&decorators);
