@@ -1403,6 +1403,32 @@ fn ternary_shortcircuit_then() {
 }
 
 #[test]
+fn lambda_as_or_operand_is_parenthesised() {
+    // def f(a): return a or (lambda: 0)
+    // A lambda is the lowest-precedence Python expression (its `:` body runs to the
+    // end), so as the right operand of `or` it must be parenthesised: without parens
+    // `a or lambda: 0` is a SyntaxError. MakeFunction reported prec::ATOM, so the
+    // lambda was never wrapped. Report it at TERNARY level so an or/and/binary operand
+    // parenthesises while a top-level value does not. (lib2to3 parse.Parser.__init__:
+    // `self.convert = convert or (lambda grammar, node: node)`.)
+    let lam = Builder::new("<lambda>", 0, &[], &[], vec![long(0)])
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+    let lam_obj = Obj::Code(Arc::new(RwLock::new((*lam).clone())));
+    let code = Builder::new("f", 1, &["a"], &[], vec![Obj::None, lam_obj])
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::JUMP_IF_TRUE_OR_POP, "end")
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::MAKE_FUNCTION, 0)
+        .label("end")
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(a):\n    return a or (lambda: 0)\n");
+}
+
+#[test]
 fn shortcircuit_wrapping_ternary() {
     // def f(a, c, b, d): return a and (b if c else d)
     // The `a and` short-circuit (JUMP_IF_FALSE_OR_POP) opens BEFORE the ternary and

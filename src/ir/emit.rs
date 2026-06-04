@@ -843,8 +843,13 @@ impl<'a> Emitter<'a> {
             // unstacker did not fully match; mark it so the function is rejected.
             Expr::UnpackSlot | Expr::ClosureCell(_) => {(UNRECOVERED.to_string(), prec::ATOM) }
             // A `<lambda>` renders inline; a named function used as a value (an
-            // undetected decorator) cannot, and is marked unrecovered.
-            Expr::MakeFunction { code, defaults } => (self.lambda_expr(*code, defaults), prec::ATOM),
+            // undetected decorator) cannot, and is marked unrecovered. A lambda is the
+            // lowest-precedence expression in Python (its `:` body extends to the end), so
+            // report it at TERNARY level: as an operand of `or`/`and`/a binary op or a call
+            // (`convert or lambda ...`, `(lambda: x)()`) it then parenthesises, while a
+            // top-level value (`f = lambda ...`, `g(lambda ...)`, rendered at parent 0) does
+            // not.
+            Expr::MakeFunction { code, defaults } => (self.lambda_expr(*code, defaults), prec::TERNARY),
             Expr::Yield(value) => (format!("yield {}", self.expr(*value, prec::TERNARY)), prec::TERNARY),
             // Import values are consumed by the store or POP_TOP that completes the
             // statement; one reaching here is an import shape the unstacker did not
