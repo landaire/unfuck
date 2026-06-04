@@ -1020,6 +1020,56 @@ fn for_else_loop() {
 }
 
 #[test]
+fn break_target_split_from_for_iter_exit() {
+    // def f(xs):
+    //     for x in xs:
+    //         if g(x):
+    //             h(x)
+    //             break
+    //     return None
+    // The relinearizer splits the loop cleanup: the FOR_ITER exit is `POP_BLOCK;
+    // JUMP conv` and the SETUP_LOOP follow is a separate `JUMP conv`, both converging
+    // past the follow. break_targets' `natural` heuristic (the instr before the
+    // SETUP_LOOP follow) then lands on the FOR_ITER exit's trailing JUMP, a different
+    // block than the loop's structural follow (the POP_BLOCK), so the break edge is not
+    // recognised and walks out of the loop -- duplicating the after-loop code into the
+    // body or failing as "did not reduce". When the exit region is only cleanup
+    // (POP_BLOCK + jumps, no else), resolve break to the FOR_ITER exit so it aligns with
+    // the follow. WishesSystem.__getBestWishes, NavigationCommon, tarfile._proc_sparse.
+    let code = Builder::new("f", 1, &["xs", "x"], &["g", "h"], vec![Obj::None])
+        .jump(Standard::SETUP_LOOP, "setup_follow")
+        .arg(Standard::LOAD_FAST, 0) // xs
+        .op(Standard::GET_ITER)
+        .label("loop")
+        .jump(Standard::FOR_ITER, "for_exit")
+        .arg(Standard::STORE_FAST, 1) // x
+        .arg(Standard::LOAD_GLOBAL, 0) // g
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .jump(Standard::POP_JUMP_IF_FALSE, "loop") // if g(x): (false -> continue)
+        .arg(Standard::LOAD_GLOBAL, 1) // h
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .op(Standard::POP_TOP)
+        .op(Standard::BREAK_LOOP)
+        .jump(Standard::JUMP_ABSOLUTE, "loop") // dead body back-edge
+        .label("for_exit")
+        .op(Standard::POP_BLOCK)
+        .jump(Standard::JUMP_FORWARD, "conv") // FOR_ITER exit trampolines to conv
+        .label("setup_follow")
+        .jump(Standard::JUMP_FORWARD, "conv") // SETUP_LOOP follow trampolines to conv
+        .label("conv")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(xs):\n    for x in xs:\n        if g(x):\n            h(x)\n            break\n\n    return None\n"
+    );
+}
+
+#[test]
 fn nested_loop_inner_if_breaks() {
     // def f(xs, ys):
     //     for x in xs:

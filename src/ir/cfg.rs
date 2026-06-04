@@ -2504,10 +2504,40 @@ fn break_targets(instrs: &[OffsetInstr]) -> (HashMap<Offset, Offset>, HashMap<Of
                                         && branch_target(it).is_ok_and(|t| t > follow))
                                 })
                             };
+                            // A relinearized loop can split its cleanup so the FOR_ITER
+                            // exit is `POP_BLOCK; JUMP <conv>` and the SETUP_LOOP follow is
+                            // a separate `JUMP <conv>`, both converging past `follow`. There
+                            // is no else clause (the exit region is only cleanup), but the
+                            // exit is not adjacent to `follow`, so `natural` (the instr
+                            // before `follow`) is a different block than the loop's
+                            // structural follow (the FOR_ITER exit). Resolve break to the
+                            // FOR_ITER exit so it aligns with the follow the structurer uses;
+                            // otherwise the break edge is not recognised and walks out of the
+                            // loop body. Only when the exit region carries no real
+                            // statements (POP_BLOCK and unconditional jumps only).
+                            let trivial_exit = |exit: Offset| {
+                                let (Some(&ei), Some(&fi)) =
+                                    (index.get(&exit), index.get(&follow))
+                                else {
+                                    return false;
+                                };
+                                ei < fi
+                                    && instrs[ei..fi].iter().all(|it| {
+                                        matches!(
+                                            it.instr.opcode.mnemonic(),
+                                            Mnemonic::POP_BLOCK
+                                                | Mnemonic::JUMP_FORWARD
+                                                | Mnemonic::JUMP_ABSOLUTE
+                                        )
+                                    })
+                            };
                             match for_iter_exit {
                                 Some(exit) if exit != natural && clean_else(exit) => {
                                     targets.insert(item.offset, follow);
                                     for_else.insert(exit, follow);
+                                }
+                                Some(exit) if exit != natural && trivial_exit(exit) => {
+                                    targets.insert(item.offset, exit);
                                 }
                                 _ => {
                                     targets.insert(item.offset, natural);
