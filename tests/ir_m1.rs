@@ -1012,6 +1012,38 @@ fn if_else() {
 }
 
 #[test]
+fn elif_chain_collapses() {
+    // def f(a, b): if a: y = 1 elif b: y = 2 else: y = 3; return y
+    // The compiler nests the elif as `else: if b: ...`; the emitter collapses each
+    // single-`if` else body back into `elif` rather than deepening the indent.
+    let code = Builder::new("f", 2, &["a", "b", "y"], &[], vec![Obj::None, long(1), long(2), long(3)])
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::POP_JUMP_IF_FALSE, "elif")
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::STORE_FAST, 2)
+        .jump(Standard::JUMP_FORWARD, "after")
+        .label("elif")
+        .arg(Standard::LOAD_FAST, 1)
+        .jump(Standard::POP_JUMP_IF_FALSE, "else_")
+        .arg(Standard::LOAD_CONST, 2)
+        .arg(Standard::STORE_FAST, 2)
+        .jump(Standard::JUMP_FORWARD, "after")
+        .label("else_")
+        .arg(Standard::LOAD_CONST, 3)
+        .arg(Standard::STORE_FAST, 2)
+        .label("after")
+        .arg(Standard::LOAD_FAST, 2)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(a, b):\n    if a:\n        y = 1\n    elif b:\n        y = 2\n    else:\n        \
+         y = 3\n\n    return y\n"
+    );
+}
+
+#[test]
 fn while_loop() {
     // def f(n): while n: n = n; return n
     let code = Builder::new("f", 1, &["n"], &[], vec![Obj::None])

@@ -638,22 +638,41 @@ impl<'a> Emitter<'a> {
                     let line = format!("if {}:", self.expr(*cond, 0));
                     self.line(&line);
                     self.block(then);
-                    if !els.is_empty() {
-                        if then.last().is_some_and(is_terminal_stmt) {
-                            // The `then` branch always leaves the block (it ends in a
-                            // return/raise/break/continue), so the `else` only adds a
-                            // level of nesting. Emit its body at this level instead --
-                            // the same `if guard: return ...` flattening a human writes.
-                            self.line("");
-                            self.emit_stmts(els);
-                        } else {
-                            self.line("else:");
-                            self.block(els);
-                        }
-                    }
+                    self.emit_else_chain(then, els);
                 }
             }
         }
+    }
+
+    /// Emits the `else` part of an `if` whose `then` branch was just printed. An empty
+    /// `else` prints nothing; a `then` that always transfers control flattens the else
+    /// body to this level (the `if guard: return ...` idiom); an else that is a single
+    /// `if` collapses to `elif` rather than nesting; otherwise a plain `else:`.
+    fn emit_else_chain(&mut self, then: &[Stmt], els: &[Stmt]) {
+        if els.is_empty() {
+            return;
+        }
+        if then.last().is_some_and(is_terminal_stmt) {
+            // The `then` branch always leaves the block (return/raise/break/continue),
+            // so the `else` only adds nesting; emit its body at this level instead.
+            self.line("");
+            self.emit_stmts(els);
+            return;
+        }
+        // `else: if c: ...` is an `elif` -- collapse it, and recurse so a chain of them
+        // renders flat. Only when the inner `if` is the whole else body and takes the
+        // ordinary `if c:` form (an empty-then `if not c:` keeps the plain `else:`).
+        if let [Stmt::If { cond, then: inner_then, els: inner_els }] = els {
+            if !inner_then.is_empty() {
+                let line = format!("elif {}:", self.expr(*cond, 0));
+                self.line(&line);
+                self.block(inner_then);
+                self.emit_else_chain(inner_then, inner_els);
+                return;
+            }
+        }
+        self.line("else:");
+        self.block(els);
     }
 
     pub(crate) fn lvalue(&self, target: &LValue) -> String {
