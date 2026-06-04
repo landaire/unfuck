@@ -251,20 +251,40 @@ impl Structurer<'_> {
                     if_true,
                     if_false,
                 } => {
-                    // The merge is the immediate post-dominator. When one arm terminates
-                    // (break/return/raise), no block post-dominates the `if` and the
-                    // post-dominator is the function exit -- but the code after the `if`
-                    // only runs on the non-terminating arm, so it belongs to that arm,
-                    // bounded by the enclosing region's `stop`. Using `stop` here keeps
-                    // that arm from over-walking past the enclosing boundary (e.g. an
-                    // `except` handler's `if e: raise` whose else-arm would otherwise run
-                    // through the try's merge and duplicate the post-try loop).
-                    let follow = match self.graph.immediate_postdom(current) {
-                        Point::Exit => stop,
-                        postdom => postdom,
-                    };
                     let true_block = self.cfg.target(*if_true)?;
                     let false_block = self.cfg.target(*if_false)?;
+                    // The merge is the immediate post-dominator. When one arm terminates
+                    // (break/return/raise), no block post-dominates the `if` and the
+                    // post-dominator is the function exit. Two sub-cases:
+                    //  - One arm flows back into the other (the `if`'s true arm rejoins
+                    //    the block the false arm is, or vice versa). That shared block is
+                    //    the real merge; bound the arms there so the code after the `if`
+                    //    (often a loop) is emitted once instead of duplicated into each arm
+                    //    (chunk.skip's `if seekable: try: ...; return except: pass` then
+                    //    `while`, where the try arm rejoins the else arm's while).
+                    //  - Otherwise the code after the `if` only runs on the non-terminating
+                    //    arm and is bounded by the enclosing region's `stop`, which also
+                    //    keeps that arm from over-walking past the enclosing boundary.
+                    let follow = match self.graph.immediate_postdom(current) {
+                        // Only redirect to a rejoined arm when that arm is a LOOP header:
+                        // that is the duplicated-loop case (a loop emitted into each arm).
+                        // A non-loop rejoin is left to the enclosing `stop`, since
+                        // redirecting it can split a value region the old bound kept whole.
+                        Point::Exit => {
+                            if self.enters_loop(false_block)
+                                && self.reaches(true_block, false_block, current)
+                            {
+                                Point::Block(false_block)
+                            } else if self.enters_loop(true_block)
+                                && self.reaches(false_block, true_block, current)
+                            {
+                                Point::Block(true_block)
+                            } else {
+                                stop
+                            }
+                        }
+                        postdom => postdom,
+                    };
 
                     let then = self.arm(true_block, follow, depth)?;
                     let els = self.arm(false_block, follow, depth)?;
@@ -689,6 +709,41 @@ impl Structurer<'_> {
     /// Whether `block` is the header of a loop currently being structured.
     fn in_current_loop(&self, block: BlockId) -> bool {
         self.loop_stack.iter().any(|frame| frame.header == block)
+    }
+
+    /// Whether `block` is a loop header or its (pre-header) fall-through enters one, so
+    /// redirecting an `if`'s merge to it recovers a loop that would otherwise be
+    /// duplicated into both arms. A non-loop merge is left alone (redirecting it can
+    /// split a value region).
+    fn enters_loop(&self, block: BlockId) -> bool {
+        self.loops.contains_key(&block)
+            || self.cfg.block(block).successors().iter().any(|target| {
+                self.cfg.by_offset.get(target).is_some_and(|succ| self.loops.contains_key(succ))
+            })
+    }
+
+    /// Whether `target` is forward-reachable from `from` without passing through
+    /// `barrier`. Used to find an `if`'s real merge when one arm rejoins the block the
+    /// other arm begins at; `barrier` is the `if` block itself, so a back edge that
+    /// loops around through the `if` does not count as the arms rejoining.
+    fn reaches(&self, from: BlockId, target: BlockId, barrier: BlockId) -> bool {
+        let mut stack = vec![from];
+        let mut seen: HashSet<BlockId> = HashSet::new();
+        seen.insert(from);
+        seen.insert(barrier);
+        while let Some(block) = stack.pop() {
+            for succ in self.cfg.block(block).successors() {
+                if let Some(&next) = self.cfg.by_offset.get(&succ) {
+                    if next == target {
+                        return true;
+                    }
+                    if seen.insert(next) {
+                        stack.push(next);
+                    }
+                }
+            }
+        }
+        false
     }
 
     fn point_block(&self, point: Point) -> Option<BlockId> {
