@@ -1266,6 +1266,29 @@ fn nested_loop_inner_if_breaks() {
 }
 
 #[test]
+fn extended_slice_subscript() {
+    // def f(x): return x[:1, 2:3]
+    // An extended slice: the index is a tuple of slices built with BUILD_SLICE, which
+    // pushes an explicit None const for each missing bound. The slice must render `:1`
+    // (not `None:1`), and the tuple index must drop its parentheses (`x[:1, 2:3]`, not
+    // `x[(:1, 2:3)]` -- a slice inside a parenthesised tuple is a SyntaxError). test_class.
+    let code = Builder::new("f", 1, &["x"], &[], vec![Obj::None, long(1), long(2), long(3)])
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::LOAD_CONST, 0) // None (absent lower)
+        .arg(Standard::LOAD_CONST, 1) // 1
+        .arg(Standard::BUILD_SLICE, 2)
+        .arg(Standard::LOAD_CONST, 2) // 2
+        .arg(Standard::LOAD_CONST, 3) // 3
+        .arg(Standard::BUILD_SLICE, 2)
+        .arg(Standard::BUILD_TUPLE, 2)
+        .op(Standard::BINARY_SUBSC)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(x):\n    return x[:1, 2:3]\n");
+}
+
+#[test]
 fn tuple_assignment() {
     // def f(p): a, b = p; return a
     let code = Builder::new("f", 1, &["p", "a", "b"], &[], vec![Obj::None])

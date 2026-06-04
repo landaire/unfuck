@@ -665,7 +665,7 @@ impl<'a> Emitter<'a> {
                 format!("{}.{}", self.expr(*obj, prec::ATOM), self.name(*name))
             }
             LValue::Subscript(container, key) => {
-                format!("{}[{}]", self.expr(*container, prec::ATOM), self.expr(*key, 0))
+                format!("{}[{}]", self.expr(*container, prec::ATOM), self.subscript_key(*key))
             }
             LValue::Tuple(items) => {
                 let rendered: Vec<String> = items
@@ -693,6 +693,22 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Renders a subscript index. A tuple index is emitted WITHOUT its parentheses
+    /// (`x[a, b]`, not `x[(a, b)]`): the two are equivalent, and the paren-free form is
+    /// required for an extended slice, whose slice elements (`x[:42, ..., :24]`) are a
+    /// SyntaxError inside a parenthesised tuple.
+    fn subscript_key(&self, key: ValueId) -> String {
+        if let Expr::Tuple(items) = self.arena.get(key) {
+            let rendered: Vec<String> = items.iter().map(|i| self.expr(*i, 0)).collect();
+            return if rendered.len() == 1 {
+                format!("{},", rendered[0])
+            } else {
+                rendered.join(", ")
+            };
+        }
+        self.expr(key, 0)
+    }
+
     fn expr_prec(&self, id: ValueId) -> (String, u8) {
         match self.arena.get(id) {
             Expr::Const(c) => (self.render_const(*c), prec::ATOM),
@@ -711,18 +727,25 @@ impl<'a> Emitter<'a> {
                 (format!("{}.{}", obj_text, self.name(*name)), prec::ATOM)
             }
             Expr::Subscript(container, key) => (
-                format!("{}[{}]", self.expr(*container, prec::ATOM), self.expr(*key, 0)),
+                format!("{}[{}]", self.expr(*container, prec::ATOM), self.subscript_key(*key)),
                 prec::ATOM,
             ),
             // A slice renders as `lower:upper`, each bound omitted when absent. Only
-            // valid inside a subscript, which supplies the brackets.
+            // valid inside a subscript, which supplies the brackets. An extended slice
+            // (`x[:42, ...]`) is compiled with BUILD_SLICE, which pushes an explicit
+            // `None` constant for each missing bound rather than leaving it absent, so a
+            // bound that is the `None` const is also omitted (`None:42` is a SyntaxError).
             Expr::Slice { lower, upper, step } => {
-                let bound = |b: &Option<ValueId>| b.map_or(String::new(), |id| self.expr(id, 0));
+                let bound = |b: &Option<ValueId>| match b {
+                    Some(id) if !self.is_none_const(*id) => self.expr(*id, 0),
+                    _ => String::new(),
+                };
                 let text = match step {
-                    Some(step) => {
+                    Some(step) if !self.is_none_const(*step) => {
                         format!("{}:{}:{}", bound(lower), bound(upper), self.expr(*step, 0))
                     }
-                    None => format!("{}:{}", bound(lower), bound(upper)),
+                    // A `None` step from BUILD_SLICE is the absent step (`x[a:b]`).
+                    _ => format!("{}:{}", bound(lower), bound(upper)),
                 };
                 (text, prec::ATOM)
             }
