@@ -198,6 +198,29 @@ fn degenerate_predicate_is_stripped() {
 }
 
 #[test]
+fn empty_finally_recovers() {
+    // `try: x = 1 finally: pass` -- the cleanup is just the `END_FINALLY` at the
+    // SETUP_FINALLY target, which recovery drops, leaving no block to structure. The
+    // finally must still emit as `pass` rather than failing to resolve a missing block.
+    let code = Builder::new("f", 0, &["x"], &[], vec![Obj::None, long(1)])
+        .jump(Standard::SETUP_FINALLY, "fin")
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::STORE_FAST, 0)
+        .op(Standard::POP_BLOCK)
+        .arg(Standard::LOAD_CONST, 0)
+        .label("fin")
+        .op(Standard::END_FINALLY)
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f():\n    try:\n        x = 1\n    finally:\n        pass\n\n    return x\n"
+    );
+}
+
+#[test]
 fn precedence_parenthesises() {
     // (1 + 2) * 3
     let code = Builder::new("f", 0, &[], &[], vec![Obj::None, long(1), long(2), long(3)])

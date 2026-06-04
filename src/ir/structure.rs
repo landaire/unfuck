@@ -358,11 +358,21 @@ impl Structurer<'_> {
                 }
                 Terminator::Finally { body, finalbody, end } => {
                     let follow = Point::Block(self.cfg.target(*end)?);
-                    let final_at = Point::Block(self.cfg.target(*finalbody)?);
+                    // An empty cleanup (`finally: pass`) has no block; the body then
+                    // converges straight at the merge and the finally suite is empty.
+                    let final_at = match finalbody {
+                        Some(finalbody) => Point::Block(self.cfg.target(*finalbody)?),
+                        None => follow,
+                    };
                     // The protected body converges at the finally clause; the clause
                     // then converges at the merge.
                     let try_body = self.region(self.cfg.target(*body)?, final_at, depth + 1)?;
-                    let final_body = self.region(self.cfg.target(*finalbody)?, follow, depth + 1)?;
+                    let final_body = match finalbody {
+                        Some(finalbody) => {
+                            self.region(self.cfg.target(*finalbody)?, follow, depth + 1)?
+                        }
+                        None => Vec::new(),
+                    };
                     out.push(Stmt::TryFinally { body: try_body, finalbody: final_body });
                     cursor = self.point_block(follow);
                 }

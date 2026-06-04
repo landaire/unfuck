@@ -74,9 +74,12 @@ pub enum Terminator {
     },
     /// `SETUP_FINALLY`: a `try`/`finally` region. `body` is the protected suite,
     /// `finalbody` the cleanup that always runs, and `end` the merge after it.
+    /// `finalbody` is `None` for an empty cleanup (`finally: pass`, whose only
+    /// instruction is the `END_FINALLY` that is dropped during recovery, leaving no
+    /// block to structure).
     Finally {
         body: Offset,
-        finalbody: Offset,
+        finalbody: Option<Offset>,
         end: Offset,
     },
 }
@@ -120,7 +123,12 @@ impl Block {
                 targets
             }
             Terminator::With { body, end, .. } => vec![*body, *end],
-            Terminator::Finally { body, finalbody, end } => vec![*body, *finalbody, *end],
+            Terminator::Finally { body, finalbody, end } => {
+                let mut targets = vec![*body];
+                targets.extend(*finalbody);
+                targets.push(*end);
+                targets
+            }
             Terminator::Break { fallback, .. } => vec![*fallback],
             Terminator::Return(_) | Terminator::Raise(_) => Vec::new(),
         }
@@ -137,7 +145,11 @@ impl Block {
             // convergence point even though the implicit edge runs via WITH_CLEANUP.
             Terminator::With { body, end, .. } => vec![*body, *end],
             // The body falls into the finally, which converges at `end`.
-            Terminator::Finally { body, finalbody, .. } => vec![*body, *finalbody],
+            Terminator::Finally { body, finalbody, .. } => {
+                let mut targets = vec![*body];
+                targets.extend(*finalbody);
+                targets
+            }
             _ => self.successors(),
         }
     }
@@ -775,7 +787,7 @@ fn block_leaders(
     // A try/finally's body, its finally clause, and its merge each begin a block.
     for shape in finallys {
         leaders.insert(shape.body_entry);
-        leaders.insert(shape.finalbody);
+        leaders.extend(shape.finalbody);
         leaders.insert(shape.end);
     }
     // A try's body and every handler clause begin a block; the dispatch between
@@ -1833,8 +1845,9 @@ struct FinallyShape {
     setup: Offset,
     /// First instruction of the protected body.
     body_entry: Offset,
-    /// First instruction of the finally clause.
-    finalbody: Offset,
+    /// First instruction of the finally clause, or `None` for an empty cleanup
+    /// (`finally: pass`) whose only instruction is the dropped `END_FINALLY`.
+    finalbody: Option<Offset>,
     /// Merge point reached after the construct (past the finally's `END_FINALLY`).
     end: Offset,
 }
@@ -1941,7 +1954,12 @@ fn recover_finally(
         .ok_or(IrError::Unstructurable)?
         .offset;
     excluded.insert(instrs[end_idx].offset);
-    Ok(FinallyShape { setup: setup.offset, body_entry, finalbody: finalbody_off, end })
+    // An empty cleanup (`finally: pass`) is just the `END_FINALLY` at the SETUP target,
+    // which is excluded above -- so there is no block at `finalbody_off` to structure.
+    // Signal it with `None` so the structurer emits an empty (`pass`) finally rather
+    // than trying to resolve a block that does not exist (an `operand out of range`).
+    let finalbody = (finalbody_idx != end_idx).then_some(finalbody_off);
+    Ok(FinallyShape { setup: setup.offset, body_entry, finalbody, end })
 }
 
 /// Builds each `try`/`finally` block's `Finally` terminator from its shape.
