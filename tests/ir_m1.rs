@@ -620,12 +620,12 @@ fn while_true_infinite_loop() {
 }
 
 #[test]
-fn break_without_pop_block_exit_is_rejected() {
-    // An optimized `while 1: break` whose loop has no POP_BLOCK exit block before the
-    // SETUP_LOOP follow: the BREAK_LOOP cannot be resolved to a real exit (the
-    // instruction before the follow is the dead back-edge JUMP, not a POP_BLOCK), so
-    // the function is rejected rather than mis-recovered as an infinite `while True:
-    // pass` that drops the break.
+fn while_true_break_recovers() {
+    // An optimized `while 1: break` whose loop header block IS the BREAK_LOOP (no
+    // POP_BLOCK exit; the back edge is the instruction before the SETUP_LOOP follow).
+    // The break lowers to a `Terminator::Break` carrying the SETUP_LOOP follow, so the
+    // loop recovers as `while True: break` with the follow code preserved -- not the old
+    // `while True: pass` that dropped the break.
     let code = Builder::new("f", 1, &["self"], &[], vec![Obj::None])
         .jump(Standard::SETUP_LOOP, "end")
         .label("loop")
@@ -636,7 +636,10 @@ fn break_without_pop_block_exit_is_rejected() {
         .op(Standard::RETURN_VALUE)
         .finish();
 
-    assert!(unfuck::ir::decompile_function(code).is_err());
+    assert_eq!(
+        decompile(code),
+        "def f(self):\n    while True:\n        break\n\n    return None\n"
+    );
 }
 
 #[test]

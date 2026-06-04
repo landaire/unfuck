@@ -476,7 +476,13 @@ impl Structurer<'_> {
             // body block reaches outside the loop -- not the header's own successors,
             // which are all in-body, so recompute it from the body.
             _ => {
-                let follow = self.infinite_loop_follow(&body_set);
+                // The break's edge points at its `fallback` (often the back edge, in the
+                // body), so the exit scan can miss the real follow. When it does, take the
+                // follow a `while`-loop break in the body carries (the SETUP_LOOP exit).
+                let follow = match self.infinite_loop_follow(&body_set) {
+                    Point::Exit => self.break_follow_in(&body_set).unwrap_or(Point::Exit),
+                    found => found,
+                };
                 let body = self.infinite_loop_body(header, follow, depth)?;
                 Ok((Stmt::Loop { body }, follow))
             }
@@ -546,6 +552,18 @@ impl Structurer<'_> {
         Ok(Some((Stmt::Loop { body }, follow)))
     }
 
+    /// The follow carried by a `while`-loop `break` inside the body: the SETUP_LOOP exit.
+    /// Used when the topology-based exit scan finds none (every body edge points back
+    /// into the loop, e.g. a `while 1: ...; break` whose break edge is the back edge).
+    fn break_follow_in(&self, body_set: &HashSet<BlockId>) -> Option<Point> {
+        body_set.iter().find_map(|&block| match self.cfg.block(block).terminator {
+            Terminator::Break { follow, .. } => {
+                self.cfg.by_offset.get(&follow).copied().map(Point::Block)
+            }
+            _ => None,
+        })
+    }
+
     /// The follow of a `while True:` loop: the block a body block reaches outside the
     /// loop (the `break` target / the SETUP_LOOP exit). A truly infinite loop with no
     /// break has none, so control continues at the function exit. Picks the smallest
@@ -603,6 +621,12 @@ impl Structurer<'_> {
         depth: usize,
     ) -> Result<Vec<Stmt>, IrError> {
         let mut body = self.cfg.block(header).stmts.clone();
+        // The header itself breaks out of the loop (`while 1: <stmts>; break`): the body
+        // is the header's statements followed by the break, with nothing after.
+        if matches!(self.cfg.block(header).terminator, Terminator::Break { .. }) {
+            body.push(Stmt::Break);
+            return Ok(body);
+        }
         // The header's terminator leads back into the loop. Only a plain edge is the
         // `while True:` shape; a conditional or for header is handled above, and a
         // try/with/finally at the header is a shape this does not yet recover.
