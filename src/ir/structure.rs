@@ -335,6 +335,21 @@ impl Structurer<'_> {
         self.region(entry, follow, depth + 1)
     }
 
+    /// Whether the loop's body was lost in structuring: the recovered body is empty,
+    /// yet a non-header block of the loop carries real statements. A genuine empty loop
+    /// (`while cond: pass`, `for x in xs: pass`) has no such block -- its only body
+    /// blocks are the back-edge. A non-empty body block with an empty recovered body
+    /// means a relinearized loop (e.g. `while 1: x = read(); if x == '': break; ...`)
+    /// was mis-headered onto an inner test and its real body dropped, which would emit a
+    /// semantically wrong `while ...: pass`. Reject so it surfaces as an honest failure
+    /// rather than silently dropping the loop's work.
+    fn loop_body_lost(&self, body_set: &HashSet<BlockId>, header: BlockId, body: &[Stmt]) -> bool {
+        body.is_empty()
+            && body_set
+                .iter()
+                .any(|block| *block != header && !self.cfg.block(*block).stmts.is_empty())
+    }
+
     /// Emits the loop headed at `header` (a `while` for a conditional header, a
     /// `for` for a `FOR_ITER` header) and returns the statement plus the follow.
     fn structure_loop(
@@ -365,6 +380,9 @@ impl Structurer<'_> {
                     return Err(IrError::Unstructurable);
                 };
                 let body = self.loop_body(header, body_entry, follow, depth)?;
+                if self.loop_body_lost(&body_set, header, &body) {
+                    return Err(IrError::Unstructurable);
+                }
                 Ok((Stmt::While { cond, negated, body }, follow))
             }
             Terminator::ForIter { body: body_off, .. } => {
@@ -402,6 +420,9 @@ impl Structurer<'_> {
                     }
                 }
                 let body = self.loop_body(header, body_entry, follow, depth)?;
+                if self.loop_body_lost(&body_set, header, &body) {
+                    return Err(IrError::Unstructurable);
+                }
                 Ok((Stmt::For { target, iter, body }, follow))
             }
             // A non-conditional header reached by a back edge is `while True:`: the

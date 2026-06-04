@@ -980,6 +980,29 @@ fn while_loop() {
 }
 
 #[test]
+fn while_with_genuinely_empty_body() {
+    // def f(c): while c: pass; return None
+    // A genuine empty-body loop (busy-wait): the only body block is the back-edge, with
+    // no statements. The lost-body guard must NOT reject this -- it fires only when a
+    // non-header loop block carries real statements that the empty recovered body
+    // dropped. Regression guard for that check over-firing on legitimate `while c: pass`.
+    let code = Builder::new("f", 1, &["c"], &[], vec![Obj::None])
+        .jump(Standard::SETUP_LOOP, "exit")
+        .label("top")
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::POP_JUMP_IF_FALSE, "pop")
+        .jump(Standard::JUMP_ABSOLUTE, "top")
+        .label("pop")
+        .op(Standard::POP_BLOCK)
+        .label("exit")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(c):\n    while c:\n        pass\n\n    return None\n");
+}
+
+#[test]
 fn for_else_loop() {
     // def f(xs, y):
     //     for x in xs:
