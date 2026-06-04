@@ -2553,6 +2553,45 @@ fn break_targets(instrs: &[OffsetInstr]) -> (HashMap<Offset, Offset>, HashMap<Of
                             };
                             let threaded_natural =
                                 index.get(&threaded).and_then(|&i| i.checked_sub(1)).map(|i| instrs[i].offset);
+                            // Whether the FOR_ITER exit block trampolines to `follow` through
+                            // only cleanup -- POP_BLOCK fall-through and unconditional jumps.
+                            // Unlike `trivial_exit` (which requires the whole [exit, follow)
+                            // offset range to be trivial), this walks the actual control-flow
+                            // chain, so it still holds when other code (e.g. a sibling
+                            // branch's loop) lies between the exit and the follow in offset
+                            // order but not on the exit's path (MissionsComponent.onVehicleDeath:
+                            // exit = `POP_BLOCK; JUMP follow`). Break then resolves to the
+                            // FOR_ITER exit, aligning with the structurer's loop follow. A real
+                            // else body on the exit path stops the walk, so a genuine
+                            // for...else is unaffected.
+                            let exit_reaches_follow = |exit: Offset| {
+                                let mut off = exit;
+                                let mut seen = HashSet::new();
+                                loop {
+                                    if off == follow {
+                                        return off != exit;
+                                    }
+                                    if !seen.insert(off) {
+                                        return false;
+                                    }
+                                    let Some(&i) = index.get(&off) else { return false };
+                                    match instrs[i].instr.opcode.mnemonic() {
+                                        Mnemonic::POP_BLOCK => {
+                                            match instrs.get(i + 1) {
+                                                Some(next) => off = next.offset,
+                                                None => return false,
+                                            }
+                                        }
+                                        Mnemonic::JUMP_FORWARD | Mnemonic::JUMP_ABSOLUTE => {
+                                            match branch_target(&instrs[i]) {
+                                                Ok(t) => off = t,
+                                                Err(_) => return false,
+                                            }
+                                        }
+                                        _ => return false,
+                                    }
+                                }
+                            };
                             match for_iter_exit {
                                 Some(exit) if exit != natural && clean_else(exit, follow) => {
                                     targets.insert(item.offset, follow);
@@ -2586,6 +2625,9 @@ fn break_targets(instrs: &[OffsetInstr]) -> (HashMap<Offset, Offset>, HashMap<Of
                                     for_else.insert(exit, threaded);
                                 }
                                 Some(exit) if exit != natural && trivial_exit(exit) => {
+                                    targets.insert(item.offset, exit);
+                                }
+                                Some(exit) if exit != natural && exit_reaches_follow(exit) => {
                                     targets.insert(item.offset, exit);
                                 }
                                 _ => {

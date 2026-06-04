@@ -1020,6 +1020,95 @@ fn for_else_loop() {
 }
 
 #[test]
+fn inner_break_loop_exit_trampolines_past_sibling() {
+    // def f(items):
+    //     for k, v in items:
+    //         if c(k):
+    //             for a in v:
+    //                 if g(a):
+    //                     break
+    //         else:
+    //             for b in v:
+    //                 if g(b):
+    //                     break
+    //         use(k)
+    //     return None
+    // The if-branch inner loop's FOR_ITER exit is `POP_BLOCK; JUMP <conv>`, trampolining
+    // to the shared convergence point past the else-branch's inner loop. break_targets'
+    // `natural` (the instr before the SETUP_LOOP follow) lands on the else loop's
+    // POP_BLOCK, not the if loop's exit, so the break is unrecognised and region() walks
+    // out as a bare ForIter. The exit region [exit, follow) is not trivial (it holds the
+    // else loop) so trivial_exit does not apply; exit_reaches_follow walks the exit's
+    // actual POP_BLOCK/jump chain to the follow and resolves break there.
+    // MissionsComponent.onVehicleDeath.
+    let code = Builder::new("f", 1, &["items", "k", "v", "a", "b"], &["c", "g", "use"], vec![Obj::None])
+        .jump(Standard::SETUP_LOOP, "outer_follow")
+        .arg(Standard::LOAD_FAST, 0) // items
+        .op(Standard::GET_ITER)
+        .label("outer")
+        .jump(Standard::FOR_ITER, "outer_exit")
+        .arg(Standard::UNPACK_SEQUENCE, 2)
+        .arg(Standard::STORE_FAST, 1) // k
+        .arg(Standard::STORE_FAST, 2) // v
+        .arg(Standard::LOAD_GLOBAL, 0) // c
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .jump(Standard::POP_JUMP_IF_FALSE, "else_") // if c(k):
+        // if-branch inner loop over v, with break
+        .jump(Standard::SETUP_LOOP, "if_loop_follow")
+        .arg(Standard::LOAD_FAST, 2) // v
+        .op(Standard::GET_ITER)
+        .label("if_loop")
+        .jump(Standard::FOR_ITER, "if_exit")
+        .arg(Standard::STORE_FAST, 3) // a
+        .arg(Standard::LOAD_GLOBAL, 1) // g
+        .arg(Standard::LOAD_FAST, 3)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .jump(Standard::POP_JUMP_IF_FALSE, "if_loop")
+        .op(Standard::BREAK_LOOP)
+        .jump(Standard::JUMP_ABSOLUTE, "if_loop")
+        .label("if_exit")
+        .op(Standard::POP_BLOCK)
+        .label("if_loop_follow")
+        .jump(Standard::JUMP_FORWARD, "use") // trampoline past the else loop to the merge
+        .label("else_")
+        // else-branch inner loop over v, with break
+        .jump(Standard::SETUP_LOOP, "else_loop_follow")
+        .arg(Standard::LOAD_FAST, 2) // v
+        .op(Standard::GET_ITER)
+        .label("else_loop")
+        .jump(Standard::FOR_ITER, "else_exit")
+        .arg(Standard::STORE_FAST, 4) // b
+        .arg(Standard::LOAD_GLOBAL, 1) // g
+        .arg(Standard::LOAD_FAST, 4)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .jump(Standard::POP_JUMP_IF_FALSE, "else_loop")
+        .op(Standard::BREAK_LOOP)
+        .jump(Standard::JUMP_ABSOLUTE, "else_loop")
+        .label("else_exit")
+        .op(Standard::POP_BLOCK)
+        .label("else_loop_follow")
+        .label("use")
+        .arg(Standard::LOAD_GLOBAL, 2) // use
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_ABSOLUTE, "outer") // continue outer
+        .label("outer_exit")
+        .op(Standard::POP_BLOCK)
+        .label("outer_follow")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    let out = decompile(code);
+    assert!(!out.contains("__unrecovered__"), "should be fully recovered:\n{}", out);
+    assert_eq!(out.matches("break").count(), 2, "both inner breaks should be recovered:\n{}", out);
+    assert!(out.contains("else:"), "if/else should be recovered:\n{}", out);
+    assert!(out.contains("use(k)"), "after-if code should follow the loops:\n{}", out);
+}
+
+#[test]
 fn for_else_with_trampolined_setup_loop_follow() {
     // def f(xs):
     //     for x in xs:
