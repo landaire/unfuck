@@ -251,7 +251,18 @@ impl Structurer<'_> {
                     if_true,
                     if_false,
                 } => {
-                    let follow = self.graph.immediate_postdom(current);
+                    // The merge is the immediate post-dominator. When one arm terminates
+                    // (break/return/raise), no block post-dominates the `if` and the
+                    // post-dominator is the function exit -- but the code after the `if`
+                    // only runs on the non-terminating arm, so it belongs to that arm,
+                    // bounded by the enclosing region's `stop`. Using `stop` here keeps
+                    // that arm from over-walking past the enclosing boundary (e.g. an
+                    // `except` handler's `if e: raise` whose else-arm would otherwise run
+                    // through the try's merge and duplicate the post-try loop).
+                    let follow = match self.graph.immediate_postdom(current) {
+                        Point::Exit => stop,
+                        postdom => postdom,
+                    };
                     let true_block = self.cfg.target(*if_true)?;
                     let false_block = self.cfg.target(*if_false)?;
 

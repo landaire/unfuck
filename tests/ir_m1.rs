@@ -2400,11 +2400,11 @@ fn loop_if_returns_then_fallthrough_continue() {
         .op(Standard::RETURN_VALUE)
         .finish();
 
-    // The trailing `continue` is the bytecode's explicit back-edge after `c(x)`;
-    // it is redundant but faithful (getArmorType in the archive renders the same way).
+    // The second `if`'s fall-through to the loop header is the redundant back-edge
+    // continue, which is dropped (the body falls through to the next iteration anyway).
     assert_eq!(
         decompile(code),
-        "def f(xs):\n    for x in xs:\n        if a(x):\n            return x\n\n        if b(x):\n            c(x)\n            continue\n\n    return None\n"
+        "def f(xs):\n    for x in xs:\n        if a(x):\n            return x\n\n        if b(x):\n            c(x)\n\n    return None\n"
     );
 }
 
