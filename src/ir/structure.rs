@@ -157,7 +157,7 @@ impl Structurer<'_> {
     /// Emits the region from `start` up to (but excluding) `stop`.
     fn region(&mut self, start: BlockId, stop: Point, depth: usize) -> Result<Vec<Stmt>, IrError> {
         if depth > MAX_DEPTH {
-                return Err(IrError::Unstructurable);
+            return Err(IrError::Unstructurable);
         }
 
         let mut out = Vec::new();
@@ -213,6 +213,28 @@ impl Structurer<'_> {
                 Terminator::Raise(args) => {
                     out.push(Stmt::Raise(args.clone()));
                     cursor = None;
+                }
+                // A flat `while`-loop break. When the innermost loop's follow is this
+                // break's SETUP_LOOP exit, it is a real `break` (this catches the deep
+                // breaks of a read-loop recovered by `structure_while_true_test`, whose
+                // `fallback` was mis-resolved to the back edge). Otherwise behave exactly
+                // as the pre-existing `Jump(fallback)` resolution, leaving every other
+                // loop shape unchanged.
+                Terminator::Break { follow, fallback } => {
+                    let follow_block = self.cfg.by_offset.get(follow).copied();
+                    if follow_block.map(Point::Block) == self.loop_stack.last().map(|f| f.follow) {
+                        out.push(Stmt::Break);
+                        cursor = None;
+                    } else {
+                        let next = self.cfg.target(*fallback)?;
+                        match self.loop_edge(next) {
+                            Some(stmt) => {
+                                out.push(stmt);
+                                cursor = None;
+                            }
+                            None => cursor = Some(next),
+                        }
+                    }
                 }
                 Terminator::Jump(target) | Terminator::Fallthrough(target) => {
                     let next = self.cfg.target(*target)?;
@@ -370,6 +392,29 @@ impl Structurer<'_> {
             } => {
                 let true_block = self.cfg.target(if_true)?;
                 let false_block = self.cfg.target(if_false)?;
+                // A `while True:` loop whose per-iteration test breaks: the header block
+                // carries statements (a real computation each iteration), unlike a
+                // `while cond:` test whose header is a pure condition with no statements,
+                // and one arm exits via a `while`-loop break. Emit `while True:` with the
+                // header statements followed by `if cond: <break arm> else: <body arm>`,
+                // so the per-iteration work and the break are preserved (a `while cond:`
+                // here would drop the header statements and the break).
+                // Only recover the read-loop shape when the loop has a single break: a
+                // loop with several breaks (one at the header, others deep in the body)
+                // is the relinearizer's tangle the ordinary structuring already handles,
+                // and reshaping it here leaves its other exits unstructured.
+                let single_break = body_set
+                    .iter()
+                    .filter(|b| matches!(self.cfg.block(**b).terminator, Terminator::Break { .. }))
+                    .count()
+                    == 1;
+                if single_break && !self.cfg.block(header).stmts.is_empty() {
+                    if let Some(result) =
+                        self.structure_while_true_test(header, cond, true_block, false_block, depth)?
+                    {
+                        return Ok(result);
+                    }
+                }
                 // The branch that stays inside the loop is the body; if that is the
                 // false branch the loop runs while `not cond`.
                 let (negated, body_entry) = if body_set.contains(&true_block) {
@@ -436,6 +481,69 @@ impl Structurer<'_> {
                 Ok((Stmt::Loop { body }, follow))
             }
         }
+    }
+
+    /// Structures a `while True:` loop whose header block tests a condition and breaks
+    /// on one arm (a relinearized read/poll loop: `while 1: x = f(); if x == s: break;
+    /// ...`). Returns `None` when neither arm is a direct `while`-loop break, so the
+    /// caller falls back to the ordinary `while cond:` structuring. The loop's follow is
+    /// the break arm's follow, recorded on its `Break` terminator.
+    fn structure_while_true_test(
+        &mut self,
+        header: BlockId,
+        cond: super::expr::ValueId,
+        true_block: BlockId,
+        false_block: BlockId,
+        depth: usize,
+    ) -> Result<Option<(Stmt, Point)>, IrError> {
+        // One arm must be a direct `break` block (a flat `while`-loop `Break`); its
+        // `follow` is the loop's exit. Otherwise this is not the read-loop shape.
+        let break_arm = |blk: BlockId| match self.cfg.block(blk).terminator {
+            Terminator::Break { follow, .. } => self.cfg.by_offset.get(&follow).copied(),
+            _ => None,
+        };
+        let true_is_break = break_arm(true_block);
+        let false_is_break = break_arm(false_block);
+        let Some(follow_block) = true_is_break.or(false_is_break) else {
+            return Ok(None);
+        };
+        // Decline when the follow block does not begin a cleanly structurable region:
+        // if any of its successors is not itself a block (e.g. the loop sits inside a
+        // `with`, so the SETUP_LOOP exit is a POP_BLOCK that jumps into the excluded
+        // WITH_CLEANUP), the recovery would resume on an unstructurable point. Fall back
+        // to the ordinary loop structuring, which already handles those cases.
+        if self
+            .cfg
+            .block(follow_block)
+            .successors()
+            .iter()
+            .any(|target| !self.cfg.by_offset.contains_key(target))
+        {
+            return Ok(None);
+        }
+        let other = if true_is_break.is_some() { false_block } else { true_block };
+        // When the non-break arm is the header itself, this is a `do { ... } while`
+        // shape (the test and break sit at the loop tail, branching back to the top),
+        // which the ordinary loop structuring already recovers. Decline so it is not
+        // re-shaped here, which would leave the loop's other blocks unstructured.
+        if other == header {
+            return Ok(None);
+        }
+        let follow = Point::Block(follow_block);
+        // Structure the non-break arm up to the header (a back edge there is a
+        // `continue`); the break arm is emitted directly as `break`.
+        self.loop_stack.push(LoopFrame { header, follow });
+        let other_arm = self.region(other, Point::Block(header), depth + 1);
+        self.loop_stack.pop();
+        let other_arm = other_arm?;
+        let (then, els) = if true_is_break.is_some() {
+            (vec![Stmt::Break], other_arm)
+        } else {
+            (other_arm, vec![Stmt::Break])
+        };
+        let mut body = self.cfg.block(header).stmts.clone();
+        body.push(Stmt::If { cond, then, els });
+        Ok(Some((Stmt::Loop { body }, follow)))
     }
 
     /// The follow of a `while True:` loop: the block a body block reaches outside the
@@ -686,6 +794,7 @@ impl Graph {
                 loops.insert(header, LoopInfo { body, follow });
             }
         }
+
         loops
     }
 

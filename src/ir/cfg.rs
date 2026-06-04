@@ -39,6 +39,15 @@ pub enum Terminator {
     /// Raises an exception. Carries 0..=3 arguments (type, value, traceback).
     /// Control leaves the function (no normal successor).
     Raise(Vec<ValueId>),
+    /// `BREAK_LOOP` out of a flat `while` loop. `follow` is the loop's follow (the
+    /// enclosing `SETUP_LOOP`'s exit, threaded through trampolines), used only by the
+    /// `while True:`-with-test recovery to bound a read-loop's `break`. `fallback` is
+    /// the offset the pre-existing heuristic resolved the break to; the structurer and
+    /// the graph treat this terminator exactly as `Jump(fallback)` everywhere except
+    /// that recovery, so loop detection and all other structuring are unchanged. Used
+    /// only for flat `while`-loop breaks (a `for` loop's break still lowers to `Jump`,
+    /// leaving the for...else machinery untouched).
+    Break { follow: Offset, fallback: Offset },
     /// `FOR_ITER`: a loop header. Falls through to `body` for the next item, or
     /// jumps to `exit` when the iterator is exhausted. The iterator and loop
     /// target are recovered by the structurer, not stored here.
@@ -112,6 +121,7 @@ impl Block {
             }
             Terminator::With { body, end, .. } => vec![*body, *end],
             Terminator::Finally { body, finalbody, end } => vec![*body, *finalbody, *end],
+            Terminator::Break { fallback, .. } => vec![*fallback],
             Terminator::Return(_) | Terminator::Raise(_) => Vec::new(),
         }
     }
@@ -243,7 +253,8 @@ impl Cfg {
         } else {
             HashMap::new()
         };
-        let (breaks, for_else_offsets) = break_targets(instrs);
+        let BreakInfo { targets: breaks, for_else: for_else_offsets, while_breaks } =
+            break_targets(instrs);
         let leaders = block_leaders(
             instrs,
             &ternaries,
@@ -253,6 +264,7 @@ impl Cfg {
             &excluded,
             &list_interior,
             &breaks,
+            &while_breaks,
         )?;
         let mut by_offset = HashMap::new();
         for (idx, leader) in leaders.iter().enumerate() {
@@ -336,6 +348,7 @@ impl Cfg {
                 &finally_terminators,
                 &list_comps,
                 &breaks,
+                &while_breaks,
                 &else_feeds,
                 &comp_then_merges,
                 instrs,
@@ -669,6 +682,7 @@ fn block_leaders(
     excluded: &HashSet<Offset>,
     list_interior: &HashSet<Offset>,
     breaks: &HashMap<Offset, Offset>,
+    while_breaks: &HashMap<Offset, WhileBreak>,
 ) -> Result<Vec<Offset>, IrError> {
     let mut leaders = BTreeSet::new();
     if let Some(first) = instrs.first() {
@@ -730,9 +744,17 @@ fn block_leaders(
                     leaders.insert(item.offset);
                 }
             }
-            // A break jumps to its loop's follow block (resolved via SETUP_LOOP).
+            // A break jumps to its loop's follow block (resolved via SETUP_LOOP). A
+            // `while`-loop break carries its follow in `while_breaks`; a `for`-loop break
+            // is resolved in `breaks`.
             TerminatorKind::BreakLoop => {
-                if let Some(&target) = breaks.get(&item.offset) {
+                if let Some(wb) = while_breaks.get(&item.offset) {
+                    // The fallback is the break's effective target (as the old heuristic
+                    // resolved it). The follow is only used by the read-loop recovery,
+                    // which declines when the follow is not independently a block leader;
+                    // forcing it here could split a block mid-value-region.
+                    leaders.insert(wb.fallback);
+                } else if let Some(&target) = breaks.get(&item.offset) {
                     leaders.insert(target);
                 }
                 if let Some(next) = next {
@@ -772,6 +794,7 @@ fn lower_block(
     finally_terminators: &HashMap<Offset, Terminator>,
     list_comps: &HashMap<Offset, Offset>,
     breaks: &HashMap<Offset, Offset>,
+    while_breaks: &HashMap<Offset, WhileBreak>,
     else_feeds: &HashMap<Offset, Vec<&OffsetInstr>>,
     comp_then_merges: &HashMap<Offset, Offset>,
     instrs: &[OffsetInstr],
@@ -892,9 +915,14 @@ fn lower_block(
                 Terminator::Jump(target)
             }
         }
-        TerminatorKind::BreakLoop => {
-            Terminator::Jump(breaks.get(&last.offset).copied().ok_or(IrError::Unstructurable)?)
-        }
+        TerminatorKind::BreakLoop => match while_breaks.get(&last.offset) {
+            // A flat `while`-loop break: a tagged `Break` carrying both the read-loop
+            // follow and the fallback target (which it behaves as everywhere else).
+            Some(wb) => Terminator::Break { follow: wb.follow, fallback: wb.fallback },
+            // A `for`-loop (or nested-`while`) break: resolved to a block offset, lowered
+            // as a plain jump the structurer recognises as a `break` via the loop follow.
+            None => Terminator::Jump(breaks.get(&last.offset).copied().ok_or(IrError::Unstructurable)?),
+        },
         TerminatorKind::ForIter => Terminator::ForIter {
             body: end,
             exit: branch_target(last)?,
@@ -2442,7 +2470,27 @@ fn find_chained_comparisons(
 /// jump past the else to `F` (not to `instrs[F-1]`, which lands in the else's dead
 /// epilogue), and `[E, F)` is the else region. The second returned map records, per
 /// `FOR_ITER` exit `E` (which is the structurer's loop follow), the real follow `F`.
-fn break_targets(instrs: &[OffsetInstr]) -> (HashMap<Offset, Offset>, HashMap<Offset, Offset>) {
+struct BreakInfo {
+    /// Each `for`-loop `BREAK_LOOP` offset -> the block it breaks to.
+    targets: HashMap<Offset, Offset>,
+    /// `for ... else:`: each `FOR_ITER` exit (the structurer's loop follow, where the
+    /// else clause begins) -> the real follow past the else (also the break target).
+    for_else: HashMap<Offset, Offset>,
+    /// Each flat `while`-loop `BREAK_LOOP` offset -> the follow/fallback pair lowered
+    /// to `Terminator::Break`.
+    while_breaks: HashMap<Offset, WhileBreak>,
+}
+
+/// A flat `while`-loop break's resolution. `follow` is the SETUP_LOOP exit (threaded),
+/// used by the `while True:`-with-test recovery; `fallback` is the pre-existing
+/// heuristic's target, which the structurer uses everywhere else (so behaviour is
+/// unchanged outside that recovery).
+struct WhileBreak {
+    follow: Offset,
+    fallback: Offset,
+}
+
+fn break_targets(instrs: &[OffsetInstr]) -> BreakInfo {
     let index: HashMap<Offset, usize> = instrs
         .iter()
         .enumerate()
@@ -2450,27 +2498,69 @@ fn break_targets(instrs: &[OffsetInstr]) -> (HashMap<Offset, Offset>, HashMap<Of
         .collect();
     let mut targets = HashMap::new();
     let mut for_else = HashMap::new();
-    // Each open loop: (SETUP_LOOP follow F, this loop's FOR_ITER exit E if seen).
-    let mut loops: Vec<(Offset, Option<Offset>)> = Vec::new();
+    // A `while`-loop break (its enclosing loop has no FOR_ITER): maps the BREAK_LOOP
+    // offset to its loop's follow `F` (the SETUP_LOOP exit, threaded through any lone
+    // trampoline jumps). Lowered to `Terminator::Break(F)` so it is recognised by the
+    // structurer directly rather than via the fragile instr-before-follow heuristic the
+    // `for`-loop path uses; that heuristic mis-resolves a `while 1:` read-loop's break
+    // to the back edge, dragging the break block into the loop body.
+    let mut while_breaks = HashMap::new();
+    // One open loop on the SETUP_LOOP nesting stack.
+    struct OpenLoop {
+        /// The SETUP_LOOP follow offset.
+        follow: Offset,
+        /// This loop's own FOR_ITER exit, once seen (a `for` loop).
+        for_iter_exit: Option<Offset>,
+        /// Whether a nested SETUP_LOOP has been opened inside this loop. A `while`-loop
+        /// break is only resolved to a first-class `Break` when its loop is flat (no
+        /// nested loop): a relinearized nested loop tangles the break's path so the
+        /// structurer may reach it outside its loop's body, so such breaks keep the
+        /// `for`-loop heuristic (which the working nested cases already rely on).
+        has_nested: bool,
+    }
+    let mut loops: Vec<OpenLoop> = Vec::new();
     for item in instrs {
-        while loops.last().is_some_and(|&(follow, _)| item.offset >= follow) {
+        while loops.last().is_some_and(|l| item.offset >= l.follow) {
             loops.pop();
         }
         match item.instr.opcode.mnemonic() {
             Mnemonic::SETUP_LOOP => {
                 if let Ok(follow) = branch_target(item) {
-                    loops.push((follow, None));
+                    if let Some(parent) = loops.last_mut() {
+                        parent.has_nested = true;
+                    }
+                    loops.push(OpenLoop { follow, for_iter_exit: None, has_nested: false });
                 }
             }
             Mnemonic::FOR_ITER => {
                 if let Some(top) = loops.last_mut() {
-                    if top.1.is_none() {
-                        top.1 = branch_target(item).ok();
+                    if top.for_iter_exit.is_none() {
+                        top.for_iter_exit = branch_target(item).ok();
                     }
                 }
             }
+            // A `while`-loop break in a flat loop (no FOR_ITER of its own, no nested
+            // loop): resolve it to the SETUP_LOOP follow directly (threaded through
+            // lone-jump trampolines), bypassing the for-loop heuristic below.
+            Mnemonic::BREAK_LOOP
+                if loops.last().is_some_and(|l| l.for_iter_exit.is_none() && !l.has_nested) =>
+            {
+                // `follow`: the SETUP_LOOP exit, where a `break` (and the loop) resumes.
+                // The structurer walks any trampoline at that point itself, so it is used
+                // raw (threading it here over-shoots into the after-loop code).
+                let follow = loops.last().unwrap().follow;
+                // `fallback`: the pre-existing heuristic's target -- the block before the
+                // SETUP_LOOP follow -- so this break behaves identically to the old
+                // `Jump`-resolved break everywhere except the read-loop recovery.
+                let fallback = index
+                    .get(&follow)
+                    .and_then(|&i| i.checked_sub(1))
+                    .map(|i| instrs[i].offset)
+                    .unwrap_or(follow);
+                while_breaks.insert(item.offset, WhileBreak { follow, fallback });
+            }
             Mnemonic::BREAK_LOOP => {
-                if let Some(&(follow, for_iter_exit)) = loops.last() {
+                if let Some(&OpenLoop { follow, for_iter_exit, .. }) = loops.last() {
                     if let Some(&idx) = index.get(&follow) {
                         if idx > 0 {
                             let natural = instrs[idx - 1].offset;
@@ -2641,7 +2731,7 @@ fn break_targets(instrs: &[OffsetInstr]) -> (HashMap<Offset, Offset>, HashMap<Of
             _ => {}
         }
     }
-    (targets, for_else)
+    BreakInfo { targets, for_else, while_breaks }
 }
 
 /// Computes the absolute target offset of a branch instruction.

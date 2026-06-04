@@ -628,6 +628,59 @@ fn break_without_pop_block_exit_is_rejected() {
 }
 
 #[test]
+fn while_true_read_loop_with_test_header() {
+    // def f(self):
+    //     result = []
+    //     while True:
+    //         x = self.next()
+    //         if x == 0:
+    //             break
+    //         result.append(x)
+    //     return result
+    // A relinearized read-loop: the `while 1:` header block carries a per-iteration
+    // statement (`x = self.next()`) before its `== 0` test, and one test arm is a
+    // BREAK_LOOP. The break's SETUP_LOOP follow defines the loop exit, so it lowers to
+    // `Terminator::Break`; `structure_while_true_test` emits `while True:` with the
+    // header statement and `if x == 0: break`, instead of a `while x == 0:` that would
+    // drop both the per-iteration read and the break.
+    let code = Builder::new("f", 1, &["self", "result", "x"], &["next", "append"], vec![
+        Obj::None,
+        long(0),
+    ])
+    .arg(Standard::BUILD_LIST, 0)
+    .arg(Standard::STORE_FAST, 1)
+    .jump(Standard::SETUP_LOOP, "end")
+    .label("loop")
+    .arg(Standard::LOAD_FAST, 0)
+    .arg(Standard::LOAD_ATTR, 0)
+    .arg(Standard::CALL_FUNCTION, 0)
+    .arg(Standard::STORE_FAST, 2)
+    .arg(Standard::LOAD_FAST, 2)
+    .arg(Standard::LOAD_CONST, 1)
+    .arg(Standard::COMPARE_OP, 2)
+    .jump(Standard::POP_JUMP_IF_TRUE, "brk")
+    .arg(Standard::LOAD_FAST, 1)
+    .arg(Standard::LOAD_ATTR, 1)
+    .arg(Standard::LOAD_FAST, 2)
+    .arg(Standard::CALL_FUNCTION, 1)
+    .op(Standard::POP_TOP)
+    .jump(Standard::JUMP_ABSOLUTE, "loop")
+    .label("brk")
+    .op(Standard::BREAK_LOOP)
+    .jump(Standard::JUMP_ABSOLUTE, "loop")
+    .label("end")
+    .arg(Standard::LOAD_FAST, 1)
+    .op(Standard::RETURN_VALUE)
+    .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(self):\n    result = []\n\n    while True:\n        x = self.next()\n\n        \
+         if x == 0:\n            break\n\n        result.append(x)\n\n    return result\n"
+    );
+}
+
+#[test]
 fn for_loop_nested_tuple_target() {
     // def f(xs):
     //     for a, (b, c) in xs:
