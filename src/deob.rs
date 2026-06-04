@@ -313,11 +313,15 @@ fn fix_varnames(varnames: &[Arc<BString>], unknowns: &mut usize) -> Vec<Arc<BStr
         .collect()
 }
 
-/// Replace a name that is unusable as a Python identifier (contains a forbidden
-/// character or is a reserved word) with a fresh `unknown_N` placeholder;
-/// otherwise return it trimmed. Operates on raw bytes to match the original
-/// Python byte-string behavior.
+/// Replace a name that is unusable as a meaningful Python identifier (contains a
+/// forbidden character, is a reserved word, or is only underscores) with a fresh
+/// `unknown_N` placeholder; otherwise return it trimmed. Operates on raw bytes to
+/// match the original Python byte-string behavior.
 fn fix_one_varname(var: &[u8], unknowns: &mut usize) -> Vec<u8> {
+    // Characters that cannot appear in a Python identifier. `<`, `>`, and `.` are
+    // deliberately NOT here: the synthetic names `<dictcomp>`/`<genexpr>`/`<lambda>`
+    // and the comprehension argument `.0` must survive unchanged, as the decompiler
+    // keys comprehension and lambda recovery on them.
     const UNALLOWED: &[u8] = b"=!@#$%^&*()\"'/, ";
     const BANNED_WORDS: &[&[u8]] = &[
         b"assert", b"in", b"continue", b"break", b"for", b"def", b"as", b"elif", b"else", b"from",
@@ -326,8 +330,18 @@ fn fix_one_varname(var: &[u8], unknowns: &mut usize) -> Vec<u8> {
     ];
 
     let var = trim_ascii_whitespace(var);
-    let banned =
-        var.iter().any(|b| UNALLOWED.contains(b)) || BANNED_WORDS.iter().any(|word| *word == var);
+    // An all-underscore name (`_`, `__`, ...) is a valid identifier but carries no
+    // meaning -- the obfuscator uses it as a junk name (e.g. a real accumulator renamed
+    // to `_`). Normalize it to `unknown_N` like the other junk names.
+    let all_underscore = !var.is_empty() && var.iter().all(|&b| b == b'_');
+    // A digit-leading name (`4`, `105080795735848`) is not a valid identifier; the
+    // emitter would otherwise mangle its leading digit into `_`. (The synthetic
+    // `<...>`/`.0` names are not digit-leading, so they are unaffected.)
+    let digit_leading = var.first().is_some_and(u8::is_ascii_digit);
+    let banned = var.iter().any(|b| UNALLOWED.contains(b))
+        || BANNED_WORDS.iter().any(|word| *word == var)
+        || all_underscore
+        || digit_leading;
 
     if banned {
         let replacement = format!("unknown_{}", *unknowns).into_bytes();
@@ -369,6 +383,29 @@ mod tests {
     use std::sync::Mutex;
 
     type TargetOpcode = pydis::opcode::py27::Standard;
+
+    #[test]
+    fn fix_one_varname_renames_junk_names() {
+        let mut n = 0;
+        // All-underscore names are junk and get fresh placeholders.
+        assert_eq!(fix_one_varname(b"_", &mut n), b"unknown_0".to_vec());
+        assert_eq!(fix_one_varname(b"___", &mut n), b"unknown_1".to_vec());
+        // A digit-only / digit-leading name is not a valid identifier (the emitter would
+        // otherwise mangle it into `_`); rename it too.
+        assert_eq!(fix_one_varname(b"4", &mut n), b"unknown_2".to_vec());
+        assert_eq!(fix_one_varname(b"3x", &mut n), b"unknown_3".to_vec());
+        // A forbidden-character name stays caught.
+        assert_eq!(fix_one_varname(b"a b", &mut n), b"unknown_4".to_vec());
+        // A real name is kept, even with a leading underscore or trailing digits.
+        assert_eq!(fix_one_varname(b"_foo", &mut n), b"_foo".to_vec());
+        assert_eq!(fix_one_varname(b"result2", &mut n), b"result2".to_vec());
+        assert_eq!(fix_one_varname(b"__init__", &mut n), b"__init__".to_vec());
+        // The synthetic comprehension/lambda names must survive unchanged -- the
+        // decompiler keys recovery on them.
+        assert_eq!(fix_one_varname(b"<dictcomp>", &mut n), b"<dictcomp>".to_vec());
+        assert_eq!(fix_one_varname(b"<genexpr>", &mut n), b"<genexpr>".to_vec());
+        assert_eq!(fix_one_varname(b".0", &mut n), b".0".to_vec());
+    }
 
     #[test]
     fn simple_deobfuscation() {
