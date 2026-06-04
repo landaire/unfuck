@@ -1020,6 +1020,57 @@ fn for_else_loop() {
 }
 
 #[test]
+fn for_else_with_trampolined_setup_loop_follow() {
+    // def f(xs):
+    //     for x in xs:
+    //         if g(x):
+    //             break
+    //     else:
+    //         h()
+    //     return None
+    // The relinearizer makes the SETUP_LOOP follow a lone `JUMP_ABSOLUTE <conv>`
+    // trampoline rather than the after-loop code, and the else clause (`h()`) sits
+    // between the FOR_ITER exit and that trampoline, ending in a jump PAST the follow.
+    // clean_else on the raw follow rejects it (the else jumps past), so the for...else
+    // is missed and the break walks out as a bare ForIter. Threading the follow through
+    // the trampoline to <conv> makes [exit, conv) the real else region; the threaded arm
+    // requires it to hold a real statement (here `h()`) so a nested loop's trivial exit
+    // cleanup is not mistaken for an else. CamerasKeyHandler.update.
+    let code = Builder::new("f", 1, &["xs", "x"], &["g", "h"], vec![Obj::None])
+        .jump(Standard::SETUP_LOOP, "setup_follow")
+        .arg(Standard::LOAD_FAST, 0) // xs
+        .op(Standard::GET_ITER)
+        .label("loop")
+        .jump(Standard::FOR_ITER, "for_exit")
+        .arg(Standard::STORE_FAST, 1) // x
+        .arg(Standard::LOAD_GLOBAL, 0) // g
+        .arg(Standard::LOAD_FAST, 1)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .jump(Standard::POP_JUMP_IF_FALSE, "loop") // if g(x): (false -> continue)
+        .op(Standard::BREAK_LOOP)
+        .jump(Standard::JUMP_ABSOLUTE, "loop") // dead body back-edge
+        .label("for_exit")
+        .op(Standard::POP_BLOCK)
+        .arg(Standard::LOAD_GLOBAL, 1) // h (else body: h())
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_FORWARD, "conv") // else jumps past the follow
+        .label("setup_follow")
+        .jump(Standard::JUMP_ABSOLUTE, "conv") // SETUP_LOOP follow is a trampoline
+        .label("conv")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    let out = decompile(code);
+    assert!(!out.contains("__unrecovered__"), "should be fully recovered:\n{}", out);
+    assert!(out.contains("for x in xs:"), "missing for header:\n{}", out);
+    assert!(out.contains("        break"), "missing break:\n{}", out);
+    assert!(out.contains("    else:"), "missing else clause:\n{}", out);
+    assert!(out.contains("h()"), "missing else body h():\n{}", out);
+}
+
+#[test]
 fn break_target_split_from_for_iter_exit() {
     // def f(xs):
     //     for x in xs:

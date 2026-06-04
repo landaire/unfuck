@@ -2474,35 +2474,28 @@ fn break_targets(instrs: &[OffsetInstr]) -> (HashMap<Offset, Offset>, HashMap<Of
                     if let Some(&idx) = index.get(&follow) {
                         if idx > 0 {
                             let natural = instrs[idx - 1].offset;
-                            // for...else: the FOR_ITER exit is not adjacent to the follow,
-                            // so an else clause sits between. Break past it to `follow`.
-                            // Only model a clean for...else: the else region [exit, follow)
-                            // must not branch PAST `follow`. The relinearizer can place the
-                            // real convergence point beyond the SETUP_LOOP follow (the else
-                            // ends in `JUMP_FORWARD <past follow>`), so `follow` is not the
-                            // true end; treating it as the else end would absorb the
-                            // after-loop code. Fall back to the plain break in that case.
-                            let clean_else = |exit: Offset| {
+                            // Whether [exit, end) is a clean for...else else clause: it must
+                            // not branch PAST `end` (the relinearizer can place the real
+                            // convergence beyond the SETUP_LOOP follow, so `end` would not be
+                            // the true else end) nor contain loop machinery (BREAK/CONTINUE/a
+                            // nested SETUP_LOOP -- a nested loop's break path, not an else).
+                            let clean_else = |exit: Offset, end: Offset| {
                                 let (Some(&ei), Some(&fi)) =
-                                    (index.get(&exit), index.get(&follow))
+                                    (index.get(&exit), index.get(&end))
                                 else {
                                     return false;
                                 };
-                                !instrs[ei..fi].iter().any(|it| {
-                                    let m = it.instr.opcode.mnemonic();
-                                    // A jump past the follow means the relinearizer placed
-                                    // the real convergence beyond it; loop machinery
-                                    // (BREAK/CONTINUE/a nested SETUP_LOOP) means the region
-                                    // is not a real else but a nested loop's break path. In
-                                    // either case `follow` is not the clean else end.
-                                    matches!(
-                                        m,
-                                        Mnemonic::BREAK_LOOP
-                                            | Mnemonic::CONTINUE_LOOP
-                                            | Mnemonic::SETUP_LOOP
-                                    ) || (it.instr.opcode.is_jump()
-                                        && branch_target(it).is_ok_and(|t| t > follow))
-                                })
+                                ei < fi
+                                    && !instrs[ei..fi].iter().any(|it| {
+                                        let m = it.instr.opcode.mnemonic();
+                                        matches!(
+                                            m,
+                                            Mnemonic::BREAK_LOOP
+                                                | Mnemonic::CONTINUE_LOOP
+                                                | Mnemonic::SETUP_LOOP
+                                        ) || (it.instr.opcode.is_jump()
+                                            && branch_target(it).is_ok_and(|t| t > end))
+                                    })
                             };
                             // A relinearized loop can split its cleanup so the FOR_ITER
                             // exit is `POP_BLOCK; JUMP <conv>` and the SETUP_LOOP follow is
@@ -2531,10 +2524,66 @@ fn break_targets(instrs: &[OffsetInstr]) -> (HashMap<Offset, Offset>, HashMap<Of
                                         )
                                     })
                             };
+                            // The SETUP_LOOP follow can itself be a lone unconditional jump
+                            // (a trampoline) to the real convergence point rather than the
+                            // after-loop code, e.g. `for..: if c: x; break  else: y; z()`
+                            // laid out with the SETUP_LOOP follow = `JUMP_ABSOLUTE <z>`.
+                            // Thread the follow through such trampolines (cycle-guarded, only
+                            // past the FOR_ITER exit so it stays outside the loop body); if
+                            // the threaded end yields a clean for...else with the exit, break
+                            // lands at the true follow and the else region [exit, threaded) is
+                            // recovered. This is checked BEFORE the plain logic below so it
+                            // only ever turns an otherwise-unrecognised for...else into one;
+                            // a non-threaded follow leaves the plain paths untouched.
+                            let threaded = {
+                                let mut off = follow;
+                                let mut seen = HashSet::new();
+                                while seen.insert(off) {
+                                    let Some(&i) = index.get(&off) else { break };
+                                    let m = instrs[i].instr.opcode.mnemonic();
+                                    if !matches!(m, Mnemonic::JUMP_ABSOLUTE | Mnemonic::JUMP_FORWARD) {
+                                        break;
+                                    }
+                                    match branch_target(&instrs[i]) {
+                                        Ok(t) if for_iter_exit.is_some_and(|e| t > e) => off = t,
+                                        _ => break,
+                                    }
+                                }
+                                off
+                            };
+                            let threaded_natural =
+                                index.get(&threaded).and_then(|&i| i.checked_sub(1)).map(|i| instrs[i].offset);
                             match for_iter_exit {
-                                Some(exit) if exit != natural && clean_else(exit) => {
+                                Some(exit) if exit != natural && clean_else(exit, follow) => {
                                     targets.insert(item.offset, follow);
                                     for_else.insert(exit, follow);
+                                }
+                                // Threaded for...else: the follow was a trampoline; the real
+                                // else clause ends at the threaded convergence point. Require
+                                // the else region [exit, threaded) to hold a real statement
+                                // (not just POP_BLOCK + jumps): a trivial region is split
+                                // cleanup of an inner loop, not an else clause, and threading
+                                // it would wrongly graft a for...else onto a nested loop's
+                                // exit (sre_compile._optimize_charset).
+                                Some(exit)
+                                    if threaded != follow
+                                        && threaded_natural.is_some_and(|n| exit != n)
+                                        && clean_else(exit, threaded)
+                                        && index.get(&exit).zip(index.get(&threaded)).is_some_and(
+                                            |(&ei, &ti)| {
+                                                instrs[ei..ti].iter().any(|it| {
+                                                    !matches!(
+                                                        it.instr.opcode.mnemonic(),
+                                                        Mnemonic::POP_BLOCK
+                                                            | Mnemonic::JUMP_FORWARD
+                                                            | Mnemonic::JUMP_ABSOLUTE
+                                                    )
+                                                })
+                                            },
+                                        ) =>
+                                {
+                                    targets.insert(item.offset, threaded);
+                                    for_else.insert(exit, threaded);
                                 }
                                 Some(exit) if exit != natural && trivial_exit(exit) => {
                                     targets.insert(item.offset, exit);
