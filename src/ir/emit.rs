@@ -163,13 +163,44 @@ impl<'a> Emitter<'a> {
             return None;
         }
         match self.code.consts.first() {
-            // A function/method/class-body docstring is re-indented when the def is
-            // nested into its class or module (the source is emitted line by line with
-            // an added indent), which would inject spaces into a triple-quoted literal's
-            // continuation lines and corrupt the bytes. Force the single-quoted, one-line
-            // `\n`-escaped form, which survives re-indentation byte-exact.
-            Some(Obj::String(s)) => Some(docstring_literal(s.read().unwrap().as_slice(), false)),
+            // Emit the readable triple-quoted form. When the def is nested into its
+            // class or module the source is re-indented line by line, but
+            // `emit_reindented` leaves a triple-quoted docstring's interior verbatim, so
+            // the literal's bytes survive. `docstring_literal` still falls back to the
+            // escaped one-line form when triple-quoting would not be byte-exact (a
+            // backslash, an embedded `"""`, a trailing quote).
+            Some(Obj::String(s)) => Some(docstring_literal(s.read().unwrap().as_slice(), true)),
             _ => None,
+        }
+    }
+
+    /// Emits a block of already-rendered source (a nested `def`/`class`) at the current
+    /// indent, line by line. Lines inside a triple-quoted docstring are emitted verbatim
+    /// rather than re-indented: adding indentation there would inject whitespace into the
+    /// string's bytes and change its value. The only multi-line `"""` the emitter ever
+    /// produces is a docstring (other string literals render escaped on one line, and
+    /// `docstring_literal` rejects content containing `"""`), so toggling on each line's
+    /// `"""` count tracks the docstring interior exactly.
+    fn emit_reindented(&mut self, source: &str) {
+        let mut in_docstring = false;
+        for text in source.trim_end_matches('\n').split('\n') {
+            let triples = text.matches("\"\"\"").count();
+            if in_docstring {
+                // Verbatim while inside; the docstring body never contains `"""`
+                // (`docstring_literal` rejects that), so an odd count here is the close.
+                self.out.push_str(text);
+                self.out.push('\n');
+                if triples % 2 == 1 {
+                    in_docstring = false;
+                }
+            } else {
+                self.line(text);
+                // A docstring opener is the start of its line (after indent); a `"""`
+                // inside a code string literal is mid-line, so it cannot open one.
+                if triples % 2 == 1 && text.trim_start().starts_with("\"\"\"") {
+                    in_docstring = true;
+                }
+            }
         }
     }
 
@@ -338,9 +369,7 @@ impl<'a> Emitter<'a> {
                 } else {
                     source
                 };
-                for text in source.trim_end_matches('\n').split('\n') {
-                    self.line(text);
-                }
+                self.emit_reindented(&source);
             }
             Err(_) => {self.line(UNRECOVERED) }
         }
@@ -364,11 +393,10 @@ impl<'a> Emitter<'a> {
         match class_body_source(body_code) {
             Ok(body) => {
                 self.line(&header);
-                // The body is rendered at one indent level; `line` adds the current
-                // indent on top, nesting it under the class.
-                for text in body.trim_end_matches('\n').split('\n') {
-                    self.line(text);
-                }
+                // The body is rendered at one indent level; `emit_reindented` adds the
+                // current indent on top (nesting it under the class) while leaving any
+                // docstring interior verbatim.
+                self.emit_reindented(&body);
             }
             Err(_) => {self.line(UNRECOVERED) }
         }

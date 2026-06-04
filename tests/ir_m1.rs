@@ -468,18 +468,30 @@ fn for_loop_try_except_continue() {
 }
 
 #[test]
-fn function_docstring_multiline_is_single_line_escaped() {
-    // A real function (CO_OPTIMIZED) with a multi-line docstring. When the def is nested
-    // into its class/module, the source is re-indented line by line, which would inject
-    // spaces into a triple-quoted literal's continuation lines and corrupt the bytes. So
-    // a function docstring is emitted single-quoted with `\n` escaped -- one physical
-    // line that survives re-indentation byte-exact.
+fn function_docstring_multiline_is_triple_quoted() {
+    // A real function (CO_OPTIMIZED) with a multi-line docstring renders as a triple-
+    // quoted literal with real newlines. When the def is nested into its class/module,
+    // `emit_reindented` leaves the docstring's interior verbatim, so the literal's bytes
+    // survive re-indentation (verified byte-exact against the corpus).
     let code = Builder::new("m", 1, &["self"], &[], vec![pystr("line1\nline2"), Obj::None])
         .flags(CodeFlags::OPTIMIZED)
         .arg(Standard::LOAD_CONST, 1)
         .op(Standard::RETURN_VALUE)
         .finish();
-    assert_eq!(decompile(code), "def m(self):\n    'line1\\nline2'\n    return None\n");
+    assert_eq!(decompile(code), "def m(self):\n    \"\"\"line1\nline2\"\"\"\n    return None\n");
+}
+
+#[test]
+fn function_docstring_with_backslash_stays_escaped() {
+    // A docstring carrying a literal backslash cannot be triple-quoted byte-exact (the
+    // backslash would be a string escape), so it falls back to the single-quoted escaped
+    // form.
+    let code = Builder::new("m", 1, &["self"], &[], vec![pystr("a\\b\nc"), Obj::None])
+        .flags(CodeFlags::OPTIMIZED)
+        .arg(Standard::LOAD_CONST, 1)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+    assert_eq!(decompile(code), "def m(self):\n    'a\\\\b\\nc'\n    return None\n");
 }
 
 #[test]
