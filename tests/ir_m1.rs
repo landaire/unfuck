@@ -1266,6 +1266,26 @@ fn nested_loop_inner_if_breaks() {
 }
 
 #[test]
+fn complex_constant() {
+    // def f(): return (2+3j)  /  def g(): return -0j
+    // A complex constant rendered as `__unrecovered___const_Complex` because render_obj
+    // had no Complex arm. Render it as the Python literal (matching CPython's repr) so it
+    // round-trips: a pure imaginary as `<im>j`, otherwise `(<re>±<im>j)`. test_compile.
+    use num_complex::Complex;
+    let two_three = Builder::new("f", 0, &[], &[], vec![Obj::Complex(Complex::new(2.0, 3.0))])
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+    assert_eq!(decompile(two_three), "def f():\n    return (2+3j)\n");
+
+    let neg_zero = Builder::new("g", 0, &[], &[], vec![Obj::Complex(Complex::new(0.0, -0.0))])
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+    assert_eq!(decompile(neg_zero), "def g():\n    return -0j\n");
+}
+
+#[test]
 fn extended_slice_subscript() {
     // def f(x): return x[:1, 2:3]
     // An extended slice: the index is a tuple of slices built with BUILD_SLICE, which

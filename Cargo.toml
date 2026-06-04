@@ -44,6 +44,7 @@ rayon = "1.5"
 [dev-dependencies]
 py27-marshal = { version = "0.5" }
 num-bigint = "0.4"
+num-complex = "0.4"
 pydis = "0.4"
 insta = "1"
 

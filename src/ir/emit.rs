@@ -1456,8 +1456,33 @@ fn render_obj(obj: &Obj) -> String {
                 format!("({})", rendered.join(", "))
             }
         }
+        Obj::Complex(c) => render_complex(c.re, c.im),
+        // Python 2 `str` is bytes; a marshalled Bytes object renders as a str literal.
+        Obj::Bytes(b) => python_bytes_literal(b.read().unwrap().as_slice()),
+        Obj::Ellipsis => "Ellipsis".to_string(),
+        Obj::StopIteration => "StopIteration".to_string(),
         other => format!("{}_const_{:?}", UNRECOVERED, other.typ()),
     }
+}
+
+/// Renders a complex constant the way CPython 2 `repr` does: a pure-imaginary value
+/// (real is +0.0) prints as `<imag>j`, otherwise `(<real>+/-<imag>j)`. Each part uses
+/// the bare float form (no trailing `.0` -- `2`, `-0`, `1.5`), matching the compiler's
+/// own repr so the literal round-trips to the same constant (`-0j`, `(2+3j)`, `(1.5-2.5j)`).
+fn render_complex(re: f64, im: f64) -> String {
+    if re == 0.0 && re.is_sign_positive() {
+        format!("{}j", complex_part(im))
+    } else {
+        let sign = if im.is_sign_negative() { "-" } else { "+" };
+        format!("({}{}{}j)", complex_part(re), sign, complex_part(im.abs()))
+    }
+}
+
+/// One component of a complex literal: the bare float form. Rust's `f64` `Display`
+/// already drops the decimal for whole values (`2.0` -> `2`) and keeps the sign of
+/// negative zero (`-0.0` -> `-0`), matching CPython's complex-repr formatting.
+fn complex_part(f: f64) -> String {
+    format!("{}", f)
 }
 
 fn render_float(f: f64) -> String {
