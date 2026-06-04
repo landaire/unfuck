@@ -235,12 +235,23 @@ impl Structurer<'_> {
 
                     let then = self.arm(true_block, follow, depth)?;
                     let els = self.arm(false_block, follow, depth)?;
+                    // When both arms transfer control out of this region (each ends in
+                    // break/continue/return/raise), the post-dominator is not reached
+                    // *through this if*, so nothing follows it here. Stop rather than
+                    // resuming at the post-dominator: inside a loop that post-dominator is
+                    // the loop's follow (e.g. a `for` body that is just `if c: x(); break`,
+                    // QuadTree.__createChildren), and resuming there would walk out of the
+                    // loop body and re-enter an enclosing loop header as a bare block.
+                    let both_terminate = !then.is_empty()
+                        && !els.is_empty()
+                        && then.last().is_some_and(terminates)
+                        && els.last().is_some_and(terminates);
                     out.push(Stmt::If {
                         cond: *cond,
                         then,
                         els,
                     });
-                    cursor = self.point_block(follow);
+                    cursor = if both_terminate { None } else { self.point_block(follow) };
                 }
                 Terminator::Try { body, handlers, end } => {
                     // A merge-less try (`end` is `None`) has no merge of its own: the

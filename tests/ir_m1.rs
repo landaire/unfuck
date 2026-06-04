@@ -1020,6 +1020,62 @@ fn for_else_loop() {
 }
 
 #[test]
+fn nested_loop_inner_if_breaks() {
+    // def f(xs, ys):
+    //     for x in xs:
+    //         for y in ys:
+    //             if g(y):
+    //                 h(y)
+    //                 break
+    //     return None
+    // The inner loop body is just `if g(y): h(y); break` -- both arms transfer control
+    // (the then breaks, the false branch jumps back to the inner FOR_ITER = continue),
+    // so nothing follows the `if` in the inner body. Its post-dominator is the inner
+    // loop's follow, which flows straight into the OUTER loop header. region() used to
+    // resume at that post-dominator, walk out of the inner body, and hit the outer
+    // FOR_ITER as a bare block ("control-flow graph did not reduce"). Stopping the region
+    // when both arms terminate recovers it (QuadTree.__createChildren, textwrap.dedent).
+    let code = Builder::new("f", 2, &["xs", "ys", "x", "y"], &["g", "h"], vec![Obj::None])
+        .jump(Standard::SETUP_LOOP, "outer_end")
+        .arg(Standard::LOAD_FAST, 0) // xs
+        .op(Standard::GET_ITER)
+        .label("outer_loop")
+        .jump(Standard::FOR_ITER, "outer_exit")
+        .arg(Standard::STORE_FAST, 2) // x
+        .jump(Standard::SETUP_LOOP, "inner_end")
+        .arg(Standard::LOAD_FAST, 1) // ys
+        .op(Standard::GET_ITER)
+        .label("inner_loop")
+        .jump(Standard::FOR_ITER, "inner_exit")
+        .arg(Standard::STORE_FAST, 3) // y
+        .arg(Standard::LOAD_GLOBAL, 0) // g
+        .arg(Standard::LOAD_FAST, 3)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .jump(Standard::POP_JUMP_IF_FALSE, "inner_loop") // if g(y): (false -> continue)
+        .arg(Standard::LOAD_GLOBAL, 1) // h
+        .arg(Standard::LOAD_FAST, 3)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .op(Standard::POP_TOP)
+        .op(Standard::BREAK_LOOP)
+        .jump(Standard::JUMP_ABSOLUTE, "inner_loop") // dead body back-edge
+        .label("inner_exit")
+        .op(Standard::POP_BLOCK)
+        .label("inner_end")
+        .jump(Standard::JUMP_ABSOLUTE, "outer_loop") // continue outer
+        .label("outer_exit")
+        .op(Standard::POP_BLOCK)
+        .label("outer_end")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(xs, ys):\n    for x in xs:\n        for y in ys:\n            if g(y):\n                h(y)\n                break\n\n    return None\n"
+    );
+}
+
+#[test]
 fn tuple_assignment() {
     // def f(p): a, b = p; return a
     let code = Builder::new("f", 1, &["p", "a", "b"], &[], vec![Obj::None])
