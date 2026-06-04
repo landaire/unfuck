@@ -1297,6 +1297,33 @@ fn ternary_shortcircuit_then() {
 }
 
 #[test]
+fn shortcircuit_wrapping_ternary() {
+    // def f(a, c, b, d): return a and (b if c else d)
+    // The `a and` short-circuit (JUMP_IF_FALSE_OR_POP) opens BEFORE the ternary and
+    // jumps to the ternary's own merge, so it wraps the whole ternary. The then-arm's
+    // JUMP_FORWARD must not absorb it into `then` (which would yield the mis-parenthesised
+    // `(a and b) if c else d`, a different program); it stays pending and resolves around
+    // the ternary at the merge. Regression guard for FakeStatesController.__updateDunkerque.
+    let code = Builder::new("f", 4, &["a", "c", "b", "d"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 0) // a
+        .jump(Standard::JUMP_IF_FALSE_OR_POP, "merge")
+        .arg(Standard::LOAD_FAST, 1) // c (cond)
+        .jump(Standard::POP_JUMP_IF_FALSE, "else_")
+        .arg(Standard::LOAD_FAST, 2) // b (then)
+        .jump(Standard::JUMP_FORWARD, "merge")
+        .label("else_")
+        .arg(Standard::LOAD_FAST, 3) // d (otherwise)
+        .label("merge")
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(a, c, b, d):\n    return a and (b if c else d)\n"
+    );
+}
+
+#[test]
 fn ternary() {
     // def f(c, a, b): x = a if c else b; return x
     let code = Builder::new("f", 3, &["c", "a", "b", "x"], &[], vec![Obj::None])

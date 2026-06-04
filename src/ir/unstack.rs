@@ -47,6 +47,12 @@ struct PendingTernary {
     /// is not yet set) is an `and`-chain continuation of this ternary's condition; one
     /// that branches elsewhere begins a nested ternary inside this arm.
     else_target: Offset,
+    /// The `shortcircuit` stack depth when this ternary was opened. Short-circuits
+    /// below this depth were opened *before* the ternary, so they wrap the whole
+    /// ternary (`a and (x if c else y)`); those at or above it belong to the then/else
+    /// arm value. Used to fold and resolve in the correct nesting order rather than
+    /// draining all short-circuits ahead of the ternary.
+    sc_depth: usize,
 }
 
 /// A `from module import ...` under construction. `IMPORT_NAME` leaves the module
@@ -194,7 +200,19 @@ impl Unstacker {
     /// the remaining operand is on the stack, so combine it with what was recorded.
     pub fn resolve_pending(&mut self, offset: Offset) -> Result<(), IrError> {
         loop {
-            if self.shortcircuit.last().map(|s| s.merge) == Some(offset) {
+            // A short-circuit resolves before the innermost pending ternary only when it
+            // was opened *inside* that ternary's arm (its stack depth is at or above the
+            // ternary's `sc_depth`); the else arm's trailing `or`/`and` falls through to
+            // the merge and is the ternary's otherwise. A short-circuit opened before the
+            // ternary wraps it (`a and (x if c else y)`), so the ternary must resolve
+            // first and become that short-circuit's right operand -- handled once the
+            // ternary is popped and no enclosing ternary remains.
+            if self.shortcircuit.last().map(|s| s.merge) == Some(offset)
+                && self
+                    .ternary
+                    .last()
+                    .is_none_or(|t| self.shortcircuit.len() > t.sc_depth)
+            {
                 let sc = self.shortcircuit.pop().unwrap();
                 let rhs = self.pop()?;
                 let combined = self.combine_bool(sc.kind, sc.lhs, rhs);
@@ -1742,6 +1760,7 @@ impl Unstacker {
                         then: None,
                         merge: Offset(0),
                         else_target,
+                        sc_depth: self.shortcircuit.len(),
                     });
                 }
             }
@@ -1753,7 +1772,16 @@ impl Unstacker {
                 // JUMP_FORWARD is the arm's fall-through exit, so fold them now: the
                 // resulting boolean is the arm value. Without this the pending
                 // short-circuits would capture only the tail operand as `then`.
-                while self.shortcircuit.last().map(|s| s.merge) == Some(merge) {
+                //
+                // Only fold short-circuits opened *inside* the then arm (at or above the
+                // ternary's `sc_depth`). One opened before the ternary -- e.g. the `a
+                // and` of `a and (x if c else y)`, which short-circuits to this same
+                // merge -- wraps the whole ternary, so it must stay pending and resolve
+                // around the ternary at the merge, not be absorbed into `then`.
+                let floor = self.ternary.last().map_or(0, |t| t.sc_depth);
+                while self.shortcircuit.len() > floor
+                    && self.shortcircuit.last().map(|s| s.merge) == Some(merge)
+                {
                     let sc = self.shortcircuit.pop().unwrap();
                     let rhs = self.pop()?;
                     let combined = self.combine_bool(sc.kind, sc.lhs, rhs);
