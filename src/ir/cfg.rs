@@ -1264,12 +1264,23 @@ fn find_ternaries(
 }
 
 /// Whether every instruction in `[start, end)` only produces a value (no stores,
-/// control flow, or other statement effects).
+/// control flow, or other statement effects). `STORE_MAP` and `MAKE_FUNCTION`/
+/// `MAKE_CLOSURE` are value-only despite their statement-shaped mnemonics --
+/// `STORE_MAP` builds a dict display `{k: v}` and a `MAKE_*` is a lambda or an
+/// inlined comprehension call -- so a reordered-ternary arm that is one of those
+/// displays (`{} if c else {k: v}`) is still a pure value arm. This mirrors the
+/// whitelist [`pure_ternary_arm`] applies to contiguous ternary arms.
 fn pure_expression(instrs: &[OffsetInstr], start: Offset, end: Offset) -> bool {
     instrs
         .iter()
         .filter(|item| item.offset >= start && item.offset < end)
-        .all(|item| !is_statement_or_control(item.instr.opcode.mnemonic()))
+        .all(|item| {
+            let mnemonic = item.instr.opcode.mnemonic();
+            matches!(
+                mnemonic,
+                Mnemonic::STORE_MAP | Mnemonic::MAKE_FUNCTION | Mnemonic::MAKE_CLOSURE
+            ) || !is_statement_or_control(mnemonic)
+        })
 }
 
 /// Whether `[start, end)` is a value-producing ternary arm. Like `pure_expression`,

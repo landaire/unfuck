@@ -1508,6 +1508,41 @@ fn ternary_arm_with_dict_display() {
 }
 
 #[test]
+fn reordered_ternary_with_dict_display_else_arm() {
+    // x = {} if c else {'kk': v}
+    // A reordered ternary: the relinearizer lays the merge immediately after the then
+    // arm's JUMP_FORWARD and puts the else arm *after* the merge, jumping backward to
+    // it (so the merge does not dominate the else arm -- an irreducible CFG that
+    // region() handles by following edges). find_reordered_ternaries feeds the else
+    // value at the merge, but its pure_expression check rejected the else arm's
+    // STORE_MAP (dict display), so the diamond was left as control flow and the merge's
+    // STORE underflowed on the empty per-block stack. STORE_MAP only builds a dict
+    // display, so it is a pure value op. This is the updateProperties shape
+    // (ClientSettingsProxy): `unknown_66 = {} if .. else {VERSION: ..}`.
+    let code = Builder::new("f", 2, &["c", "v", "x"], &[], vec![Obj::None, pystr("kk")])
+        .arg(Standard::LOAD_FAST, 0) // c
+        .jump(Standard::POP_JUMP_IF_FALSE, "else_")
+        .arg(Standard::BUILD_MAP, 0) // then: {}
+        .jump(Standard::JUMP_FORWARD, "merge")
+        .label("merge")
+        .arg(Standard::STORE_FAST, 2) // x
+        .arg(Standard::LOAD_FAST, 2)
+        .op(Standard::RETURN_VALUE)
+        .label("else_") // laid out after the merge, jumps back
+        .arg(Standard::BUILD_MAP, 1)
+        .arg(Standard::LOAD_FAST, 1) // v (value)
+        .arg(Standard::LOAD_CONST, 1) // 'kk' (key)
+        .op(Standard::STORE_MAP)
+        .jump(Standard::JUMP_ABSOLUTE, "merge")
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(c, v):\n    x = {} if c else {'kk': v}\n    return x\n"
+    );
+}
+
+#[test]
 fn or_chain_if_with_empty_body_is_not_a_ternary() {
     // if c1 or c2: pass
     // return None
