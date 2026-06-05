@@ -265,6 +265,43 @@ fn try_except_as_whole_finally_body_recovers() {
 }
 
 #[test]
+fn bare_except_as_whole_finally_body_recovers() {
+    // Like the typed case but with a bare `except:` (handler clears the exception with
+    // POP_TOPs and emits no END_FINALLY of its own). The finally end-scan must not count
+    // that SETUP_EXCEPT, else it consumes the finally's own END_FINALLY and rejects.
+    let code = Builder::new("f", 0, &[], &["g", "h"], vec![Obj::None])
+        .jump(Standard::SETUP_FINALLY, "fin")
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_BLOCK)
+        .arg(Standard::LOAD_CONST, 0)
+        .label("fin")
+        .jump(Standard::SETUP_EXCEPT, "handler")
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_BLOCK)
+        .jump(Standard::JUMP_FORWARD, "merge")
+        .label("handler")
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_FORWARD, "merge")
+        .label("merge")
+        .op(Standard::END_FINALLY)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f():\n    try:\n        g()\n    finally:\n        try:\n            h()\n        \
+         except:\n            pass\n\n    return None\n"
+    );
+}
+
+#[test]
 fn precedence_parenthesises() {
     // (1 + 2) * 3
     let code = Builder::new("f", 0, &[], &[], vec![Obj::None, long(1), long(2), long(3)])

@@ -1992,12 +1992,20 @@ fn recover_finally(
             excluded.insert(instrs[i].offset);
         }
     }
-    // The finally clause ends at its own `END_FINALLY` at depth 0.
+    // The finally clause ends at its own `END_FINALLY` at depth 0. Every nested `SETUP_`
+    // that opens a region with an `END_FINALLY` is bracketed so its `END_FINALLY` is not
+    // mistaken for this finally's -- except a bare `except:`, whose handler clears the
+    // exception with `POP_TOP`s and never re-raises, so it emits no `END_FINALLY`.
+    // Counting that `SETUP_EXCEPT` would leave depth non-zero and consume this finally's
+    // own `END_FINALLY`, rejecting the object (a try/except that is the whole finally
+    // body, e.g. `finally: try: cleanup() except: pass`).
     let mut depth = 0i32;
     let mut end_idx = None;
     for i in finalbody_idx..instrs.len() {
         let mnemonic = instrs[i].instr.opcode.mnemonic();
-        if format!("{:?}", mnemonic).starts_with("SETUP_") {
+        if mnemonic == Mnemonic::SETUP_EXCEPT && is_bare_except(instrs, index, i) {
+            // No `END_FINALLY` to pair with; do not bracket it.
+        } else if format!("{:?}", mnemonic).starts_with("SETUP_") {
             depth += 1;
         } else if mnemonic == Mnemonic::END_FINALLY {
             if depth == 0 {
@@ -2081,6 +2089,25 @@ fn end_finally_remap(instrs: &[OffsetInstr], excluded: &HashSet<Offset>) -> Hash
         }
     }
     remap
+}
+
+/// Whether the `SETUP_EXCEPT` at `setup_idx` opens a bare `except:` -- its handler
+/// clears the exception triple with `POP_TOP` rather than matching a type with
+/// `DUP_TOP`. A bare except catches everything and never re-raises, so (unlike a typed
+/// `except T:`) it emits no `END_FINALLY`, which the finally end-scan must account for.
+fn is_bare_except(
+    instrs: &[OffsetInstr],
+    index: &HashMap<Offset, usize>,
+    setup_idx: usize,
+) -> bool {
+    let Ok(handler_off) = branch_target(&instrs[setup_idx]) else {
+        return false;
+    };
+    let Some(&handler_target) = index.get(&handler_off) else {
+        return false;
+    };
+    let handler_idx = skip_nops(instrs, handler_target);
+    instrs.get(handler_idx).map(|it| it.instr.opcode.mnemonic()) == Some(Mnemonic::POP_TOP)
 }
 
 fn skip_nops(instrs: &[OffsetInstr], mut idx: usize) -> usize {
