@@ -198,6 +198,25 @@ fn degenerate_predicate_is_stripped() {
 }
 
 #[test]
+fn out_of_range_predicate_is_stripped() {
+    // A dead predicate whose conditional jump targets an offset past the end of the code
+    // (9999) -- CPython would fault, so it can never be taken. Unlike the marker-tuple
+    // form (handled by strip_opaque_predicates), this bare arithmetic predicate is
+    // removed by the out-of-range branch of strip_degenerate_predicates, leaving the live
+    // `return a`. Left in place its unresolvable jump target fails CFG construction.
+    let code = Builder::new("f", 1, &["a"], &[], vec![Obj::None, long(2)])
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::LOAD_CONST, 1)
+        .op(Standard::BINARY_MODULO)
+        .arg(Standard::POP_JUMP_IF_TRUE, 9999)
+        .arg(Standard::LOAD_FAST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(a):\n    return a\n");
+}
+
+#[test]
 fn empty_finally_recovers() {
     // `try: x = 1 finally: pass` -- the cleanup is just the `END_FINALLY` at the
     // SETUP_FINALLY target, which recovery drops, leaving no block to structure. The

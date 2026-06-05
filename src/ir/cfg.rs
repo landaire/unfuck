@@ -535,6 +535,7 @@ fn opaque_value_delta(instr: &Instruction<Standard>) -> Option<isize> {
 /// before the operand balances, nothing is touched, so a genuine (non-degenerate)
 /// computation is never disturbed.
 pub fn strip_degenerate_predicates(instrs: &mut [OffsetInstr]) {
+    let valid: HashSet<Offset> = instrs.iter().map(|item| item.offset).collect();
     for i in 0..instrs.len() {
         if !matches!(
             instrs[i].instr.opcode.mnemonic(),
@@ -547,7 +548,13 @@ pub fn strip_degenerate_predicates(instrs: &mut [OffsetInstr]) {
         let Some(next_offset) = instrs.get(i + 1).map(|n| n.offset) else {
             continue;
         };
-        if branch_target(&instrs[i]) != Ok(next_offset) {
+        // Two dead-predicate shapes: a jump to its own fall-through (no divert), and a
+        // jump to an INVALID offset -- past the end of the code or the middle of an
+        // instruction. CPython would fault on the latter, so the obfuscator only emits
+        // it as a never-taken predicate; either way the branch is dead.
+        let target = branch_target(&instrs[i]);
+        let is_dead = target == Ok(next_offset) || target.map_or(true, |t| !valid.contains(&t));
+        if !is_dead {
             continue;
         }
         // Walk backward accumulating the net values produced; the jump pops one, so the

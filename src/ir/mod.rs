@@ -93,13 +93,17 @@ impl DecodedFunction {
             // Drop the obfuscator's no-op forward jumps, which only fragment the
             // instruction stream and break straight-line pattern matching.
             cfg::strip_noop_jumps(&mut instrs);
-            // Remove the obfuscator's degenerate opaque predicates (a conditional jump
-            // to its own fall-through and the junk value it tests) so they do not leave
-            // an unresolved short-circuit operand that defeats ternary/boolean folding.
-            cfg::strip_degenerate_predicates(&mut instrs);
             // Neutralize the obfuscator's opaque-predicate stack injections so the
-            // buried operands of imports/class/function defs reach the unstacker.
+            // buried operands of imports/class/function defs reach the unstacker. Runs
+            // before strip_degenerate_predicates so the marker-tuple form (whose dead
+            // branch also jumps out of range) is removed as a whole block here, rather
+            // than half-stripped by the generic out-of-range handling below.
             cfg::strip_opaque_predicates(&mut instrs, &code);
+            // Remove the obfuscator's remaining degenerate opaque predicates: a
+            // conditional jump to its own fall-through, or to an out-of-range/invalid
+            // offset, and the junk value it tests -- otherwise the dead branch leaves an
+            // unresolved short-circuit or an unresolvable CFG edge.
+            cfg::strip_degenerate_predicates(&mut instrs);
         }
         Ok(DecodedFunction { code, instrs })
     }
