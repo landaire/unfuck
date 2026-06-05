@@ -302,6 +302,29 @@ fn bare_except_as_whole_finally_body_recovers() {
 }
 
 #[test]
+fn finally_returns_recovers() {
+    // `try: g() finally: return 1` -- the cleanup unconditionally returns, so the
+    // compiler emits no END_FINALLY and there is no merge. The finally must still
+    // structure (end = None) rather than rejecting for the missing END_FINALLY.
+    let code = Builder::new("f", 0, &[], &["g"], vec![Obj::None, long(1)])
+        .jump(Standard::SETUP_FINALLY, "fin")
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_BLOCK)
+        .arg(Standard::LOAD_CONST, 0)
+        .label("fin")
+        .arg(Standard::LOAD_CONST, 1)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f():\n    try:\n        g()\n    finally:\n        return 1\n"
+    );
+}
+
+#[test]
 fn precedence_parenthesises() {
     // (1 + 2) * 3
     let code = Builder::new("f", 0, &[], &[], vec![Obj::None, long(1), long(2), long(3)])

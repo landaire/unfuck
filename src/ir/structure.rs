@@ -357,7 +357,14 @@ impl Structurer<'_> {
                     cursor = self.point_block(follow);
                 }
                 Terminator::Finally { body, finalbody, end } => {
-                    let follow = Point::Block(self.cfg.target(*end)?);
+                    // `end` is None when the cleanup always exits (`finally: return`/
+                    // `raise`): no merge follows, so bound the clause at the enclosing
+                    // `stop` (its returning block terminates the walk) and emit nothing
+                    // after the construct.
+                    let follow = match end {
+                        Some(end) => Point::Block(self.cfg.target(*end)?),
+                        None => stop,
+                    };
                     // An empty cleanup (`finally: pass`) has no block; the body then
                     // converges straight at the merge and the finally suite is empty.
                     let final_at = match finalbody {
@@ -374,7 +381,10 @@ impl Structurer<'_> {
                         None => Vec::new(),
                     };
                     out.push(Stmt::TryFinally { body: try_body, finalbody: final_body });
-                    cursor = self.point_block(follow);
+                    cursor = match end {
+                        Some(_) => self.point_block(follow),
+                        None => None,
+                    };
                 }
                 // A ForIter block is always a loop header and is handled by the loop
                 // check above (including the synthesized no-back-edge case); reaching it

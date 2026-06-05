@@ -76,11 +76,13 @@ pub enum Terminator {
     /// `finalbody` the cleanup that always runs, and `end` the merge after it.
     /// `finalbody` is `None` for an empty cleanup (`finally: pass`, whose only
     /// instruction is the `END_FINALLY` that is dropped during recovery, leaving no
-    /// block to structure).
+    /// block to structure). `end` is `None` when the cleanup itself always exits
+    /// (`finally: return x` / `finally: raise`): there is no `END_FINALLY` and no merge,
+    /// so nothing follows the construct.
     Finally {
         body: Offset,
         finalbody: Option<Offset>,
-        end: Offset,
+        end: Option<Offset>,
     },
 }
 
@@ -122,7 +124,9 @@ impl Terminator {
                 if let Some(finalbody) = finalbody {
                     map(finalbody);
                 }
-                map(end);
+                if let Some(end) = end {
+                    map(end);
+                }
             }
             Terminator::Break { follow, fallback } => {
                 map(follow);
@@ -175,7 +179,7 @@ impl Block {
             Terminator::Finally { body, finalbody, end } => {
                 let mut targets = vec![*body];
                 targets.extend(*finalbody);
-                targets.push(*end);
+                targets.extend(*end);
                 targets
             }
             Terminator::Break { fallback, .. } => vec![*fallback],
@@ -847,7 +851,7 @@ fn block_leaders(
     for shape in finallys {
         leaders.insert(shape.body_entry);
         leaders.extend(shape.finalbody);
-        leaders.insert(shape.end);
+        leaders.extend(shape.end);
     }
     // A try's body and every handler clause begin a block; the dispatch between
     // them is excluded, so these leaders are added explicitly rather than falling
@@ -1907,8 +1911,10 @@ struct FinallyShape {
     /// First instruction of the finally clause, or `None` for an empty cleanup
     /// (`finally: pass`) whose only instruction is the dropped `END_FINALLY`.
     finalbody: Option<Offset>,
-    /// Merge point reached after the construct (past the finally's `END_FINALLY`).
-    end: Offset,
+    /// Merge point reached after the construct (past the finally's `END_FINALLY`), or
+    /// `None` when the cleanup itself always exits (`finally: return`/`raise`), so there
+    /// is no `END_FINALLY` and nothing follows.
+    end: Option<Offset>,
 }
 
 /// Recovers every `try`/`finally` region and the `END_FINALLY` offsets to drop. A
@@ -2015,7 +2021,22 @@ fn recover_finally(
             depth -= 1;
         }
     }
-    let end_idx = end_idx.ok_or(IrError::HasControlFlow(Mnemonic::SETUP_FINALLY))?;
+    let Some(end_idx) = end_idx else {
+        // No `END_FINALLY`: the only valid shape is a cleanup that always exits
+        // (`finally: return x` / `finally: raise`), which emits no `END_FINALLY` and has
+        // no merge -- nothing follows the construct. Require the finally body to reach a
+        // return/raise through straight-line code (the common case); a more complex
+        // no-`END_FINALLY` body is an unrecognized shape and stays rejected.
+        if clause_terminates(instrs, index, finalbody_off) {
+            return Ok(FinallyShape {
+                setup: setup.offset,
+                body_entry,
+                finalbody: Some(finalbody_off),
+                end: None,
+            });
+        }
+        return Err(IrError::HasControlFlow(Mnemonic::SETUP_FINALLY));
+    };
     // The merge can sit behind the `END_FINALLY` of an enclosing finally: a nested
     // `try/finally` whose inner clause ends exactly where the outer's does (the stdlib
     // `close` idiom -- `try: flush() finally: try: unlock() finally: file.close()`).
@@ -2034,7 +2055,7 @@ fn recover_finally(
     // Signal it with `None` so the structurer emits an empty (`pass`) finally rather
     // than trying to resolve a block that does not exist (an `operand out of range`).
     let finalbody = (finalbody_idx != end_idx).then_some(finalbody_off);
-    Ok(FinallyShape { setup: setup.offset, body_entry, finalbody, end })
+    Ok(FinallyShape { setup: setup.offset, body_entry, finalbody, end: Some(end) })
 }
 
 /// Builds each `try`/`finally` block's `Finally` terminator from its shape.
