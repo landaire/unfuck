@@ -1805,6 +1805,20 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
                     })
                     .unwrap_or(0);
                 let bb = &mut self.graph[nx];
+                // A leaf has no successor, so a trailing unconditional jump is dangling
+                // (its target was eliminated during deobfuscation). Drop it before the
+                // implicit return: left in place, the return sits unreachable after it,
+                // and `update_branches` -- which only retargets a block's LAST instruction
+                // -- cannot fix the stranded jump, so it keeps a stale operand that lands
+                // mid-instruction (the cause of the except-into-mid-expression scrambles).
+                if let Some(last) = bb.instrs.last().and_then(|ins| ins.get()) {
+                    if matches!(
+                        last.opcode.mnemonic(),
+                        Mnemonic::JUMP_FORWARD | Mnemonic::JUMP_ABSOLUTE
+                    ) {
+                        bb.instrs.pop();
+                    }
+                }
                 bb.instrs.push(ParsedInstr::Good(Arc::new(Instruction {
                     opcode: Mnemonic::LOAD_CONST.into(),
                     arg: Some(const_idx as u16),
