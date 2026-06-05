@@ -4,4 +4,4 @@ expression: "decompile(fixture, name)"
 snapshot_kind: text
 ---
 def ext_slice(o, a, b, c):
-    return (o[a:b:c], o[None:None:2], o[1:None:2])
+    return (o[a:b:c], o[::2], o[1::2])
