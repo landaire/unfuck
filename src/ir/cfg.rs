@@ -84,6 +84,55 @@ pub enum Terminator {
     },
 }
 
+impl Terminator {
+    /// Rewrites every successor offset through `remap`. Used to redirect a jump that
+    /// lands on an excluded `END_FINALLY` (dropped during recovery) to the real merge
+    /// block past it; an offset absent from `remap` is left unchanged.
+    fn remap_targets(&mut self, remap: &HashMap<Offset, Offset>) {
+        let map = |offset: &mut Offset| {
+            if let Some(&to) = remap.get(offset) {
+                *offset = to;
+            }
+        };
+        match self {
+            Terminator::Fallthrough(target) | Terminator::Jump(target) => map(target),
+            Terminator::CondBranch { if_true, if_false, .. } => {
+                map(if_true);
+                map(if_false);
+            }
+            Terminator::ForIter { body, exit } => {
+                map(body);
+                map(exit);
+            }
+            Terminator::Try { body, handlers, end } => {
+                map(body);
+                for arm in handlers {
+                    map(&mut arm.body);
+                }
+                if let Some(end) = end {
+                    map(end);
+                }
+            }
+            Terminator::With { body, end, .. } => {
+                map(body);
+                map(end);
+            }
+            Terminator::Finally { body, finalbody, end } => {
+                map(body);
+                if let Some(finalbody) = finalbody {
+                    map(finalbody);
+                }
+                map(end);
+            }
+            Terminator::Break { follow, fallback } => {
+                map(follow);
+                map(fallback);
+            }
+            Terminator::Return(_) | Terminator::Raise(_) => {}
+        }
+    }
+}
+
 /// One recovered `except` clause: the matched type, the optional `as name`
 /// binding, and the offset where the clause body begins.
 #[derive(Debug, Clone)]
@@ -383,6 +432,16 @@ impl Cfg {
                 }
             });
             blocks.push(block);
+        }
+
+        // Redirect any terminator edge that lands on an excluded END_FINALLY to the real
+        // merge past it (a try/except that is the whole body of an enclosing finally
+        // jumps its body and handler exits onto that finally's dropped END_FINALLY).
+        let end_finally_merge = end_finally_remap(instrs, &excluded);
+        if !end_finally_merge.is_empty() {
+            for block in &mut blocks {
+                block.terminator.remap_targets(&end_finally_merge);
+            }
         }
 
         // Map the for...else (FOR_ITER exit -> real follow) offsets to block ids.
@@ -1995,6 +2054,35 @@ fn mnemonic_at(instrs: &[OffsetInstr], idx: usize) -> Result<Mnemonic, IrError> 
 /// `strip_noop_jumps` rewrote) or a still-raw `JUMP_FORWARD 0`. The relinearizer
 /// leaves these so a region's cleanup/merge target can land on one instead of the
 /// real instruction; both fall straight through to the next instruction.
+/// Maps each excluded `END_FINALLY` offset to the real merge block that follows it.
+///
+/// A jump can target the `END_FINALLY` of an enclosing try/finally/except (e.g. a
+/// try/except that is the whole body of a finally, whose body- and handler-exit jumps
+/// both land on the finally's `END_FINALLY`). Recovery drops that `END_FINALLY`, so the
+/// CFG would have an edge naming a non-existent block. Each entry redirects such an edge
+/// past the run of dropped offsets (stacked `END_FINALLY`s and NOP trampolines) to the
+/// surviving merge. This is sound because `break`/`continue`/`return` through a finally
+/// use the block-stack opcodes, not an explicit jump to `END_FINALLY`; the only explicit
+/// jumps that land there are normal flow resuming after the construct.
+fn end_finally_remap(instrs: &[OffsetInstr], excluded: &HashSet<Offset>) -> HashMap<Offset, Offset> {
+    let mut remap = HashMap::new();
+    for (idx, item) in instrs.iter().enumerate() {
+        if item.instr.opcode.mnemonic() != Mnemonic::END_FINALLY
+            || !excluded.contains(&item.offset)
+        {
+            continue;
+        }
+        let mut j = skip_nops(instrs, idx + 1);
+        while instrs.get(j).is_some_and(|next| excluded.contains(&next.offset)) {
+            j = skip_nops(instrs, j + 1);
+        }
+        if let Some(merge) = instrs.get(j) {
+            remap.insert(item.offset, merge.offset);
+        }
+    }
+    remap
+}
+
 fn skip_nops(instrs: &[OffsetInstr], mut idx: usize) -> usize {
     while let Some(item) = instrs.get(idx) {
         let mnemonic = item.instr.opcode.mnemonic();

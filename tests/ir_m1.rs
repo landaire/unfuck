@@ -221,6 +221,50 @@ fn empty_finally_recovers() {
 }
 
 #[test]
+fn try_except_as_whole_finally_body_recovers() {
+    // `try: g() finally: try: h() except E: pass` -- the inner try/except is the entire
+    // finally body, so its body-exit and handler-exit jumps both target the OUTER
+    // finally's END_FINALLY, which recovery drops. Those CFG edges must be redirected to
+    // the real merge past it, else the structurer fails resolving the dropped offset.
+    let code = Builder::new("f", 0, &[], &["g", "h", "E"], vec![Obj::None])
+        .jump(Standard::SETUP_FINALLY, "fin")
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_BLOCK)
+        .arg(Standard::LOAD_CONST, 0)
+        .label("fin")
+        .jump(Standard::SETUP_EXCEPT, "handler")
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_BLOCK)
+        .jump(Standard::JUMP_FORWARD, "end_inner")
+        .label("handler")
+        .op(Standard::DUP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 2)
+        .arg(Standard::COMPARE_OP, 10)
+        .jump(Standard::POP_JUMP_IF_FALSE, "reraise")
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_FORWARD, "end_inner")
+        .label("reraise")
+        .op(Standard::END_FINALLY)
+        .label("end_inner")
+        .op(Standard::END_FINALLY)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f():\n    try:\n        g()\n    finally:\n        try:\n            h()\n        \
+         except E:\n            pass\n\n    return None\n"
+    );
+}
+
+#[test]
 fn precedence_parenthesises() {
     // (1 + 2) * 3
     let code = Builder::new("f", 0, &[], &[], vec![Obj::None, long(1), long(2), long(3)])
