@@ -1949,10 +1949,18 @@ fn recover_finally(
         }
     }
     let end_idx = end_idx.ok_or(IrError::HasControlFlow(Mnemonic::SETUP_FINALLY))?;
-    let end = instrs
-        .get(skip_nops(instrs, end_idx + 1))
-        .ok_or(IrError::Unstructurable)?
-        .offset;
+    // The merge can sit behind the `END_FINALLY` of an enclosing finally: a nested
+    // `try/finally` whose inner clause ends exactly where the outer's does (the stdlib
+    // `close` idiom -- `try: flush() finally: try: unlock() finally: file.close()`).
+    // The enclosing finally has a lower SETUP offset, so it was recovered first and its
+    // `END_FINALLY` is already excluded; skip past those (and any NOP trampoline) to the
+    // real merge block, else `end` would name a dropped instruction (`operand out of
+    // range`).
+    let mut merge_idx = skip_nops(instrs, end_idx + 1);
+    while instrs.get(merge_idx).is_some_and(|it| excluded.contains(&it.offset)) {
+        merge_idx = skip_nops(instrs, merge_idx + 1);
+    }
+    let end = instrs.get(merge_idx).ok_or(IrError::Unstructurable)?.offset;
     excluded.insert(instrs[end_idx].offset);
     // An empty cleanup (`finally: pass`) is just the `END_FINALLY` at the SETUP target,
     // which is excluded above -- so there is no block at `finalbody_off` to structure.
