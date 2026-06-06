@@ -200,6 +200,45 @@ fn ir_consumes_code_graph_via_bridge() {
 }
 
 #[test]
+fn decompile_via_code_graph_matches_bytecode() {
+    // End-to-end: decompiling a function through the CodeGraph path
+    // (from_code_default + from_code_graph) yields identical source to the bytecode path
+    // (DecodedFunction::decode). A `0 <= x <= 10` chained comparison feeding a branch
+    // exercises both the stripper passes and the structurer over the bridged stream.
+    let code = Builder::new("f", 1, &["x"], &[], vec![Obj::None, long(0), long(10), long(1), long(2)])
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::LOAD_CONST, 1) // 0
+        .op(Standard::DUP_TOP)
+        .op(Standard::ROT_THREE)
+        .arg(Standard::COMPARE_OP, 5) // 0 <= x  (>= from x's view: actually <=)
+        .jump(Standard::JUMP_IF_FALSE_OR_POP, "merge")
+        .arg(Standard::LOAD_CONST, 2) // 10
+        .arg(Standard::COMPARE_OP, 1) // x <= 10
+        .label("merge")
+        .jump(Standard::POP_JUMP_IF_FALSE, "els")
+        .arg(Standard::LOAD_CONST, 3) // 1
+        .op(Standard::RETURN_VALUE)
+        .label("els")
+        .arg(Standard::LOAD_CONST, 4) // 2
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    let via_bytes = unfuck::ir::DecodedFunction::decode(Arc::clone(&code))
+        .unwrap()
+        .structure()
+        .unwrap()
+        .to_source(&[]);
+    let graph = unfuck::code_graph::CodeGraph::from_code_default(Arc::clone(&code)).unwrap();
+    let via_graph = unfuck::ir::DecodedFunction::from_code_graph(Arc::clone(&code), &graph)
+        .structure()
+        .unwrap()
+        .to_source(&[]);
+
+    assert_eq!(via_bytes, via_graph);
+    assert!(via_graph.contains("return"), "expected real recovery, got:\n{}", via_graph);
+}
+
+#[test]
 fn arithmetic_return() {
     let code = Builder::new("add_one_two", 0, &[], &[], vec![Obj::None, long(1), long(2)])
         .arg(Standard::LOAD_CONST, 1)

@@ -23,8 +23,9 @@ pub mod unstack;
 use std::sync::{Arc, RwLock};
 
 use py27_marshal::{Code, CodeFlags, Obj};
-use pydis::opcode::py27::Mnemonic;
+use pydis::opcode::py27::{Mnemonic, Standard};
 
+use crate::code_graph::CodeGraph;
 use cfg::{Cfg, OffsetInstr};
 use expr::{Expr, ExprArena, LValue, Stmt};
 
@@ -84,11 +85,28 @@ pub struct StructuredFunction {
 impl DecodedFunction {
     /// Decodes a code object's bytecode into offset-tagged instructions.
     pub fn decode(code: Arc<Code>) -> Result<DecodedFunction, IrError> {
-        let mut instrs = cfg::decode(code.code.as_slice())?;
-        // Both cleanups are semantics-preserving but reshape the CFG, which a few
-        // structuring patterns are sensitive to. They run under the same flag as the
-        // opaque strip so the no-strip fallback in `decompile_function_with_defaults`
-        // decompiles the untouched bytecode when a cleanup trips the structurer.
+        let instrs = cfg::decode(code.code.as_slice())?;
+        Ok(Self::from_instrs(code, instrs))
+    }
+
+    /// Builds a [`DecodedFunction`] from a deobfuscator [`CodeGraph`] instead of raw bytecode,
+    /// by linearizing the graph (see [`cfg::decode_from_graph`]) and applying the same
+    /// cleanups. Lets the decompiler consume the deob's control-flow graph directly, without
+    /// round-tripping through serialized bytecode. For a freshly built graph this yields the
+    /// same `DecodedFunction` as [`decode`](Self::decode) on the equivalent bytecode.
+    pub fn from_code_graph(code: Arc<Code>, graph: &CodeGraph<'_, Standard>) -> DecodedFunction {
+        let instrs = cfg::decode_from_graph(graph);
+        Self::from_instrs(code, instrs)
+    }
+
+    /// Applies the obfuscation cleanups to a decoded instruction stream and wraps it. Shared
+    /// by [`decode`](Self::decode) (from bytecode) and [`from_code_graph`](Self::from_code_graph)
+    /// (from a CodeGraph) so both take the identical path once the stream exists.
+    fn from_instrs(code: Arc<Code>, mut instrs: Vec<OffsetInstr>) -> DecodedFunction {
+        // The cleanups are semantics-preserving but reshape the CFG, which a few structuring
+        // patterns are sensitive to. They run under the same flag as the opaque strip so the
+        // no-strip fallback in `decompile_function_with_defaults` decompiles the untouched
+        // bytecode when a cleanup trips the structurer.
         if STRIP_OPAQUE.with(|flag| flag.get()) {
             // Drop the obfuscator's no-op forward jumps, which only fragment the
             // instruction stream and break straight-line pattern matching.
@@ -112,7 +130,7 @@ impl DecodedFunction {
             // unresolved short-circuit or an unresolvable CFG edge.
             cfg::strip_degenerate_predicates(&mut instrs);
         }
-        Ok(DecodedFunction { code, instrs })
+        DecodedFunction { code, instrs }
     }
 
     /// Builds the CFG, lowers each block, and recovers control flow.
