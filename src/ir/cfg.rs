@@ -3234,25 +3234,49 @@ fn find_chained_comparisons(
         let Some(&l_idx) = index.get(&cleanup) else {
             continue;
         };
-        // The cleanup at the jump target is exactly ROT_TWO; POP_TOP, preceded by
-        // the final comparison's JUMP_FORWARD to the real merge.
+        // The cleanup at the jump target is exactly ROT_TWO; POP_TOP.
         if l_idx == 0
             || instrs[l_idx].instr.opcode.mnemonic() != Mnemonic::ROT_TWO
             || instrs.get(l_idx + 1).map(|i| i.instr.opcode.mnemonic()) != Some(Mnemonic::POP_TOP)
         {
             continue;
         }
-        let forward = &instrs[l_idx - 1];
-        if forward.instr.opcode.mnemonic() != Mnemonic::JUMP_FORWARD {
+        // Value form: the final comparison's `JUMP_FORWARD` sits right before the cleanup and
+        // names the merge where the chained value lands (often the merge is itself the
+        // consuming branch). Exclude the forward jump and the cleanup pair.
+        if instrs[l_idx - 1].instr.opcode.mnemonic() == Mnemonic::JUMP_FORWARD {
+            let Ok(merge) = branch_target(&instrs[l_idx - 1]) else {
+                continue;
+            };
+            overrides.insert(item.offset, merge);
+            excluded.insert(instrs[l_idx - 1].offset);
+            excluded.insert(instrs[l_idx].offset);
+            excluded.insert(instrs[l_idx + 1].offset);
             continue;
         }
-        let Ok(merge) = branch_target(forward) else {
-            continue;
-        };
-        overrides.insert(item.offset, merge);
-        excluded.insert(forward.offset);
-        excluded.insert(instrs[l_idx].offset);
-        excluded.insert(instrs[l_idx + 1].offset);
+        // Branch form (relinearized): the chained comparison feeds a branch, so the value lands
+        // at the consuming POP_JUMP itself. The obfuscator displaces the cleanup to after that
+        // consumer and reaches it with `ROT_TWO; POP_TOP; JUMP_ABSOLUTE <consumer>` (the
+        // short-circuit-taken path), while the fall-through (both comparisons evaluated) reaches
+        // the consumer directly. The merge is `<consumer>`, which must be a `POP_JUMP_IF_*`.
+        if instrs.get(l_idx + 2).map(|i| i.instr.opcode.mnemonic()) == Some(Mnemonic::JUMP_ABSOLUTE)
+        {
+            let Ok(consumer) = branch_target(&instrs[l_idx + 2]) else {
+                continue;
+            };
+            let consumer_is_branch = index.get(&consumer).is_some_and(|&ci| {
+                matches!(
+                    instrs[ci].instr.opcode.mnemonic(),
+                    Mnemonic::POP_JUMP_IF_TRUE | Mnemonic::POP_JUMP_IF_FALSE
+                )
+            });
+            if consumer_is_branch {
+                overrides.insert(item.offset, consumer);
+                excluded.insert(instrs[l_idx].offset);
+                excluded.insert(instrs[l_idx + 1].offset);
+                excluded.insert(instrs[l_idx + 2].offset);
+            }
+        }
     }
     (overrides, excluded)
 }

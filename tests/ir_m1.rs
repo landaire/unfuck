@@ -2323,6 +2323,42 @@ fn ternary_arm_with_chained_comparison() {
 }
 
 #[test]
+fn chained_comparison_feeding_a_branch() {
+    // Relinearized `if a <= b <= c: return 1` (then `return 2`). The chained comparison feeds a
+    // branch (POP_JUMP), not a value. The contiguous value form puts the final comparison's
+    // `JUMP_FORWARD <consumer>` right before the `ROT_TWO; POP_TOP` cleanup; the obfuscator
+    // instead displaces the cleanup to AFTER the consumer and reaches it with `JUMP_ABSOLUTE
+    // <consumer>`. find_chained_comparisons must recognize that branch form so the chain folds
+    // and feeds the consuming POP_JUMP, rather than leaving a raw JUMP_IF_FALSE_OR_POP.
+    let code = Builder::new("f", 3, &["a", "b", "c"], &[], vec![Obj::None, long(1), long(2)])
+        .arg(Standard::LOAD_FAST, 0) // a
+        .arg(Standard::LOAD_FAST, 1) // b
+        .op(Standard::DUP_TOP)
+        .op(Standard::ROT_THREE)
+        .arg(Standard::COMPARE_OP, 1) // a <= b
+        .jump(Standard::JUMP_IF_FALSE_OR_POP, "cleanup")
+        .arg(Standard::LOAD_FAST, 2) // c
+        .arg(Standard::COMPARE_OP, 1) // b <= c
+        .label("consumer")
+        .jump(Standard::POP_JUMP_IF_FALSE, "els") // if chained false, skip the body
+        .arg(Standard::LOAD_CONST, 1) // 1
+        .op(Standard::RETURN_VALUE)
+        .label("cleanup")
+        .op(Standard::ROT_TWO)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_ABSOLUTE, "consumer") // displaced cleanup jumps back to the consumer
+        .label("els")
+        .arg(Standard::LOAD_CONST, 2) // 2
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(a, b, c):\n    if a <= b <= c:\n        return 1\n\n    return 2\n"
+    );
+}
+
+#[test]
 fn swap_is_recovered() {
     // A ROT_TWO swap (`a, b = b, a`) is a two-element parallel assignment: the
     // compiler loads both values then rotates so the stores take them in order.
