@@ -30,7 +30,7 @@ use petgraph::algo::dominators::{simple_fast, Dominators};
 use petgraph::graph::{DiGraph, NodeIndex};
 
 use super::cfg::{BlockId, Cfg, Terminator};
-use super::expr::{ExceptHandler, LValue, Stmt, ValueId};
+use super::expr::{ExceptHandler, LValue, Offset, Stmt, ValueId};
 
 /// A control-flow destination: a block, or the function exit.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -149,7 +149,8 @@ const MAX_DEPTH: usize = 400;
 pub fn structure(cfg: &Cfg) -> Option<Vec<Stmt>> {
     let analyzer = Analyzer::build(cfg)?;
     let mut frames: Vec<Frame> = Vec::new();
-    let region = analyzer.build_region(cfg.entry, None, &mut frames, 0)?;
+    let entry = analyzer.resolve(cfg.entry);
+    let region = analyzer.build_region(entry, None, &mut frames, 0)?;
     analyzer.verify(&region)?;
     let mut body = analyzer.lower(&region);
     super::structure::cleanup(&mut body);
@@ -158,6 +159,8 @@ pub fn structure(cfg: &Cfg) -> Option<Vec<Stmt>> {
 
 struct Analyzer<'a> {
     cfg: &'a Cfg,
+    /// Pure-jump trampolines threaded to their ultimate target (see [`build_thread_map`]).
+    thread: HashMap<BlockId, BlockId>,
     loops: HashMap<BlockId, LoopShape>,
     /// Forward dominators, for classifying back edges and ordering nested loops.
     dom: Dominators<NodeIndex>,
@@ -188,6 +191,20 @@ impl<'a> Analyzer<'a> {
             }
         }
 
+        // Pure-jump trampolines are threaded out of every graph: an edge that lands on one
+        // resolves straight to its ultimate target, and the trampoline itself carries no
+        // edges (so it is unreachable and excluded from coverage). This dissolves a
+        // continue/break trampoline reached from several branch arms, which would otherwise
+        // be walked -- and duplicated -- in each arm.
+        let thread = build_thread_map(cfg);
+        let resolve_off = |off: Offset| -> Dest {
+            match cfg.by_offset.get(&off) {
+                Some(&b) => Dest::Block(*thread.get(&b).unwrap_or(&b)),
+                None => Dest::Exit,
+            }
+        };
+        let is_tramp = |b: BlockId| thread.contains_key(&b);
+
         // Forward graph for dominators. Each block keeps its raw CFG successors (a `Break`
         // uses its in-loop `fallback`) AND, for a `Break`, an extra edge to its `follow`.
         // The follow edge is what makes a second loop reached only through the first loop's
@@ -198,6 +215,9 @@ impl<'a> Analyzer<'a> {
         let nodes: Vec<NodeIndex> = (0..cfg.blocks.len()).map(|_| graph.add_node(())).collect();
         let exit_node = graph.add_node(());
         for (idx, block) in cfg.blocks.iter().enumerate() {
+            if is_tramp(BlockId(idx as u32)) {
+                continue;
+            }
             let from = nodes[idx];
             let mut targets = block.successors();
             if let Terminator::Break { follow, .. } = &block.terminator {
@@ -209,13 +229,13 @@ impl<'a> Analyzer<'a> {
                 graph.add_edge(from, exit_node, ());
             }
             for target in targets {
-                match cfg.by_offset.get(&target) {
-                    Some(to) => graph.add_edge(from, nodes[to.0 as usize], ()),
-                    None => graph.add_edge(from, exit_node, ()),
+                match resolve_off(target) {
+                    Dest::Block(to) => graph.add_edge(from, nodes[to.0 as usize], ()),
+                    Dest::Exit => graph.add_edge(from, exit_node, ()),
                 };
             }
         }
-        let entry_node = nodes[cfg.entry.0 as usize];
+        let entry_node = nodes[thread.get(&cfg.entry).copied().unwrap_or(cfg.entry).0 as usize];
         let dom = simple_fast(&graph, entry_node);
 
         // Post-dominators over SEMANTIC, normal edges: a `Break` reaches its `follow` (not
@@ -229,18 +249,20 @@ impl<'a> Analyzer<'a> {
         let normal_semantic = |block: &super::cfg::Block| -> Vec<Dest> {
             match &block.terminator {
                 // A try's handlers run only on an exception; normal flow is the body.
-                Terminator::Try { body, .. } => vec![dest_of(cfg, *body)],
-                Terminator::With { body, end, .. } => vec![dest_of(cfg, *body), dest_of(cfg, *end)],
+                Terminator::Try { body, .. } => vec![dest_of(cfg, &thread, *body)],
+                Terminator::With { body, end, .. } => {
+                    vec![dest_of(cfg, &thread, *body), dest_of(cfg, &thread, *end)]
+                }
                 Terminator::Finally { body, finalbody, .. } => {
-                    let mut v = vec![dest_of(cfg, *body)];
-                    v.extend(finalbody.map(|fb| dest_of(cfg, fb)));
+                    let mut v = vec![dest_of(cfg, &thread, *body)];
+                    v.extend(finalbody.map(|fb| dest_of(cfg, &thread, fb)));
                     v
                 }
-                Terminator::Break { follow, .. } => vec![dest_of(cfg, *follow)],
+                Terminator::Break { follow, .. } => vec![dest_of(cfg, &thread, *follow)],
                 _ => block
                     .successors()
                     .iter()
-                    .map(|o| dest_of(cfg, *o))
+                    .map(|o| dest_of(cfg, &thread, *o))
                     .collect(),
             }
         };
@@ -248,6 +270,9 @@ impl<'a> Analyzer<'a> {
         let rnodes: Vec<NodeIndex> = (0..cfg.blocks.len()).map(|_| rev.add_node(())).collect();
         let rexit = rev.add_node(());
         for (idx, block) in cfg.blocks.iter().enumerate() {
+            if is_tramp(BlockId(idx as u32)) {
+                continue;
+            }
             let from = rnodes[idx];
             let succ = normal_semantic(block);
             if succ.is_empty() {
@@ -264,6 +289,7 @@ impl<'a> Analyzer<'a> {
 
         let mut analyzer = Analyzer {
             cfg,
+            thread,
             loops: HashMap::new(),
             dom,
             reachable: HashSet::new(),
@@ -275,7 +301,7 @@ impl<'a> Analyzer<'a> {
         // in-loop `fallback`), so a loop follow reached only by `break` counts as live
         // and the coverage check expects exactly the blocks that actually execute.
         let mut reachable = HashSet::new();
-        let mut stack = vec![cfg.entry];
+        let mut stack = vec![analyzer.resolve(cfg.entry)];
         while let Some(b) = stack.pop() {
             if !reachable.insert(b) {
                 continue;
@@ -305,26 +331,47 @@ impl<'a> Analyzer<'a> {
         false
     }
 
-    /// Predecessors (over CFG-graph edges) of every block.
+    /// Predecessors (over CFG-graph edges, threading trampolines) of every block. A
+    /// trampoline is never a predecessor: its in-edges are attributed to the block its
+    /// chain resolves to.
     fn predecessors(&self) -> HashMap<BlockId, Vec<BlockId>> {
         let mut preds: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
         for (idx, block) in self.cfg.blocks.iter().enumerate() {
             let source = BlockId(idx as u32);
+            if self.is_tramp(source) {
+                continue;
+            }
             for target in block.successors() {
                 if let Some(&succ) = self.cfg.by_offset.get(&target) {
-                    preds.entry(succ).or_default().push(source);
+                    preds.entry(self.resolve(succ)).or_default().push(source);
                 }
             }
         }
         preds
     }
 
-    /// The block a terminator offset resolves to, or `Exit`.
+    /// Threads a block through any pure-jump trampoline chain to its ultimate target.
+    fn resolve(&self, b: BlockId) -> BlockId {
+        *self.thread.get(&b).unwrap_or(&b)
+    }
+
+    /// Whether `b` is a pure-jump trampoline threaded away from the graph.
+    fn is_tramp(&self, b: BlockId) -> bool {
+        self.thread.contains_key(&b)
+    }
+
+    /// The block a terminator offset resolves to (threading trampolines), or `Exit`.
     fn dest(&self, offset: super::expr::Offset) -> Dest {
         match self.cfg.by_offset.get(&offset) {
-            Some(&b) => Dest::Block(b),
+            Some(&b) => Dest::Block(self.resolve(b)),
             None => Dest::Exit,
         }
+    }
+
+    /// The block a terminator offset resolves to, threading trampolines; `None` for the
+    /// function exit.
+    fn resolve_off(&self, offset: super::expr::Offset) -> Option<BlockId> {
+        self.cfg.by_offset.get(&offset).map(|&b| self.resolve(b))
     }
 
     /// The *semantic* labelled successors of a block: a `Break` goes to its `follow`
@@ -360,7 +407,7 @@ impl<'a> Analyzer<'a> {
             .block(b)
             .successors()
             .iter()
-            .filter_map(|o| self.cfg.by_offset.get(o).copied())
+            .filter_map(|o| self.resolve_off(*o))
             .collect()
     }
 
@@ -375,7 +422,7 @@ impl<'a> Analyzer<'a> {
         // visible while still excluding genuine orphan junk blocks.
         let graph_reachable = {
             let mut seen = HashSet::new();
-            let mut stack = vec![self.cfg.entry];
+            let mut stack = vec![self.resolve(self.cfg.entry)];
             while let Some(b) = stack.pop() {
                 if !seen.insert(b) {
                     continue;
@@ -394,11 +441,12 @@ impl<'a> Analyzer<'a> {
         let mut headers: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
         for (idx, block) in self.cfg.blocks.iter().enumerate() {
             let source = BlockId(idx as u32);
-            if !graph_reachable.contains(&source) {
+            if !graph_reachable.contains(&source) || self.is_tramp(source) {
                 continue;
             }
             for target in block.successors() {
-                if let Some(&h) = self.cfg.by_offset.get(&target) {
+                if let Some(&h0) = self.cfg.by_offset.get(&target) {
+                    let h = self.resolve(h0);
                     // A retreating edge: target appears at or above source in the DFS. Use
                     // dominance: a back edge has the header dominating the latch.
                     if self.is_back_edge(source, h) {
@@ -429,11 +477,11 @@ impl<'a> Analyzer<'a> {
                 continue;
             }
             if let Terminator::ForIter { body: body_off, exit } = &block.terminator {
-                let Some(&body_entry) = self.cfg.by_offset.get(body_off) else {
+                let Some(body_entry) = self.resolve_off(*body_off) else {
                     return None;
                 };
-                let exit_block = self.cfg.by_offset.get(exit).copied();
-                let body = forward_loop_body(self.cfg, header, body_entry, exit_block);
+                let exit_block = self.resolve_off(*exit);
+                let body = self.forward_loop_body(header, body_entry, exit_block);
                 let shape = self.loop_shape(header, body)?;
                 shapes.insert(header, shape);
             }
@@ -448,6 +496,29 @@ impl<'a> Analyzer<'a> {
     /// itself unless it truly self-loops.
     fn is_back_edge(&self, source: BlockId, header: BlockId) -> bool {
         self.dominates(header, source)
+    }
+
+    /// The body of a back-edge-less `FOR_ITER` loop: the header plus every block forward
+    /// reachable (over trampoline-threaded edges) from the body entry without passing
+    /// through the exit or re-entering the header.
+    fn forward_loop_body(
+        &self,
+        header: BlockId,
+        body_entry: BlockId,
+        exit_block: Option<BlockId>,
+    ) -> HashSet<BlockId> {
+        let mut body = HashSet::new();
+        body.insert(header);
+        let mut stack = vec![body_entry];
+        while let Some(node) = stack.pop() {
+            if node == header || Some(node) == exit_block {
+                continue;
+            }
+            if body.insert(node) {
+                stack.extend(self.graph_succ(node));
+            }
+        }
+        body
     }
 
     /// Every distinct block reached by a *semantic* edge leaving the body (a `break`
@@ -474,8 +545,8 @@ impl<'a> Analyzer<'a> {
     fn loop_shape(&self, header: BlockId, body: HashSet<BlockId>) -> Option<LoopShape> {
         match &self.cfg.block(header).terminator {
             Terminator::ForIter { body: body_off, exit } => {
-                let body_entry = self.cfg.by_offset.get(body_off).copied()?;
-                let normal_exit = self.cfg.by_offset.get(exit).copied()?;
+                let body_entry = self.resolve_off(*body_off)?;
+                let normal_exit = self.resolve_off(*exit)?;
                 // The follow is the post-dominator of the header; if the loop has no
                 // normal exit at all (a body that always returns), it is the FOR_ITER exit.
                 let follow = self.immediate_postdom(header).unwrap_or(normal_exit);
@@ -491,8 +562,8 @@ impl<'a> Analyzer<'a> {
                 })
             }
             Terminator::CondBranch { if_true, if_false, .. } => {
-                let t = self.cfg.by_offset.get(if_true).copied();
-                let f = self.cfg.by_offset.get(if_false).copied();
+                let t = self.resolve_off(*if_true);
+                let f = self.resolve_off(*if_false);
                 let t_in = t.is_some_and(|b| body.contains(&b));
                 let f_in = f.is_some_and(|b| body.contains(&b));
                 let pd = self.immediate_postdom(header);
@@ -671,7 +742,7 @@ impl<'a> Analyzer<'a> {
                 }
                 Terminator::Fallthrough(t) | Terminator::Jump(t) => {
                     seq.push(Region::Linear(cur));
-                    cursor = self.cfg.by_offset.get(t).copied();
+                    cursor = self.resolve_off(*t);
                     if cursor.is_none() {
                         // A plain edge to the function exit: nothing follows.
                         break;
@@ -680,7 +751,7 @@ impl<'a> Analyzer<'a> {
                 Terminator::Break { follow, .. } => {
                     // The block runs, then breaks out of the innermost loop. Its `follow`
                     // must be that loop's follow, or the emitted `break` would be wrong.
-                    let follow_block = self.cfg.by_offset.get(follow).copied();
+                    let follow_block = self.resolve_off(*follow);
                     if frames.last().map(|f| f.follow) != Some(follow_block) {
                         return None;
                     }
@@ -689,8 +760,8 @@ impl<'a> Analyzer<'a> {
                     cursor = None;
                 }
                 Terminator::CondBranch { if_true, if_false, .. } => {
-                    let true_block = self.cfg.by_offset.get(if_true).copied();
-                    let false_block = self.cfg.by_offset.get(if_false).copied();
+                    let true_block = self.resolve_off(*if_true);
+                    let false_block = self.resolve_off(*if_false);
                     let merge = self.branch_merge(cur, stop, frames);
                     let then = self.build_arm(true_block, merge, frames, depth)?;
                     let els = self.build_arm(false_block, merge, frames, depth)?;
@@ -710,10 +781,10 @@ impl<'a> Analyzer<'a> {
                     let handlers = handlers.clone();
                     let end = *end;
                     let follow = match end {
-                        Some(e) => Some(self.cfg.by_offset.get(&e).copied()?),
+                        Some(e) => Some(self.resolve_off(e)?),
                         None => stop,
                     };
-                    let body_entry = self.cfg.by_offset.get(&body_off).copied()?;
+                    let body_entry = self.resolve_off(body_off)?;
                     let body_region = self.build_region(body_entry, follow, frames, depth + 1)?;
                     // A merge-less try's body must terminate (no normal exit), or the
                     // recovery would be wrong; reject otherwise.
@@ -722,7 +793,7 @@ impl<'a> Analyzer<'a> {
                     }
                     let mut arms = Vec::with_capacity(handlers.len());
                     for h in &handlers {
-                        let hb = self.cfg.by_offset.get(&h.body).copied()?;
+                        let hb = self.resolve_off(h.body)?;
                         let arm = self.build_region(hb, follow, frames, depth + 1)?;
                         arms.push(TryHandler {
                             exc_type: h.exc_type,
@@ -1215,33 +1286,6 @@ fn strip_trailing_continue(region: &mut Region) {
     }
 }
 
-/// The body of a back-edge-less `FOR_ITER` loop: the header plus every block forward
-/// reachable from the body entry without passing through the exit or re-entering the
-/// header.
-fn forward_loop_body(
-    cfg: &Cfg,
-    header: BlockId,
-    body_entry: BlockId,
-    exit_block: Option<BlockId>,
-) -> HashSet<BlockId> {
-    let mut body = HashSet::new();
-    body.insert(header);
-    let mut stack = vec![body_entry];
-    while let Some(node) = stack.pop() {
-        if node == header || Some(node) == exit_block {
-            continue;
-        }
-        if body.insert(node) {
-            for target in cfg.block(node).successors() {
-                if let Some(&succ) = cfg.by_offset.get(&target) {
-                    stack.push(succ);
-                }
-            }
-        }
-    }
-    body
-}
-
 /// The natural loop of a set of latches branching back to `header`: the header plus every
 /// node that reaches a latch without passing through the header.
 fn natural_loop(
@@ -1263,12 +1307,76 @@ fn natural_loop(
 }
 
 /// Resolves a terminator offset to a [`Dest`] using only the CFG (usable before the
-/// [`Analyzer`] exists).
-fn dest_of(cfg: &Cfg, offset: super::expr::Offset) -> Dest {
+/// [`Analyzer`] exists), threading pure-jump trampolines.
+fn dest_of(cfg: &Cfg, thread: &HashMap<BlockId, BlockId>, offset: super::expr::Offset) -> Dest {
     match cfg.by_offset.get(&offset) {
-        Some(&b) => Dest::Block(b),
+        Some(&b) => Dest::Block(*thread.get(&b).unwrap_or(&b)),
         None => Dest::Exit,
     }
+}
+
+/// Maps each pure-`Jump` continue/break trampoline -- an empty block (no statements, no
+/// values carried across, not poisoned) whose only terminator is an unconditional
+/// `Jump`/`Fallthrough` to a real block -- to the ultimate non-trampoline block its chain
+/// reaches. Every edge that lands on a trampoline is then resolved straight to that target
+/// (so a branch arm jumping to a continue-trampoline becomes a `continue` directly),
+/// removing the duplication that a trampoline reached from multiple arms would otherwise
+/// cause. A trampoline whose chain cycles back on itself (a `while True: pass` self-loop
+/// header) is left unthreaded: it is a real loop, not a pass-through.
+///
+/// A block that is the `fallback` of a `Break` is never threaded: the relinearizer routes
+/// a flat loop's back edge through such a block, so it carries the loop's structure and the
+/// existing nested-loop recovery depends on it staying in the graph.
+fn build_thread_map(cfg: &Cfg) -> HashMap<BlockId, BlockId> {
+    let break_fallbacks: HashSet<Offset> = cfg
+        .blocks
+        .iter()
+        .filter_map(|b| match b.terminator {
+            Terminator::Break { fallback, .. } => Some(fallback),
+            _ => None,
+        })
+        .collect();
+    let tramp_target = |b: &super::cfg::Block| -> Option<Offset> {
+        if !b.stmts.is_empty() || !b.stack_out.is_empty() || b.poison.is_some() {
+            return None;
+        }
+        if break_fallbacks.contains(&b.start) {
+            return None;
+        }
+        match b.terminator {
+            Terminator::Jump(t) | Terminator::Fallthrough(t) => Some(t),
+            _ => None,
+        }
+    };
+    // The direct one-step target of each trampoline (only when it lands on a real block).
+    let mut direct: HashMap<BlockId, BlockId> = HashMap::new();
+    for (idx, b) in cfg.blocks.iter().enumerate() {
+        if let Some(t) = tramp_target(b) {
+            if let Some(&tb) = cfg.by_offset.get(&t) {
+                direct.insert(BlockId(idx as u32), tb);
+            }
+        }
+    }
+    // Resolve each trampoline to the first non-trampoline block its chain reaches; drop it
+    // from the map (leave it unthreaded) if the chain cycles.
+    let mut thread: HashMap<BlockId, BlockId> = HashMap::new();
+    for (&start, &first) in &direct {
+        let mut seen = HashSet::new();
+        seen.insert(start);
+        let mut cur = first;
+        let mut cyclic = false;
+        while let Some(&next) = direct.get(&cur) {
+            if !seen.insert(cur) {
+                cyclic = true;
+                break;
+            }
+            cur = next;
+        }
+        if !cyclic {
+            thread.insert(start, cur);
+        }
+    }
+    thread
 }
 
 fn edge_key(e: Edge) -> u8 {
@@ -1373,6 +1481,84 @@ mod tests {
                 Stmt::If { then, els, .. } => count_breaks(then) + count_breaks(els),
                 Stmt::While { body, .. } | Stmt::Loop { body } | Stmt::For { body, .. } => {
                     count_breaks(body)
+                }
+                _ => 0,
+            })
+            .sum()
+    }
+
+    fn count_continues(stmts: &[Stmt]) -> usize {
+        stmts
+            .iter()
+            .map(|s| match s {
+                Stmt::Continue => 1,
+                Stmt::If { then, els, .. } => count_continues(then) + count_continues(els),
+                Stmt::While { body, .. } | Stmt::Loop { body } | Stmt::For { body, .. } => {
+                    count_continues(body)
+                }
+                _ => 0,
+            })
+            .sum()
+    }
+
+    /// A pure-`Jump` continue-trampoline (an empty block whose only terminator is an
+    /// unconditional jump back to the loop header) reached from two *different* branch
+    /// arms. It is not the unique post-dominator of either branch, so the region walk
+    /// visits it in both arms and duplicates it -- which the verifier rejects. Threading
+    /// the trampoline (resolving its in-edges straight to the header = `continue`) removes
+    /// the duplication so the loop structures and verifies.
+    #[test]
+    fn shared_continue_trampoline() {
+        use crate::ir::expr::ConstId;
+        let mut arena = ExprArena::new();
+        let cond = arena.alloc(Expr::Const(ConstId(0)));
+        let c2 = arena.alloc(Expr::Const(ConstId(1)));
+        let c3 = arena.alloc(Expr::Const(ConstId(2)));
+        let s3 = arena.alloc(Expr::Const(ConstId(3)));
+        let s5 = arena.alloc(Expr::Const(ConstId(4)));
+        let ret = arena.alloc(Expr::Const(ConstId(5)));
+        // B0 -> B1; B1 while cond (body=B2 else exit=B7); B2 if c2 -> B3 else B4;
+        // B3: stmt; Jump B6 (trampoline); B4 if c3 -> B5 else B6 (trampoline);
+        // B5: stmt; Jump B1 (continue); B6: empty; Jump B1 (continue trampoline); B7 return.
+        // B6 is reached from B3 (a then-arm) and B4 (a false-arm) -- two arms, not a merge.
+        let cfg = cfg_of(
+            vec![
+                (vec![], Terminator::Fallthrough(off(1))),
+                (vec![], Terminator::CondBranch { cond, if_true: off(2), if_false: off(7) }),
+                (vec![], Terminator::CondBranch { cond: c2, if_true: off(3), if_false: off(4) }),
+                (vec![Stmt::Expr(s3)], Terminator::Jump(off(6))),
+                (vec![], Terminator::CondBranch { cond: c3, if_true: off(5), if_false: off(6) }),
+                (vec![Stmt::Expr(s5)], Terminator::Jump(off(1))),
+                (vec![], Terminator::Jump(off(1))),
+                (vec![], Terminator::Return(Some(ret))),
+            ],
+            arena,
+        );
+        let body = structure(&cfg).expect("shared continue-trampoline should structure and verify");
+        let wbody = body
+            .iter()
+            .find_map(|s| match s {
+                Stmt::While { body, .. } => Some(body),
+                _ => None,
+            })
+            .expect("expected a while loop");
+        // The trampoline is threaded away, so each arm's body appears exactly once (the
+        // pre-fix walk emitted the trampoline in two arms and the verifier rejected it).
+        // The jumps back to the header are redundant tail `continue`s, faithfully dropped.
+        assert_eq!(count_expr(wbody, s3), 1, "s3 should appear once, got: {:?}", wbody);
+        assert_eq!(count_expr(wbody, s5), 1, "s5 should appear once, got: {:?}", wbody);
+        assert_eq!(count_continues(wbody), 0, "tail continues are redundant: {:?}", wbody);
+    }
+
+    /// Counts the `Expr(target)` statements anywhere within `stmts`.
+    fn count_expr(stmts: &[Stmt], target: crate::ir::expr::ValueId) -> usize {
+        stmts
+            .iter()
+            .map(|s| match s {
+                Stmt::Expr(v) if *v == target => 1,
+                Stmt::If { then, els, .. } => count_expr(then, target) + count_expr(els, target),
+                Stmt::While { body, .. } | Stmt::Loop { body } | Stmt::For { body, .. } => {
+                    count_expr(body, target)
                 }
                 _ => 0,
             })
