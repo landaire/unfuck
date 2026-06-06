@@ -358,37 +358,42 @@ impl<'a> Analyzer<'a> {
         self.dominates(header, source)
     }
 
-    /// Resolves a natural loop's kind, follow, body entry, and optional else clause, or
-    /// `None` if the shape is one this structurer will not commit to.
-    fn loop_shape(&self, header: BlockId, body: HashSet<BlockId>) -> Option<LoopShape> {
-        // Every distinct block reached by a *semantic* edge leaving the body.
-        let mut out_targets: Vec<BlockId> = Vec::new();
-        for &b in &body {
+    /// Every distinct block reached by a *semantic* edge leaving the body (a `break`
+    /// reaches its `follow`). Used to find an infinite loop's follow by convergence.
+    fn out_targets(&self, body: &HashSet<BlockId>) -> Vec<BlockId> {
+        let mut out: Vec<BlockId> = Vec::new();
+        for &b in body {
             for (_, d) in self.ground_truth(b) {
                 if let Dest::Block(t) = d {
-                    if !body.contains(&t) && !out_targets.contains(&t) {
-                        out_targets.push(t);
+                    if !body.contains(&t) && !out.contains(&t) {
+                        out.push(t);
                     }
                 }
             }
         }
+        out
+    }
 
-        let follow = self.converge(&out_targets, &body)?;
-
+    /// Resolves a natural loop's kind, follow, body entry, and optional else clause, or
+    /// `None` if the shape is one this structurer will not commit to. A `for`/`while`
+    /// loop's follow is the header's immediate post-dominator (the unique block every
+    /// path out of the loop converges on, regardless of how `break` arms are laid out);
+    /// an infinite loop's follow is the convergence of the body's out-edges.
+    fn loop_shape(&self, header: BlockId, body: HashSet<BlockId>) -> Option<LoopShape> {
         match &self.cfg.block(header).terminator {
             Terminator::ForIter { body: body_off, exit } => {
                 let body_entry = self.cfg.by_offset.get(body_off).copied()?;
-                let normal_exit = self.cfg.by_offset.get(exit).copied();
+                let normal_exit = self.cfg.by_offset.get(exit).copied()?;
+                // The follow is the post-dominator of the header; if the loop has no
+                // normal exit at all (a body that always returns), it is the FOR_ITER exit.
+                let follow = self.immediate_postdom(header).unwrap_or(normal_exit);
                 // `for ... else`: the FOR_ITER exit reaches the follow through an else
                 // region. With no breaks, the exit *is* the follow and there is no else.
-                let else_start = match (normal_exit, follow) {
-                    (Some(e), Some(f)) if e != f => Some(e),
-                    _ => None,
-                };
+                let else_start = if normal_exit != follow { Some(normal_exit) } else { None };
                 Some(LoopShape {
                     body,
                     kind: LoopKind::For,
-                    follow,
+                    follow: Some(follow),
                     body_entry,
                     else_start,
                 })
@@ -396,49 +401,41 @@ impl<'a> Analyzer<'a> {
             Terminator::CondBranch { if_true, if_false, .. } => {
                 let t = self.cfg.by_offset.get(if_true).copied();
                 let f = self.cfg.by_offset.get(if_false).copied();
-                let t_in = t.is_some_and(|b| body.contains(&b));
-                let f_in = f.is_some_and(|b| body.contains(&b));
-                match (t_in, f_in) {
+                let pd = self.immediate_postdom(header);
+                // A `while` test: one arm leaves the loop straight to the follow, which is
+                // then the header's post-dominator. The other arm is the body.
+                if pd.is_some() && pd == f {
+                    Some(LoopShape {
+                        body,
+                        kind: LoopKind::While { negated: false },
+                        follow: pd,
+                        body_entry: t?,
+                        else_start: None,
+                    })
+                } else if pd.is_some() && pd == t {
+                    Some(LoopShape {
+                        body,
+                        kind: LoopKind::While { negated: true },
+                        follow: pd,
+                        body_entry: f?,
+                        else_start: None,
+                    })
+                } else {
                     // Both arms stay in the loop: a `while True:` whose header begins the
-                    // body and breaks from within.
-                    (true, true) => Some(LoopShape {
+                    // body and breaks from within. Its follow is the break convergence.
+                    let follow = self.converge(&self.out_targets(&body), &body)?;
+                    Some(LoopShape {
                         body,
                         kind: LoopKind::Infinite,
                         follow,
                         body_entry: header,
                         else_start: None,
-                    }),
-                    // A `while cond:` test: one arm is the body, the other the exit. The
-                    // exit arm must go straight to the follow (no `while ... else`).
-                    (true, false) => {
-                        if f != follow {
-                            return None;
-                        }
-                        Some(LoopShape {
-                            body,
-                            kind: LoopKind::While { negated: false },
-                            follow,
-                            body_entry: t?,
-                            else_start: None,
-                        })
-                    }
-                    (false, true) => {
-                        if t != follow {
-                            return None;
-                        }
-                        Some(LoopShape {
-                            body,
-                            kind: LoopKind::While { negated: true },
-                            follow,
-                            body_entry: f?,
-                            else_start: None,
-                        })
-                    }
-                    (false, false) => None,
+                    })
                 }
             }
             // A plain-edge header that is a loop header is an infinite loop beginning at it.
             Terminator::Fallthrough(_) | Terminator::Jump(_) | Terminator::Break { .. } => {
+                let follow = self.converge(&self.out_targets(&body), &body)?;
                 Some(LoopShape {
                     body,
                     kind: LoopKind::Infinite,
@@ -953,15 +950,15 @@ impl<'a> Analyzer<'a> {
     }
 
     /// The iterable of a `for` loop: the value GET_ITER left on the stack of the loop's
-    /// entry predecessor (the one predecessor outside the loop body).
+    /// entry predecessor -- the one predecessor outside the loop, i.e. not dominated by
+    /// the header (back edges come from inside, which the header dominates).
     fn for_iter(&self, header: BlockId) -> Option<ValueId> {
         let preds = self.predecessors();
-        let body = &self.loops.get(&header)?.body;
         let entry_pred = preds
             .get(&header)?
             .iter()
             .copied()
-            .find(|p| !body.contains(p))?;
+            .find(|p| !self.dominates(header, *p))?;
         self.cfg.block(entry_pred).stack_out.last().copied()
     }
 }
@@ -1170,5 +1167,46 @@ mod tests {
             arena,
         );
         assert!(structure(&cfg).is_none(), "irreducible CFG must not be structured");
+    }
+
+    /// A nested-loop archetype: a `for` whose break target is *past* its FOR_ITER exit
+    /// (the FOR_ITER exit is a `for ... else` clause). The follow is the header's
+    /// post-dominator, not an out-edge target, so the convergence heuristic alone would
+    /// miss it -- this exercises the post-dominator follow.
+    #[test]
+    fn for_else_with_break() {
+        use crate::ir::expr::{ConstId, LValue, VarId};
+        let mut arena = ExprArena::new();
+        let it = arena.alloc(Expr::Const(ConstId(0)));
+        let cond = arena.alloc(Expr::Const(ConstId(1)));
+        let body_stmt = arena.alloc(Expr::Const(ConstId(2)));
+        let else_stmt = arena.alloc(Expr::Const(ConstId(3)));
+        let ret = arena.alloc(Expr::Const(ConstId(4)));
+        // B0 -> B1; B1 ForIter body=B2 exit=B3; B2 if cond -> B4(break) else B1(continue);
+        // B3 else-clause -> B5; B4 break-arm -> B5(=follow, past the FOR_ITER exit); B5 return.
+        let mut cfg = cfg_of(
+            vec![
+                (vec![], Terminator::Fallthrough(off(1))),
+                (vec![], Terminator::ForIter { body: off(2), exit: off(3) }),
+                (
+                    vec![],
+                    Terminator::CondBranch { cond, if_true: off(4), if_false: off(1) },
+                ),
+                (vec![Stmt::Expr(else_stmt)], Terminator::Fallthrough(off(5))),
+                (vec![Stmt::Expr(body_stmt)], Terminator::Jump(off(5))),
+                (vec![], Terminator::Return(Some(ret))),
+            ],
+            arena,
+        );
+        cfg.for_targets.insert(BlockId(1), LValue::Local(VarId(0)));
+        cfg.blocks[0].stack_out = vec![it]; // GET_ITER value for the loop's iterable
+
+        let body = structure(&cfg).expect("for-else with break should structure and verify");
+        let forelse = body.iter().find(|s| matches!(s, Stmt::ForElse { .. }));
+        let Some(Stmt::ForElse { body, els, .. }) = forelse else {
+            panic!("expected a ForElse, got: {:?}", body);
+        };
+        assert_eq!(count_breaks(body), 1, "break should be inside the for body");
+        assert!(!els.is_empty(), "else clause should be recovered");
     }
 }
