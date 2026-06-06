@@ -1148,8 +1148,20 @@ impl<'a> Analyzer<'a> {
                     // A CondBranch/ForIter must be an If/loop node, never Linear.
                     _ => return None,
                 };
-                if derived.insert(*b, edges).is_some() {
-                    return None; // block emitted twice
+                match derived.get(b) {
+                    None => {
+                        derived.insert(*b, edges);
+                    }
+                    // A *tail* block -- one whose control leaves via return/raise/break/
+                    // continue/self-loop, never falling through to a distinct following
+                    // block -- may be reached from several mutually-exclusive paths and so
+                    // emitted more than once. Each copy runs only on its own path, so the
+                    // duplication is faithful; it is admitted only when every copy derives
+                    // the identical edge (so they agree with the ground truth) and the block
+                    // is such a tail (a tail has no tree-successor, so this never cascades
+                    // into the rest of the function being duplicated).
+                    Some(prev) if *prev == edges && self.is_dup_tail(*b, frames) => {}
+                    Some(_) => return None, // a non-tail block emitted twice: reject
                 }
                 Some(())
             }
@@ -1332,6 +1344,36 @@ impl<'a> Analyzer<'a> {
         match frames.last()?.follow {
             Some(b) => Some(Dest::Block(b)),
             None => None,
+        }
+    }
+
+    /// Whether `b` is a *tail* block: its control leaves the current suite for good --
+    /// `return`/`raise` (to the function exit), `break` (to a loop follow), or an
+    /// unconditional jump that is a `continue` (to an enclosing loop header) or a `break`
+    /// (to an enclosing loop follow). Such a block has no fall-through to a distinct
+    /// following block, so emitting it on several mutually-exclusive paths is faithful and
+    /// never duplicates anything after it. A plain forward `Fallthrough`/`Jump` to some
+    /// other block is NOT a tail (duplicating it would cascade into its successor).
+    ///
+    /// A loop header is NOT a duplicable tail: a `Jump`-to-self self-loop (an empty
+    /// `while True: pass`) reached from several arms is a deobfuscator control-flow-
+    /// flattening artifact -- the original had a `break` there -- not real source, so it
+    /// must fall to an honest stub rather than be emitted as a wrong infinite loop. (Its own
+    /// header sits in `frames`, which would otherwise make the self-jump look like a
+    /// `continue` to an enclosing loop.)
+    fn is_dup_tail(&self, b: BlockId, frames: &[Frame]) -> bool {
+        if frames.iter().any(|f| f.header == b) {
+            return false;
+        }
+        match &self.cfg.block(b).terminator {
+            Terminator::Return(_) | Terminator::Raise(_) | Terminator::Break { .. } => true,
+            Terminator::Fallthrough(t) | Terminator::Jump(t) => {
+                let dest = self.resolve_off(*t);
+                frames
+                    .iter()
+                    .any(|f| dest == Some(f.header) || (f.follow.is_some() && dest == f.follow))
+            }
+            _ => false,
         }
     }
 
@@ -1974,5 +2016,52 @@ mod tests {
         }
         assert_eq!(count_expr(then, x), 1, "then has X once");
         assert_eq!(count_expr(els, y), 1, "els has Y once, not duplicated");
+    }
+
+    /// A shared `continue` tail (`B3`: stmt; jump to the loop header) reached from two
+    /// distinct branch arms that do NOT form a short-circuit chain (the intermediate `B2`
+    /// carries a statement). The plain walk emits `B3` in both arms; the verifier's exact-
+    /// once rule rejected it. A tail block (control leaves via continue, never falling
+    /// through to a following block) may be faithfully duplicated -- each copy runs only on
+    /// its own path -- so the duplication-aware verifier accepts it.
+    #[test]
+    fn shared_continue_tail_duplicated() {
+        use crate::ir::expr::ConstId;
+        let mut arena = ExprArena::new();
+        let cond = arena.alloc(Expr::Const(ConstId(0)));
+        let a = arena.alloc(Expr::Const(ConstId(1)));
+        let bb = arena.alloc(Expr::Const(ConstId(2)));
+        let s2 = arena.alloc(Expr::Const(ConstId(3)));
+        let s3 = arena.alloc(Expr::Const(ConstId(4)));
+        let s4 = arena.alloc(Expr::Const(ConstId(5)));
+        let ret = arena.alloc(Expr::Const(ConstId(6)));
+        // B0 while cond (body=B1 else exit=B5); B1 if a -> B2 else B3; B2 stmt; if bb -> B4
+        // else B3; B3 stmt; continue; B4 stmt; continue; B5 return. B3 reached from B1.false
+        // and B2.false (not a short-circuit chain: B2 carries a statement).
+        let cfg = cfg_of(
+            vec![
+                (vec![], Terminator::CondBranch { cond, if_true: off(1), if_false: off(5) }),
+                (vec![], Terminator::CondBranch { cond: a, if_true: off(2), if_false: off(3) }),
+                (vec![Stmt::Expr(s2)], Terminator::CondBranch { cond: bb, if_true: off(4), if_false: off(3) }),
+                (vec![Stmt::Expr(s3)], Terminator::Jump(off(0))),
+                (vec![Stmt::Expr(s4)], Terminator::Jump(off(0))),
+                (vec![], Terminator::Return(Some(ret))),
+            ],
+            arena,
+        );
+        let mut cfg = cfg;
+        let body = structure(&mut cfg).expect("shared continue tail should structure and verify");
+        let wbody = body
+            .iter()
+            .find_map(|s| match s {
+                Stmt::While { body, .. } => Some(body),
+                _ => None,
+            })
+            .expect("expected a while loop");
+        // The tail B3 is faithfully duplicated (once per arm that reaches it); the others
+        // appear once.
+        assert_eq!(count_expr(wbody, s3), 2, "shared tail s3 emitted on both arms: {:?}", wbody);
+        assert_eq!(count_expr(wbody, s2), 1, "s2 once");
+        assert_eq!(count_expr(wbody, s4), 1, "s4 once");
     }
 }
