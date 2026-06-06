@@ -645,8 +645,28 @@ fn opaque_block_end(instrs: &[OffsetInstr], start: usize, code: &Code) -> Option
     // self-contained junk computation that grinds its temps and discards the result,
     // rather than one that buries a real operand beneath leftover junk.
     let mut dead_predicate = false;
+    // Set when the block ends right before a class's `BUILD_TUPLE` (below): the obfuscator
+    // wedged the junk between a class's base loads and its bases `BUILD_TUPLE`, with
+    // trailing junk loads displacing the real bases. The `BUILD_TUPLE` is real and must
+    // stay; removing the junk above the real bases restores it as their builder.
+    let mut class_bases = false;
     for (idx, item) in instrs.iter().enumerate().skip(start) {
         let mnemonic = item.instr.opcode.mnemonic();
+        // Class-bases hijack: a `BUILD_TUPLE` immediately followed by the class-creation
+        // tail (`LOAD_CONST <code>; MAKE_FUNCTION 0; CALL_FUNCTION 0; BUILD_CLASS`) is the
+        // real bases builder. Stop the run before it (rather than consuming it as junk)
+        // so it survives to wrap the real bases sitting below the junk. Requires the run
+        // to have done real junk work (`saw_op`) and to still leave junk on the stack
+        // (`depth >= 1`), so a clean class is never touched.
+        if mnemonic == Mnemonic::BUILD_TUPLE
+            && saw_op
+            && depth >= 1
+            && is_class_bases_tail(instrs, idx)
+        {
+            end = idx;
+            class_bases = true;
+            break;
+        }
         // The obfuscator's dead predicate branch: a conditional jump whose target is
         // past the end of the code can never be taken (CPython would fault on it), so it
         // only pops the comparison the junk arithmetic just built. When the block is
@@ -727,11 +747,13 @@ fn opaque_block_end(instrs: &[OffsetInstr], start: usize, code: &Code) -> Option
         if depth < 1 || !(saw_op || pending_unpack > 0) {
             return None;
         }
-        // The boundary must be trustworthy: either a below-entry consumer, or a known
-        // non-arithmetic consumer opcode. If the scan stopped at some opcode we do not
-        // model (an arithmetic op missing from `pure_value_pops`), the block would be
-        // only partially recognized and removing it could corrupt the stack, so bail.
-        let safe_boundary = stopped_below_entry
+        // The boundary must be trustworthy: a class-bases `BUILD_TUPLE`, a below-entry
+        // consumer, or a known non-arithmetic consumer opcode. If the scan stopped at some
+        // opcode we do not model (an arithmetic op missing from `pure_value_pops`), the
+        // block would be only partially recognized and removing it could corrupt the
+        // stack, so bail.
+        let safe_boundary = class_bases
+            || stopped_below_entry
             || (end < instrs.len() && is_safe_consumer(instrs[end].instr.opcode.mnemonic()));
         if !safe_boundary {
             return None;
@@ -741,7 +763,12 @@ fn opaque_block_end(instrs: &[OffsetInstr], start: usize, code: &Code) -> Option
         // setup (e.g. between an import's level and its fromlist), the trailing
         // `LOAD_CONST` is the next real operand. A constant load pushes without consuming,
         // so leaving it in place is always safe; removing it would underflow the consumer.
-        while end > start && instrs[end - 1].instr.opcode.mnemonic() == Mnemonic::LOAD_CONST {
+        // The class-bases boundary stops on the displacing junk load itself, so it does not
+        // trim (the surviving `BUILD_TUPLE` consumes the real bases below the removed junk).
+        while !class_bases
+            && end > start
+            && instrs[end - 1].instr.opcode.mnemonic() == Mnemonic::LOAD_CONST
+        {
             end -= 1;
             depth -= 1;
         }
@@ -816,6 +843,23 @@ fn is_safe_consumer(mnemonic: Mnemonic) -> bool {
             | PRINT_NEWLINE
             | YIELD_VALUE
     )
+}
+
+/// Whether the instruction at `idx` is a class's bases `BUILD_TUPLE`, i.e. it is
+/// immediately followed by the class-creation tail `LOAD_CONST <code>;
+/// MAKE_FUNCTION 0; CALL_FUNCTION 0; BUILD_CLASS`. The obfuscator wedges opaque junk
+/// between a class's base loads and this `BUILD_TUPLE`; recognizing the tail lets the
+/// junk stripper keep the real `BUILD_TUPLE` (it wraps the bases left below the junk).
+fn is_class_bases_tail(instrs: &[OffsetInstr], idx: usize) -> bool {
+    let at = |k: usize| instrs.get(k).map(|x| x.instr.opcode.mnemonic());
+    let arg = |k: usize| instrs.get(k).and_then(|x| x.instr.arg);
+    at(idx) == Some(Mnemonic::BUILD_TUPLE)
+        && at(idx + 1) == Some(Mnemonic::LOAD_CONST)
+        && at(idx + 2) == Some(Mnemonic::MAKE_FUNCTION)
+        && arg(idx + 2) == Some(0)
+        && at(idx + 3) == Some(Mnemonic::CALL_FUNCTION)
+        && arg(idx + 3) == Some(0)
+        && at(idx + 4) == Some(Mnemonic::BUILD_CLASS)
 }
 
 /// Whether `obj` is the obfuscator's marker constant: a 5-element tuple of integers
