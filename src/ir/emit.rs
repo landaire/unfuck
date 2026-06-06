@@ -338,11 +338,27 @@ impl<'a> Emitter<'a> {
 
     /// Emits a nested `def` by recursively decompiling its code constant and
     /// indenting the result under the current block.
+    /// Emits a syntactically-valid stub for a `def` that could not be recovered: a
+    /// one-line `def <name>(): __unrecovered__`. A bare `__unrecovered__` would be invalid
+    /// right after a decorator line (which must be followed by a `def`/`class`), so this
+    /// keeps the whole-module form recompilable while still carrying the marker and the
+    /// real name. A non-name target (`x.attr = ...`) has no `def` form, so it stays a bare
+    /// marker (it is never decorated).
+    fn unrecovered_def_stub(&mut self, target: &LValue) {
+        match target {
+            LValue::Name(_) | LValue::Global(_) | LValue::Local(_) | LValue::Deref(_) => {
+                let name = self.lvalue(target);
+                self.line(&format!("def {}(): {}", name, UNRECOVERED));
+            }
+            _ => self.line(UNRECOVERED),
+        }
+    }
+
     fn function_def(&mut self, target: &LValue, code: ConstId, defaults: &[ValueId]) {
         let nested = match self.nested_code(code) {
             Some(nested) => nested,
             None => {
-                self.line(UNRECOVERED);
+                self.unrecovered_def_stub(target);
                 return;
             }
         };
@@ -364,7 +380,7 @@ impl<'a> Emitter<'a> {
         let obfuscated_name = nested.name.to_string().starts_with('<');
         let renamed_method = obfuscated_name && !super::is_comprehension_body(&nested);
         if obfuscated_name && !renamed_method {
-            self.line(UNRECOVERED);
+            self.unrecovered_def_stub(target);
             return;
         }
         // A function whose (de-mangled) co_name differs from its store target was renamed
@@ -393,7 +409,7 @@ impl<'a> Emitter<'a> {
                 };
                 self.emit_reindented(&source);
             }
-            Err(_) => {self.line(UNRECOVERED) }
+            Err(_) => self.unrecovered_def_stub(target),
         }
     }
 
@@ -408,7 +424,10 @@ impl<'a> Emitter<'a> {
         let body_code = match self.nested_code(code) {
             Some(nested) => nested,
             None => {
-                self.line(UNRECOVERED);
+                // Keep the `class name(bases):` header so a decorated class whose body is
+                // unrecoverable still forms a valid one-line stub (a bare marker would
+                // dangle after the `@decorator`), preserving the class wrapper.
+                self.line(&format!("{} {}", header, UNRECOVERED));
                 return;
             }
         };
@@ -420,7 +439,8 @@ impl<'a> Emitter<'a> {
                 // docstring interior verbatim.
                 self.emit_reindented(&body);
             }
-            Err(_) => {self.line(UNRECOVERED) }
+            // One-line stub keeps the wrapper and stays valid after a decorator.
+            Err(_) => self.line(&format!("{} {}", header, UNRECOVERED)),
         }
     }
 

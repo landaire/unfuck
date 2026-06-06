@@ -260,6 +260,66 @@ fn dead_constant_integer_predicate_is_folded() {
 }
 
 #[test]
+fn module_keeps_class_wrapper_when_a_method_fails() {
+    // A class with one recoverable method and one that fails to decompile (BINARY_ADD on
+    // an empty stack underflows). The whole module must still recover with the `class`
+    // wrapper and the good method intact, stubbing only the failing method -- not collapse
+    // to a flat per-object dump where the class wrapper is lost to a bare comment.
+    let bad = Builder::new("bad", 1, &["self"], &[], vec![Obj::None])
+        .op(Standard::BINARY_ADD)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+    let good = Builder::new("good", 1, &["self"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+    let bad_obj = Obj::Code(Arc::new(RwLock::new((*bad).clone())));
+    let good_obj = Obj::Code(Arc::new(RwLock::new((*good).clone())));
+    let body = Builder::new("C", 0, &[], &["__name__", "__module__", "good", "bad"], vec![
+        Obj::None, good_obj, bad_obj,
+    ])
+    .arg(Standard::LOAD_NAME, 0) // __name__
+    .arg(Standard::STORE_NAME, 1) // __module__
+    .arg(Standard::LOAD_CONST, 1) // good code
+    .arg(Standard::MAKE_FUNCTION, 0)
+    .arg(Standard::STORE_NAME, 2) // good
+    .arg(Standard::LOAD_CONST, 2) // bad code
+    .arg(Standard::MAKE_FUNCTION, 0)
+    .arg(Standard::STORE_NAME, 3) // bad
+    .op(Standard::LOAD_LOCALS)
+    .op(Standard::RETURN_VALUE)
+    .finish();
+    let body_obj = Obj::Code(Arc::new(RwLock::new((*body).clone())));
+    let root = Builder::new("<module>", 0, &[], &["C", "object"], vec![
+        Obj::None,
+        pystr("C"),
+        body_obj,
+    ])
+    .arg(Standard::LOAD_CONST, 1) // 'C'
+    .arg(Standard::LOAD_NAME, 1) // object
+    .arg(Standard::BUILD_TUPLE, 1)
+    .arg(Standard::LOAD_CONST, 2) // class body code
+    .arg(Standard::MAKE_FUNCTION, 0)
+    .arg(Standard::CALL_FUNCTION, 0)
+    .op(Standard::BUILD_CLASS)
+    .arg(Standard::STORE_NAME, 0) // C
+    .arg(Standard::LOAD_CONST, 0) // None
+    .op(Standard::RETURN_VALUE)
+    .finish();
+    let root = Arc::new(RwLock::new((*root).clone()));
+
+    let out = unfuck::ir::decompile_module(&root);
+    assert!(out.contains("class C(object):"), "lost the class wrapper:\n{}", out);
+    assert!(out.contains("def good"), "lost the recovered method:\n{}", out);
+    assert!(out.contains("def bad(): __unrecovered__"), "expected a stub for `bad`:\n{}", out);
+    assert!(
+        !out.contains("class or module body, not recovered"),
+        "fell back to a flat per-object dump:\n{}",
+        out
+    );
+}
+
+#[test]
 fn dead_predicate_without_marker_tuple_is_folded() {
     // The same constant predicate but with the junk integers loaded INDIVIDUALLY
     // (`LOAD_CONST; STORE_NAME` pairs) instead of a marker-tuple `UNPACK` -- the form the

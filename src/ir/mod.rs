@@ -538,9 +538,22 @@ pub fn decompile_module(root: &Arc<RwLock<Code>>) -> String {
         return with_coding_header(body);
     }
 
-    // Fallback: some nested object is unrecoverable, so the module body could not be
-    // emitted whole. Dump every code object standalone (each failure as a comment) so
-    // the recoverable leaves still appear.
+    // The root did not fully recover. Before flat-dumping, try the lenient module body:
+    // if the root still structures, emitting it whole preserves the module's real shape
+    // -- its `class name(bases):` wrappers and the methods that did recover -- stubbing
+    // only the unrecoverable objects in place, instead of losing every class wrapper to
+    // a flat per-object dump.
+    if let Some(root_code) = all.first()
+        && let Ok(mut body) = decompile_module_body_lenient(Arc::clone(root_code))
+    {
+        if !body.ends_with('\n') {
+            body.push('\n');
+        }
+        return with_coding_header(body);
+    }
+
+    // Fallback: even the root body could not be structured, so dump every code object
+    // standalone (each failure as a comment) so the recoverable leaves still appear.
     let mut out = String::new();
     for code in &all {
         if is_comprehension_body(code) {
@@ -596,8 +609,8 @@ pub fn decompile_function_with_defaults(
     // the strip-free path would render wrongly); only if that fails fall back to
     // decompiling without it, so the strip never regresses a function below what the
     // strip-free pipeline already recovered.
-    decompile_attempt(Arc::clone(&code), defaults, true, false)
-        .or_else(|_| decompile_attempt(code, defaults, false, false))
+    decompile_attempt(Arc::clone(&code), defaults, true, false, true)
+        .or_else(|_| decompile_attempt(code, defaults, false, false, true))
 }
 
 /// Decompiles a module's root code object as a module body: its statements emitted
@@ -605,19 +618,37 @@ pub fn decompile_function_with_defaults(
 /// recovers (every nested object inlined without an `__unrecovered__` marker), in
 /// which case the result is a real, top-level Python module.
 fn decompile_module_body(code: Arc<Code>) -> Result<String, IrError> {
-    decompile_attempt(Arc::clone(&code), &[], true, true)
-        .or_else(|_| decompile_attempt(code, &[], false, true))
+    decompile_attempt(Arc::clone(&code), &[], true, true, true)
+        .or_else(|_| decompile_attempt(code, &[], false, true, true))
+}
+
+/// Like [`decompile_module_body`] but keeps a module that structured at top level even
+/// when some nested object left an `__unrecovered__` marker. Used as a middle tier by
+/// [`decompile_module`]: it preserves the module's real structure -- crucially its
+/// `class name(bases):` wrappers with their recoverable methods -- so a single failing
+/// method stubs only itself instead of collapsing the whole module to flat per-object
+/// dumps (where every class body is lost to a bare comment and its methods spill out as
+/// top-level functions). Still requires the root itself to structure (no decode/region
+/// failure), so a genuinely unstructurable module body falls through to the flat dump.
+fn decompile_module_body_lenient(code: Arc<Code>) -> Result<String, IrError> {
+    decompile_attempt(Arc::clone(&code), &[], true, true, false)
+        .or_else(|_| decompile_attempt(code, &[], false, true, false))
 }
 
 /// Runs the decode/structure/emit pipeline for one code object with opaque-predicate
 /// stripping toggled. The flag is saved and restored so nested comprehensions decoded
 /// during emission inherit this attempt's choice without disturbing the caller's.
 /// `as_module` renders the body at top level (no `def` wrapper) instead of as a `def`.
+/// `reject_markers` fails the attempt when the rendered source still contains an
+/// `__unrecovered__` marker (full-recovery mode); clearing it keeps structurally-valid
+/// source that merely stubs an unrecoverable nested object (see
+/// [`decompile_module_body_lenient`]).
 fn decompile_attempt(
     code: Arc<Code>,
     defaults: &[String],
     strip: bool,
     as_module: bool,
+    reject_markers: bool,
 ) -> Result<String, IrError> {
     let previous = STRIP_OPAQUE.with(|flag| flag.replace(strip));
     let result = (|| {
@@ -633,7 +664,7 @@ fn decompile_attempt(
             }
             structured.to_source(defaults)
         };
-        if source.contains(emit::UNRECOVERED) {
+        if reject_markers && source.contains(emit::UNRECOVERED) {
             return Err(IrError::Incomplete);
         }
         Ok(source)
