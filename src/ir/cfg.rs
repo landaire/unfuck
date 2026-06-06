@@ -15,7 +15,7 @@ use py27_marshal::{Code, Obj};
 use pydis::opcode::py27::{Mnemonic, Standard};
 use pydis::prelude::*;
 
-use super::expr::{DerefId, ExprArena, LValue, NameId, Offset, Stmt, ValueId, VarId};
+use super::expr::{CmpOp, DerefId, ExprArena, LValue, NameId, Offset, Stmt, ValueId, VarId};
 use super::unstack::Unstacker;
 use super::IrError;
 
@@ -610,25 +610,35 @@ fn marker_tuple_ints(obj: &Obj) -> Option<Vec<BigInt>> {
     Some(out)
 }
 
-/// Evaluates a self-contained constant-integer opaque predicate beginning at the marker
-/// `LOAD_CONST` at `start`: `LOAD_CONST <marker tuple>; UNPACK_SEQUENCE 5; <integer
+/// A value tracked while evaluating an opaque predicate: a Python 2 integer or a set of
+/// integers (the obfuscator builds both from the marker's unpacked temps).
+#[derive(Clone)]
+enum PredVal {
+    Int(BigInt),
+    Set(BTreeSet<BigInt>),
+}
+
+/// Evaluates a self-contained constant opaque predicate beginning at the marker
+/// `LOAD_CONST` at `start`: `LOAD_CONST <marker tuple>; UNPACK_SEQUENCE 5; <integer or set
 /// arithmetic over the unpacked temps>; COMPARE_OP; POP_JUMP_IF_{TRUE,FALSE}`. The
 /// obfuscator wedges this between a real value and its consumer to flatten control flow;
 /// the comparison is over junk it itself produced, so its branch direction is a constant.
 ///
 /// Returns `(pop_jump_index, taken, stored_temp_names)` when the region is provably
 /// self-contained (it touches only values it pushed -- the stack returns to empty at the
-/// comparison) and every value is a known integer, so the branch direction is certain.
-/// Returns `None` for anything not fully modelled (a non-integer constant, a load of a name
-/// it did not store, an unmodelled opcode, a negative bitwise operand, division by zero, a
-/// comparison not immediately consumed by a conditional jump), so an uncertain predicate is
-/// never folded. Integer arithmetic uses Python 2 semantics (floor division and modulo).
-fn eval_int_marker_predicate(
+/// comparison) and every value is a known integer or integer-set, so the branch direction
+/// is certain. Returns `None` for anything not fully modelled (a non-integer constant, a
+/// load of a name it did not store, an unmodelled opcode, a negative bitwise operand,
+/// division by zero, a mixed int/set operation, a comparison not immediately consumed by a
+/// conditional jump), so an uncertain predicate is never folded. Integer arithmetic uses
+/// Python 2 semantics (floor division and modulo); set comparisons use (proper) subset.
+fn eval_marker_predicate(
     instrs: &[OffsetInstr],
     start: usize,
     code: &Code,
 ) -> Option<(usize, bool, Vec<u16>)> {
     use Mnemonic::*;
+    use PredVal::{Int, Set};
     let marker_const = instrs[start].instr.arg? as usize;
     let ints = marker_tuple_ints(code.consts.get(marker_const)?)?;
     if instrs.get(start + 1)?.instr.opcode.mnemonic() != UNPACK_SEQUENCE
@@ -637,15 +647,15 @@ fn eval_int_marker_predicate(
         return None;
     }
     // UNPACK_SEQUENCE pushes the elements so the first ends up on top of the stack.
-    let mut stack: Vec<BigInt> = ints.iter().rev().cloned().collect();
-    let mut temps: HashMap<u16, BigInt> = HashMap::new();
+    let mut stack: Vec<PredVal> = ints.iter().rev().map(|v| Int(v.clone())).collect();
+    let mut temps: HashMap<u16, PredVal> = HashMap::new();
     let mut stored: Vec<u16> = Vec::new();
     let mut idx = start + 2;
     while let Some(item) = instrs.get(idx) {
         let m = item.instr.opcode.mnemonic();
         match m {
             LOAD_CONST => match code.consts.get(item.instr.arg? as usize)? {
-                Obj::Long(v) => stack.push(v.read().unwrap().clone()),
+                Obj::Long(v) => stack.push(Int(v.read().unwrap().clone())),
                 _ => return None,
             },
             LOAD_NAME => stack.push(temps.get(&item.instr.arg?)?.clone()),
@@ -655,12 +665,52 @@ fn eval_int_marker_predicate(
                 temps.insert(name, value);
                 stored.push(name);
             }
-            BINARY_MULTIPLY | INPLACE_MULTIPLY | BINARY_ADD | INPLACE_ADD | BINARY_SUBTRACT
-            | INPLACE_SUBTRACT | BINARY_DIVIDE | INPLACE_DIVIDE | BINARY_FLOOR_DIVIDE
-            | INPLACE_FLOOR_DIVIDE | BINARY_MODULO | INPLACE_MODULO | BINARY_AND | INPLACE_AND
-            | BINARY_OR | INPLACE_OR | BINARY_XOR | INPLACE_XOR => {
+            BUILD_SET => {
+                let n = item.instr.arg? as usize;
+                if stack.len() < n {
+                    return None;
+                }
+                let mut set = BTreeSet::new();
+                for _ in 0..n {
+                    match stack.pop()? {
+                        Int(v) => {
+                            set.insert(v);
+                        }
+                        Set(_) => return None, // a set of sets is not modelled
+                    }
+                }
+                stack.push(Set(set));
+            }
+            BINARY_AND | INPLACE_AND | BINARY_OR | INPLACE_OR | BINARY_XOR | INPLACE_XOR => {
                 let b = stack.pop()?;
                 let a = stack.pop()?;
+                match (a, b) {
+                    (Int(a), Int(b)) => {
+                        // Bitwise on negatives differs between representations; bail unless both
+                        // are non-negative (the marker integers are, but arithmetic can go negative).
+                        if a.is_negative() || b.is_negative() {
+                            return None;
+                        }
+                        stack.push(Int(match m {
+                            BINARY_AND | INPLACE_AND => a & b,
+                            BINARY_OR | INPLACE_OR => a | b,
+                            _ => a ^ b,
+                        }));
+                    }
+                    (Set(a), Set(b)) => stack.push(Set(match m {
+                        BINARY_AND | INPLACE_AND => a.intersection(&b).cloned().collect(),
+                        BINARY_OR | INPLACE_OR => a.union(&b).cloned().collect(),
+                        _ => a.symmetric_difference(&b).cloned().collect(),
+                    })),
+                    _ => return None, // mixed int/set
+                }
+            }
+            BINARY_MULTIPLY | INPLACE_MULTIPLY | BINARY_ADD | INPLACE_ADD | BINARY_SUBTRACT
+            | INPLACE_SUBTRACT | BINARY_DIVIDE | INPLACE_DIVIDE | BINARY_FLOOR_DIVIDE
+            | INPLACE_FLOOR_DIVIDE | BINARY_MODULO | INPLACE_MODULO => {
+                let (Int(b), Int(a)) = (stack.pop()?, stack.pop()?) else {
+                    return None;
+                };
                 let r = match m {
                     BINARY_MULTIPLY | INPLACE_MULTIPLY => a * b,
                     BINARY_ADD | INPLACE_ADD => a + b,
@@ -671,47 +721,48 @@ fn eval_int_marker_predicate(
                         }
                         a.div_floor(&b)
                     }
-                    BINARY_MODULO | INPLACE_MODULO => {
+                    _ => {
                         if b.is_zero() {
                             return None;
                         }
                         a.mod_floor(&b)
                     }
-                    // Bitwise on negative operands differs between representations; only the
-                    // non-negative case is unambiguous, so anything else bails.
-                    _ => {
-                        if a.is_negative() || b.is_negative() {
-                            return None;
-                        }
-                        match m {
-                            BINARY_AND | INPLACE_AND => a & b,
-                            BINARY_OR | INPLACE_OR => a | b,
-                            _ => a ^ b,
-                        }
-                    }
                 };
-                stack.push(r);
+                stack.push(Int(r));
             }
-            UNARY_NEGATIVE => {
-                let a = stack.pop()?;
-                stack.push(-a);
-            }
-            UNARY_POSITIVE => {
-                let a = stack.pop()?;
-                stack.push(a);
-            }
+            UNARY_NEGATIVE => match stack.pop()? {
+                Int(a) => stack.push(Int(-a)),
+                Set(_) => return None,
+            },
+            UNARY_POSITIVE => match stack.pop()? {
+                v @ Int(_) => stack.push(v),
+                Set(_) => return None,
+            },
             COMPARE_OP => {
                 let b = stack.pop()?;
                 let a = stack.pop()?;
-                // cmp_op order (py2.7): 0 '<', 1 '<=', 2 '==', 3 '!=', 4 '>', 5 '>='.
-                let result = match item.instr.arg? {
-                    0 => a < b,
-                    1 => a <= b,
-                    2 => a == b,
-                    3 => a != b,
-                    4 => a > b,
-                    5 => a >= b,
-                    _ => return None,
+                let op = CmpOp::from_arg(item.instr.arg?)?;
+                let result = match (a, b) {
+                    (Int(a), Int(b)) => match op {
+                        CmpOp::Lt => a < b,
+                        CmpOp::Le => a <= b,
+                        CmpOp::Eq => a == b,
+                        CmpOp::Ne => a != b,
+                        CmpOp::Gt => a > b,
+                        CmpOp::Ge => a >= b,
+                        _ => return None,
+                    },
+                    // Python 2 set ordering is (proper) subset/superset.
+                    (Set(a), Set(b)) => match op {
+                        CmpOp::Lt => a.is_subset(&b) && a != b,
+                        CmpOp::Le => a.is_subset(&b),
+                        CmpOp::Eq => a == b,
+                        CmpOp::Ne => a != b,
+                        CmpOp::Gt => b.is_subset(&a) && a != b,
+                        CmpOp::Ge => b.is_subset(&a),
+                        _ => return None,
+                    },
+                    _ => return None, // mixed int/set comparison
                 };
                 // The comparison must be self-contained: the predicate consumed exactly the
                 // junk it produced, so the stack is empty here (the value it was wedged in
@@ -733,32 +784,76 @@ fn eval_int_marker_predicate(
     None
 }
 
-/// Folds the obfuscator's dead constant-integer opaque predicates (control-flow
-/// flattening). A self-contained constant predicate whose branch is provably NOT taken
-/// (see [`eval_int_marker_predicate`]) is dead junk wedged into real code; its region is
-/// stack-neutral (the unpacked temps are consumed by its own comparison), so overwriting it
-/// with `NOP`s restores the surrounding statement and drops the dead branch edge. Only
-/// never-taken predicates are folded -- the fall-through is then the sole live path -- and
-/// only when the temps it stores are dead outside the region (a real binding is never
-/// dropped), mirroring [`strip_opaque_predicates`]. Offset-preserving, like the other strips.
+/// Folds the obfuscator's dead constant opaque predicates (control-flow flattening). A
+/// self-contained constant predicate (see [`eval_marker_predicate`]) is dead junk wedged
+/// into real code, between a value and its consumer; its `[marker .. COMPARE]` region is
+/// stack-neutral (the unpacked temps are consumed by its own comparison). Two shapes:
+///
+/// - **Never-taken**: the fall-through is the live path. Overwrite `[marker .. POP_JUMP]`
+///   with `NOP`s, restoring the surrounding statement and dropping the dead branch edge.
+/// - **Always-taken**: the jump skips a dead fall-through to `target`, arriving with the
+///   pre-marker stack. Overwrite the whole `[marker .. target)` span (predicate *and* dead
+///   fall-through) so control falls through to `target` with that same stack -- a pure NOP,
+///   no edge redirect. Gated to a forward `target` that no instruction *outside* the span
+///   jumps into (so the NOP'd dead fall-through is genuinely unreachable).
+///
+/// Both fold only when the temps the predicate stores are dead outside the region (a real
+/// binding is never dropped), mirroring [`strip_opaque_predicates`]. Offset-preserving.
 pub fn fold_dead_marker_predicates(instrs: &mut [OffsetInstr], code: &Code) {
+    let valid: HashSet<Offset> = instrs.iter().map(|item| item.offset).collect();
     let mut i = 0;
     while i < instrs.len() {
         if instrs[i].instr.opcode.mnemonic() == Mnemonic::LOAD_CONST {
-            if let Some((end, taken, stored)) = eval_int_marker_predicate(instrs, i, code) {
-                let dead = !taken && !stored.iter().any(|&n| name_read_outside(instrs, i, end, n));
-                if dead {
-                    for slot in &mut instrs[i..=end] {
-                        slot.instr.opcode = Standard::NOP;
-                        slot.instr.arg = None;
+            if let Some((jmp, taken, stored)) = eval_marker_predicate(instrs, i, code) {
+                let end = if taken {
+                    always_taken_region_end(instrs, i, jmp, &valid)
+                } else {
+                    Some(jmp)
+                };
+                if let Some(end) = end {
+                    if !stored.iter().any(|&n| name_read_outside(instrs, i, end, n)) {
+                        for slot in &mut instrs[i..=end] {
+                            slot.instr.opcode = Standard::NOP;
+                            slot.instr.arg = None;
+                        }
+                        i = end + 1;
+                        continue;
                     }
-                    i = end + 1;
-                    continue;
                 }
             }
         }
         i += 1;
     }
+}
+
+/// For an always-taken predicate whose conditional jump is at `jmp`, returns the inclusive
+/// last index of the `[marker .. target)` span to NOP, or `None` if the safe-fold gates
+/// fail: the jump target must be a real forward instruction offset, and no instruction
+/// outside the span may branch into it (otherwise NOPing the span -- which includes the
+/// dead fall-through -- would misroute that edge). `marker` is the predicate's start.
+fn always_taken_region_end(
+    instrs: &[OffsetInstr],
+    marker: usize,
+    jmp: usize,
+    valid: &HashSet<Offset>,
+) -> Option<usize> {
+    let target = branch_target(&instrs[jmp]).ok()?;
+    if !valid.contains(&target) {
+        return None;
+    }
+    let target_idx = instrs.iter().position(|item| item.offset == target)?;
+    if target_idx <= jmp {
+        return None; // only forward jumps keep [marker, target) a contiguous fall-through span
+    }
+    let span_lo = instrs[marker].offset;
+    let outside_jumps_in = instrs.iter().enumerate().any(|(k, item)| {
+        (k < marker || k >= target_idx)
+            && branch_target(item).is_ok_and(|t| t >= span_lo && t < target)
+    });
+    if outside_jumps_in {
+        return None;
+    }
+    Some(target_idx - 1)
 }
 
 /// Whether `name` is read via `LOAD_NAME` anywhere outside the inclusive region

@@ -260,6 +260,58 @@ fn dead_constant_integer_predicate_is_folded() {
 }
 
 #[test]
+fn always_taken_set_predicate_is_folded() {
+    // The other control-flow-flattening shape: a marker block grinds its integers into two
+    // junk SETS whose comparison is a constant True, feeding POP_JUMP_IF_TRUE that always
+    // jumps over a dead fall-through to the real continuation. Here it is wedged between the
+    // operands `x` and `1` and the real `==`, so `if x == 1: return 2` must be recovered by
+    // NOPing the whole `[marker, target)` span (predicate + dead `return None`).
+    let tuple = Obj::Tuple(Arc::new(RwLock::new(vec![
+        long(1),
+        long(2),
+        long(3),
+        long(4),
+        long(255),
+    ])));
+    let code = Builder::new("f", 0, &[], &["x", "a", "b", "c", "d", "e"], vec![
+        Obj::None,
+        long(1),
+        tuple,
+        long(2),
+    ])
+    .arg(Standard::LOAD_NAME, 0) // x  (real operand, leaks past the predicate)
+    .arg(Standard::LOAD_CONST, 1) // 1 (real operand)
+    .arg(Standard::LOAD_CONST, 2) // marker tuple
+    .arg(Standard::UNPACK_SEQUENCE, 5)
+    .arg(Standard::STORE_NAME, 1) // a = 1
+    .arg(Standard::STORE_NAME, 2) // b = 2
+    .arg(Standard::STORE_NAME, 3) // c
+    .arg(Standard::STORE_NAME, 4) // d
+    .arg(Standard::STORE_NAME, 5) // e
+    .arg(Standard::LOAD_NAME, 1)
+    .arg(Standard::LOAD_NAME, 2)
+    .arg(Standard::BUILD_SET, 2) // {1, 2}
+    .arg(Standard::LOAD_NAME, 1)
+    .arg(Standard::LOAD_NAME, 2)
+    .arg(Standard::BUILD_SET, 2) // {1, 2}
+    .arg(Standard::COMPARE_OP, 2) // {1,2} == {1,2} -> True
+    .jump(Standard::POP_JUMP_IF_TRUE, "real") // always taken
+    .arg(Standard::LOAD_CONST, 0) // dead fall-through: None
+    .op(Standard::RETURN_VALUE)
+    .label("real")
+    .arg(Standard::COMPARE_OP, 2) // x == 1
+    .jump(Standard::POP_JUMP_IF_FALSE, "end")
+    .arg(Standard::LOAD_CONST, 3) // 2
+    .op(Standard::RETURN_VALUE)
+    .label("end")
+    .arg(Standard::LOAD_CONST, 0) // None
+    .op(Standard::RETURN_VALUE)
+    .finish();
+
+    assert_eq!(decompile(code), "def f():\n    if x == 1:\n        return 2\n\n    return None\n");
+}
+
+#[test]
 fn from_import_bound_to_closure_cell() {
     // A conditional import binds its name to a closure cell (`STORE_DEREF`), e.g.
     // `from hashlib import md5 as _hash_new` where an inner function captures
