@@ -212,6 +212,77 @@ impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
         Self::from_code(code, 0, false, None, None)
     }
 
+    /// Build a fully deobfuscated graph from a single code object: [`from_code_default`] plus
+    /// the bad-instruction fixup and the full deob transform sequence
+    /// ([`run_full_deob_passes`]). The result is ready for the IR decompiler to consume
+    /// directly via `DecodedFunction::from_code_graph`, without round-tripping through
+    /// serialized bytecode. The recovered-name and plain-import maps the deob produces as a
+    /// side effect are discarded here (the IR reads names from the `Code`); cross-block opaque
+    /// folding is enabled, matching the pipeline default.
+    ///
+    /// [`from_code_default`]: Self::from_code_default
+    /// [`run_full_deob_passes`]: Self::run_full_deob_passes
+    pub fn deobfuscate_from_code(
+        code: Arc<Code>,
+    ) -> Result<CodeGraph<'a, TargetOpcode>, Error<TargetOpcode>> {
+        let mut graph = Self::from_code_default(Arc::clone(&code))?;
+        let root = graph.root;
+        graph.fix_bbs_with_bad_instr(root, &code);
+        let mut mapped_function_names = HashMap::new();
+        let mut plain_imported_modules = HashSet::new();
+        graph.run_full_deob_passes(
+            &code,
+            &mut mapped_function_names,
+            &mut plain_imported_modules,
+            true,
+        );
+        Ok(graph)
+    }
+
+    /// Runs the full (non-minimal) deobfuscation transform sequence on the graph in place,
+    /// leaving it deobfuscated and ready to either serialize (`write_bytecode`) or hand to the
+    /// IR decompiler directly. This is the body of the deob pipeline's non-minimal branch,
+    /// factored out so both the `.pyc`-producing path and the graph-to-IR path share it.
+    pub(crate) fn run_full_deob_passes(
+        &mut self,
+        code: &Code,
+        mapped_function_names: &mut HashMap<String, String>,
+        plain_imported_modules: &mut HashSet<String>,
+        enable_cross_block: bool,
+    ) {
+        self.remove_const_conditions(
+            mapped_function_names,
+            plain_imported_modules,
+            enable_cross_block,
+        );
+        self.generate_dot_graph("const_conditions_solved");
+        self.join_blocks();
+        self.generate_dot_graph("joined");
+        // Strip the obfuscator's dead-store junk between an IMPORT_FROM and its STORE_NAME,
+        // in `class` creations (between MAKE_FUNCTION and BUILD_CLASS), and between an
+        // IMPORT_NAME and its IMPORT_FROM. Run after remove_const_conditions has folded the
+        // opaque predicates that may consume those junk stores; offsets are fixed below.
+        self.strip_import_store_junk();
+        self.strip_build_class_junk();
+        self.strip_import_name_junk();
+        self.update_bb_offsets();
+        // The relinearized layout can leave a fall-through block whose successor is not
+        // adjacent (a ternary else arm placed after its merge); make those edges explicit
+        // jumps before any further offset-dependent passes run.
+        if self.fixup_fallthrough_jumps() {
+            self.update_bb_offsets();
+        }
+        self.generate_dot_graph("updated_bb");
+        self.massage_returns_for_decompiler();
+        self.ensure_terminal_returns(code);
+        // Re-insert the body-terminating jumps the Python 2.7 compiler emits at the end of
+        // `if`/`elif` bodies; the relinearized CFG depends on some of them to connect blocks.
+        let decompiler_jump_fixups = self.insert_decompiler_jumps();
+        self.update_bb_offsets();
+        self.fixup_decompiler_dead_jumps(&decompiler_jump_fixups);
+        self.update_branches();
+    }
+
     /// Converts bytecode to a graph. Returns the root node index and the graph.
     pub fn from_code(
         code: Arc<Code>,

@@ -103,60 +103,14 @@ impl<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
             code_graph.update_bb_offsets();
             code_graph.update_branches();
         } else {
-            code_graph.remove_const_conditions(
+            // The full deob transform sequence, factored onto the graph so the graph-to-IR
+            // path (`CodeGraph::deobfuscate_from_code`) shares it.
+            code_graph.run_full_deob_passes(
+                &code,
                 &mut mapped_function_names,
                 &mut plain_imported_modules,
                 enable_cross_block,
             );
-
-            code_graph.generate_dot_graph("const_conditions_solved");
-
-            code_graph.join_blocks();
-
-            code_graph.generate_dot_graph("joined");
-
-            // Strip the obfuscator's dead-store junk between an IMPORT_FROM and its
-            // STORE_NAME. Runs after remove_const_conditions has folded the opaque
-            // predicates that may consume those junk stores; offsets are fixed by the
-            // update_bb_offsets below.
-            code_graph.strip_import_store_junk();
-
-            // Strip the obfuscator's dead-store junk wedged into `class` creations
-            // (between MAKE_FUNCTION and BUILD_CLASS), which otherwise leaves stray values
-            // under BUILD_CLASS. Runs in the same junk-stripping phase; offsets are fixed
-            // by the update_bb_offsets below.
-            code_graph.strip_build_class_junk();
-
-            // Likewise for junk between an IMPORT_NAME and its IMPORT_FROM, which leaves
-            // stray values on top of the module so IMPORT_FROM reads garbage.
-            code_graph.strip_import_name_junk();
-
-            // update BB offsets
-            //insert_jump_0(root_node_id, &mut code_graph);
-            code_graph.update_bb_offsets();
-
-            // The relinearized layout can leave a fall-through block whose successor
-            // is not adjacent (a ternary else arm placed after its merge); make those
-            // edges explicit jumps before any further offset-dependent passes run.
-            if code_graph.fixup_fallthrough_jumps() {
-                code_graph.update_bb_offsets();
-            }
-
-            code_graph.generate_dot_graph("updated_bb");
-
-            code_graph.massage_returns_for_decompiler();
-            code_graph.ensure_terminal_returns(&code);
-
-            // Re-insert the body-terminating jumps the Python 2.7 compiler emits at
-            // the end of `if`/`elif` bodies. uncompyle6 relied on these; the IR
-            // decompiler does not, but they are kept because the relinearized CFG
-            // also depends on some of them to connect blocks. The pass no longer
-            // inserts before a `FOR_ITER` loop header, which had produced a spurious
-            // `JUMP_FORWARD 0` between GET_ITER and FOR_ITER that broke list comps.
-            let decompiler_jump_fixups = code_graph.insert_decompiler_jumps();
-            code_graph.update_bb_offsets();
-            code_graph.fixup_decompiler_dead_jumps(&decompiler_jump_fixups);
-            code_graph.update_branches();
         }
 
         // code_graph.insert_jump_0();

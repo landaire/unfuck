@@ -239,6 +239,33 @@ fn decompile_via_code_graph_matches_bytecode() {
 }
 
 #[test]
+fn deobfuscate_from_code_then_ir_decompiles() {
+    // The full graph path: CodeGraph::deobfuscate_from_code runs the deob transform sequence
+    // on the graph, then DecodedFunction::from_code_graph decompiles it -- without serializing
+    // to bytecode in between. On un-obfuscated input the deob passes are near no-ops, so the
+    // if/else still recovers cleanly.
+    let code = Builder::new("f", 1, &["x"], &[], vec![Obj::None, long(1), long(2)])
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::POP_JUMP_IF_FALSE, "els")
+        .arg(Standard::LOAD_CONST, 1)
+        .op(Standard::RETURN_VALUE)
+        .label("els")
+        .arg(Standard::LOAD_CONST, 2)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    let graph = unfuck::code_graph::CodeGraph::deobfuscate_from_code(Arc::clone(&code)).unwrap();
+    let source = unfuck::ir::DecodedFunction::from_code_graph(Arc::clone(&code), &graph)
+        .structure()
+        .unwrap()
+        .to_source(&[]);
+
+    assert!(source.contains("if x:"), "expected recovered branch, got:\n{}", source);
+    assert!(source.contains("return 1") && source.contains("return 2"), "got:\n{}", source);
+    assert!(!source.contains("__unrecovered__"), "got:\n{}", source);
+}
+
+#[test]
 fn arithmetic_return() {
     let code = Builder::new("add_one_two", 0, &[], &[], vec![Obj::None, long(1), long(2)])
         .arg(Standard::LOAD_CONST, 1)
