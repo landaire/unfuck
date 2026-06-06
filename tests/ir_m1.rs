@@ -752,6 +752,35 @@ fn method_misnamed_as_comprehension_uses_store_name() {
 }
 
 #[test]
+fn decorated_def_renamed_to_placeholder_uses_store_name() {
+    // The obfuscator renamed a decorated method's code object to a `unknown_N`
+    // placeholder (not a `<...>` form), losing its real name, but it is stored at its
+    // real name `m` via a decorator. `name = deco(MAKE_FUNCTION)` is always a decorated
+    // def (the function is created inline), so emit `@staticmethod def m(self):` under
+    // the store target rather than `m = staticmethod(__unrecovered__)`.
+    let method = Builder::new("unknown_5", 1, &["self"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+    let method_obj = Obj::Code(Arc::new(RwLock::new((*method).clone())));
+    let outer = Builder::new("f", 0, &[], &["staticmethod", "m"], vec![Obj::None, method_obj])
+        .arg(Standard::LOAD_NAME, 0)
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::MAKE_FUNCTION, 0)
+        .arg(Standard::CALL_FUNCTION, 1)
+        .arg(Standard::STORE_NAME, 1)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    let out = decompile(outer);
+    assert!(out.contains("@staticmethod"), "expected decorator:\n{}", out);
+    assert!(out.contains("def m(self):"), "expected `def m(self):`, got:\n{}", out);
+    assert!(!out.contains("__unrecovered__"), "should be recovered:\n{}", out);
+    assert!(!out.contains("unknown_5"), "placeholder co_name must not leak:\n{}", out);
+}
+
+#[test]
 fn while_true_infinite_loop() {
     // def f(output):
     //     output.append(1)

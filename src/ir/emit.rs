@@ -284,20 +284,21 @@ impl<'a> Emitter<'a> {
                     return false;
                 };
                 let name = nested.name.to_string();
-                // The target must name the function for `@deco def name` to be the
-                // original source. A clean co_name de-mangles to the target (the
-                // deobfuscator renames the code object to `<name>_orig_<id>` while
-                // leaving the store at the clean name). The obfuscator also rewrites a
-                // real method's co_name to a `<dictcomp>`/`<genexpr>` form; that is still
-                // a def named by its store target (`function_def` renames the header), so
-                // accept it -- but a `<lambda>` (rendered as an assignment, not a def, so
-                // `@deco` could not attach) and a genuine comprehension body (`.0` arg, no
-                // standalone def form) are not decorated defs.
-                let is_decorated_def = if name.starts_with('<') {
-                    name != "<lambda>" && !super::is_comprehension_body(&nested)
-                } else {
-                    self.lvalue(target) == strip_orig_suffix(&sanitize_identifier(&name))
-                };
+                // `name = deco(MAKE_FUNCTION(code))` is always a decorated def: a
+                // MAKE_FUNCTION creates the function inline, so the store target IS the
+                // def's name (`@deco def name`). The obfuscator rewrites the code object's
+                // co_name to `<dictcomp>`/`<genexpr>`/`unknown_N`/other junk, so it cannot
+                // be matched against the target -- trust a simple-name target and let
+                // `function_def` rename the header to it. Excluded: a `<lambda>` (rendered
+                // as an assignment, not a def, so `@deco` could not attach), a genuine
+                // comprehension body (`.0` arg, no standalone def form), and a non-name
+                // target (`x.attr = deco(...)`, `x[0] = ...`), which has no `@deco def`.
+                let target_is_name = matches!(
+                    target,
+                    LValue::Local(_) | LValue::Deref(_) | LValue::Name(_) | LValue::Global(_)
+                );
+                let is_decorated_def =
+                    target_is_name && name != "<lambda>" && !super::is_comprehension_body(&nested);
                 if !is_decorated_def {
                     return false;
                 }
@@ -366,13 +367,27 @@ impl<'a> Emitter<'a> {
             self.line(UNRECOVERED);
             return;
         }
+        // A function whose (de-mangled) co_name differs from its store target was renamed
+        // by the obfuscator -- emit the `def` under the store target, the real name. This
+        // covers a method renamed to `<dictcomp>` and one renamed to a `unknown_N`
+        // placeholder (a decorated def/closure whose name survives only at the store).
+        // Only when the target is a plain name: `Cls.m = func` / `d[k] = func` are
+        // assignments, not defs, and must keep the co_name to stay valid (no `def Cls.m`).
+        let target_name = self.lvalue(target);
+        let target_is_name = matches!(
+            target,
+            LValue::Local(_) | LValue::Deref(_) | LValue::Name(_) | LValue::Global(_)
+        );
+        let needs_rename = renamed_method
+            || (target_is_name
+                && strip_orig_suffix(&sanitize_identifier(&nested.name.to_string())) != target_name);
         // Default values are evaluated in this (enclosing) scope, so render them
         // here and inject them into the nested signature.
         let defaults: Vec<String> = defaults.iter().map(|d| self.expr(*d, 0)).collect();
         match super::decompile_function_with_defaults(nested, &defaults) {
             Ok(source) => {
-                let source = if renamed_method {
-                    rename_def_header(&source, &self.lvalue(target)).unwrap_or(source)
+                let source = if needs_rename {
+                    rename_def_header(&source, &target_name).unwrap_or(source)
                 } else {
                     source
                 };
