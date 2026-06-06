@@ -17,6 +17,7 @@ pub mod cfg;
 pub mod emit;
 pub mod expr;
 pub mod simplify;
+pub mod structural;
 pub mod structure;
 pub mod unstack;
 
@@ -175,6 +176,17 @@ impl DecodedFunction {
                     Cfg::build_bool_regions(&self.instrs).and_then(|cfg| self.structure_with(cfg))
                 {
                     return Ok(StructuredFunction { code: self.code, arena, body });
+                }
+                // Last resort: a general structural-analysis structurer (loop-aware,
+                // layout-robust) that self-verifies against the CFG and returns None
+                // unless it can prove the recovery faithful. Runs only here, after every
+                // other path failed, so it can only convert a failure into a recovery.
+                if let Ok(mut cfg) = Cfg::build(&self.instrs) {
+                    simplify::simplify(&mut cfg, &self.code);
+                    if let Some(mut body) = structural::structure(&cfg) {
+                        structure::recognize_asserts(&mut body, &cfg.arena, &self.code);
+                        return Ok(StructuredFunction { code: self.code, arena: cfg.arena, body });
+                    }
                 }
                 Err(err)
             }

@@ -67,7 +67,7 @@ pub fn structure(cfg: &Cfg) -> Result<Vec<Stmt>, IrError> {
 /// Tidies the structured body: recurse into children, drop unreachable statements
 /// (anything after one that always transfers control), then strip the redundant
 /// trailing `continue` a loop body falls through to.
-fn cleanup(stmts: &mut Vec<Stmt>) {
+pub(crate) fn cleanup(stmts: &mut Vec<Stmt>) {
     for stmt in stmts.iter_mut() {
         match stmt {
             Stmt::If { then, els, .. } => {
