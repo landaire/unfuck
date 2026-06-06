@@ -197,6 +197,21 @@ pub struct CodeGraph<'a, TargetOpcode: Opcode<Mnemonic = py27::Mnemonic> + Parti
 impl<'a, TargetOpcode: 'static + Opcode<Mnemonic = py27::Mnemonic> + PartialEq>
     CodeGraph<'a, TargetOpcode>
 {
+    /// Convenience constructor: build a [`CodeGraph`] from a code object with the deob
+    /// pipeline's reporting knobs defaulted off -- file id 0, no dotviz graphs, and no
+    /// rename / graph-generation callbacks. This is the easy "bytecode -> CodeGraph" entry
+    /// point for callers that only want the control-flow graph (e.g. the IR decompiler
+    /// consuming the graph directly instead of round-tripping through serialized bytecode).
+    ///
+    /// The bytecode is carried by `code.code`; the consts are needed because block
+    /// boundaries are found by const-evaluating jumps (see [`from_code`]). A caller holding
+    /// only raw bytecode can wrap it in a `Code` with its const pool to use this.
+    pub fn from_code_default(
+        code: Arc<Code>,
+    ) -> Result<CodeGraph<'a, TargetOpcode>, Error<TargetOpcode>> {
+        Self::from_code(code, 0, false, None, None)
+    }
+
     /// Converts bytecode to a graph. Returns the root node index and the graph.
     pub fn from_code(
         code: Arc<Code>,
@@ -2665,6 +2680,26 @@ pub(crate) mod tests {
         assert_eq!(code_graph.graph.node_indices().count(), 1);
 
         let bb = &code_graph.graph[code_graph.graph.node_indices().next().unwrap()];
+        assert_eq!(bb.instrs.len(), 2);
+        assert_eq!(*bb.instrs[0].unwrap(), Instr!(TargetOpcode::LOAD_CONST, 0));
+        assert_eq!(*bb.instrs[1].unwrap(), Instr!(TargetOpcode::RETURN_VALUE));
+    }
+
+    #[test]
+    fn from_code_default_builds_a_graph() {
+        // The convenience constructor is the easy bytecode -> CodeGraph entry point: it
+        // builds the graph with the deob pipeline's reporting knobs defaulted off, matching
+        // an explicit `from_code(code, 0, false, None, None)`.
+        let mut code = default_code_obj();
+        let instrs = [
+            Instr!(TargetOpcode::LOAD_CONST, 0),
+            Instr!(TargetOpcode::RETURN_VALUE),
+        ];
+        change_code_instrs(&mut code, &instrs[..]);
+
+        let graph = CodeGraph::from_code_default(code).unwrap();
+        assert_eq!(graph.graph.node_indices().count(), 1);
+        let bb = &graph.graph[graph.graph.node_indices().next().unwrap()];
         assert_eq!(bb.instrs.len(), 2);
         assert_eq!(*bb.instrs[0].unwrap(), Instr!(TargetOpcode::LOAD_CONST, 0));
         assert_eq!(*bb.instrs[1].unwrap(), Instr!(TargetOpcode::RETURN_VALUE));

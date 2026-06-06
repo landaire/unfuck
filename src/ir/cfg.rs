@@ -487,6 +487,33 @@ pub fn decode(code: &[u8]) -> Result<Vec<OffsetInstr>, IrError> {
     Ok(instrs)
 }
 
+/// Linearizes a deobfuscator [`CodeGraph`](crate::code_graph::CodeGraph) into the IR's
+/// offset-tagged instruction stream -- the bridge that lets the decompiler consume the
+/// deobfuscator's control-flow graph directly, instead of round-tripping through serialized
+/// bytecode. Blocks are emitted in start-offset order, each instruction tagged with its byte
+/// offset; undecodable slots are skipped. For a graph whose block offsets are consistent (a
+/// freshly built graph, or one after the deob's offset/branch fixups) this reproduces exactly
+/// what [`decode`] yields from the equivalent bytecode -- so it is a drop-in source of the
+/// same `Vec<OffsetInstr>` the rest of the IR consumes.
+pub fn decode_from_graph(
+    graph: &crate::code_graph::CodeGraph<'_, Standard>,
+) -> Vec<OffsetInstr> {
+    let mut blocks: Vec<_> = graph.graph.node_indices().collect();
+    blocks.sort_by_key(|&nx| graph.graph[nx].start_offset);
+    let mut instrs = Vec::new();
+    for nx in blocks {
+        let bb = &graph.graph[nx];
+        let mut offset = bb.start_offset;
+        for slot in &bb.instrs {
+            if let Some(instr) = slot.get() {
+                instrs.push(OffsetInstr { offset: Offset(offset as u32), instr: (*instr).clone() });
+                offset += instr.len() as u64;
+            }
+        }
+    }
+    instrs
+}
+
 /// Replaces the obfuscator's no-op `JUMP_FORWARD 0` instructions with `NOP`s. A
 /// forward jump of zero lands on the very next instruction, so it does nothing but
 /// fragment a basic block and break the straight-line pattern matching the list

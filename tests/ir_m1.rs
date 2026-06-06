@@ -173,6 +173,33 @@ fn decompile(code: Arc<Code>) -> String {
 }
 
 #[test]
+fn ir_consumes_code_graph_via_bridge() {
+    // The decompiler can be driven from the deob's CodeGraph instead of raw bytecode:
+    // building a graph with the convenience constructor and linearizing it with
+    // decode_from_graph reproduces exactly the stream `decode` yields from the equivalent
+    // bytecode -- same offsets, opcodes, and operands -- so the bridge is a drop-in source of
+    // the IR's input. Uses a multi-block (if/else) function so block ordering is exercised.
+    let code = Builder::new("f", 1, &["x"], &[], vec![Obj::None, long(1), long(2)])
+        .arg(Standard::LOAD_FAST, 0)
+        .jump(Standard::POP_JUMP_IF_FALSE, "els")
+        .arg(Standard::LOAD_CONST, 1)
+        .op(Standard::RETURN_VALUE)
+        .label("els")
+        .arg(Standard::LOAD_CONST, 2)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    let from_bytes = unfuck::ir::cfg::decode(code.code.as_slice()).unwrap();
+    let graph = unfuck::code_graph::CodeGraph::from_code_default(Arc::clone(&code)).unwrap();
+    let from_graph = unfuck::ir::cfg::decode_from_graph(&graph);
+
+    let key = |v: &[unfuck::ir::cfg::OffsetInstr]| {
+        v.iter().map(|o| (o.offset.0, format!("{:?}", o.instr))).collect::<Vec<_>>()
+    };
+    assert_eq!(key(&from_bytes), key(&from_graph));
+}
+
+#[test]
 fn arithmetic_return() {
     let code = Builder::new("add_one_two", 0, &[], &[], vec![Obj::None, long(1), long(2)])
         .arg(Standard::LOAD_CONST, 1)
