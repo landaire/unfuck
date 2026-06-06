@@ -1,2 +1,12 @@
 /target
 Cargo.lock
+
+# Editor / agent local state -- never commit.
+.claude/
+
+# One-off scratch kept out of the repo (do throwaway work in a scratch dir such as
+# G:\tmp): root-level helper scripts, scratch examples, and corpus dump artifacts.
+/*.py
+/examples/scratch_*.rs
+*.newdump
+*.base
