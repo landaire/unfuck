@@ -30,7 +30,7 @@ use petgraph::algo::dominators::{simple_fast, Dominators};
 use petgraph::graph::{DiGraph, NodeIndex};
 
 use super::cfg::{BlockId, Cfg, Terminator};
-use super::expr::{ExceptHandler, LValue, Offset, Stmt, ValueId};
+use super::expr::{BoolKind, ExceptHandler, Expr, LValue, Offset, Stmt, ValueId};
 
 /// A control-flow destination: a block, or the function exit.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -64,6 +64,16 @@ enum Region {
     /// A two-way branch headed by a `CondBranch` block.
     If {
         header: BlockId,
+        then: Box<Region>,
+        els: Box<Region>,
+    },
+    /// A two-way branch whose condition is a short-circuit chain of `CondBranch` headers
+    /// (`if A and B:` / `if A or B:`), folded into one `if` so the shared exit arm is not
+    /// duplicated. `headers` are the chain blocks in order; the folded condition is looked
+    /// up in [`Analyzer::sc`].
+    ShortCircuit {
+        headers: Vec<BlockId>,
+        kind: BoolKind,
         then: Box<Region>,
         els: Box<Region>,
     },
@@ -146,8 +156,14 @@ const MAX_DEPTH: usize = 400;
 /// Structures `cfg` with general structural analysis, or returns `None` if it cannot
 /// prove the result faithful. Intended only as a fallback after the primary structurer
 /// has failed.
-pub fn structure(cfg: &Cfg) -> Option<Vec<Stmt>> {
-    let analyzer = Analyzer::build(cfg)?;
+pub fn structure(cfg: &mut Cfg) -> Option<Vec<Stmt>> {
+    // Detect short-circuit condition chains (`if A and B:`, `if A or B:`) and pre-allocate
+    // their folded `BoolOp` condition into the arena, while it is still mutable. A chain of
+    // `CondBranch` headers that share an exit target is then recovered as ONE `if` rather
+    // than nested `if`s that would duplicate the shared arm (which the verifier rejects).
+    let raw = detect_short_circuits(cfg);
+    let sc = allocate_chain_conds(cfg, raw);
+    let analyzer = Analyzer::build(cfg, sc)?;
     let mut frames: Vec<Frame> = Vec::new();
     let entry = analyzer.resolve(cfg.entry);
     let region = analyzer.build_region(entry, None, &mut frames, 0)?;
@@ -157,8 +173,136 @@ pub fn structure(cfg: &Cfg) -> Option<Vec<Stmt>> {
     Some(body)
 }
 
+/// A detected short-circuit chain: a run of `CondBranch` headers folded into one boolean
+/// condition. For an `And` chain `[H1..Hn]` each header's false arm goes to the shared
+/// `els_off` and `Hi.true -> H(i+1)`, with `Hn.true -> then_off`; for `Or`, true arms share
+/// `then_off` and `Hi.false -> H(i+1)`, with `Hn.false -> els_off`.
+struct ScChain {
+    kind: BoolKind,
+    headers: Vec<BlockId>,
+    cond: ValueId,
+    then_off: Offset,
+    els_off: Offset,
+}
+
+/// The same chain before its folded condition is allocated.
+struct ScChainRaw {
+    kind: BoolKind,
+    headers: Vec<BlockId>,
+    then_off: Offset,
+    els_off: Offset,
+}
+
+/// Finds short-circuit chains headed at each `CondBranch`. A chain extends while the
+/// continuation arm lands on another *statement-free* `CondBranch` that shares the same
+/// exit target on its other arm; the head may carry statements (they compute the first
+/// operand and run before the `if`), the continuations may not. Headers are resolved
+/// through pure-jump trampolines, as everywhere else.
+fn detect_short_circuits(cfg: &Cfg) -> HashMap<BlockId, ScChainRaw> {
+    let thread = build_thread_map(cfg);
+    let resolve = |o: Offset| -> Option<BlockId> { cfg.by_offset.get(&o).map(|&b| *thread.get(&b).unwrap_or(&b)) };
+    let cond_branch = |b: BlockId| -> Option<(Offset, Offset)> {
+        match cfg.block(b).terminator {
+            Terminator::CondBranch { if_true, if_false, .. } => Some((if_true, if_false)),
+            _ => None,
+        }
+    };
+    let mut out = HashMap::new();
+    for (idx, block) in cfg.blocks.iter().enumerate() {
+        let head = BlockId(idx as u32);
+        if thread.contains_key(&head) {
+            continue;
+        }
+        let Some((h_true, h_false)) = cond_branch(head) else { continue };
+        // Try to extend an `And` chain (continuation = true arm, shared exit = false arm)
+        // and an `Or` chain (continuation = false arm, shared exit = true arm); keep the
+        // longer (>= 2 headers).
+        let and = extend_chain(cfg, &resolve, &cond_branch, head, h_true, h_false, true);
+        let or = extend_chain(cfg, &resolve, &cond_branch, head, h_false, h_true, false);
+        let best = match (and, or) {
+            (Some(a), Some(o)) => Some(if a.headers.len() >= o.headers.len() { a } else { o }),
+            (a, o) => a.or(o),
+        };
+        if let Some(chain) = best {
+            out.insert(head, chain);
+        }
+    }
+    out
+}
+
+/// Extends a chain from `head`: `cont0` is the head's continuation arm, `shared0` its exit
+/// arm. `is_and` selects which arm continues for the deeper headers. Returns a chain of >= 2
+/// headers or `None`.
+fn extend_chain(
+    cfg: &Cfg,
+    resolve: &dyn Fn(Offset) -> Option<BlockId>,
+    cond_branch: &dyn Fn(BlockId) -> Option<(Offset, Offset)>,
+    head: BlockId,
+    cont0: Offset,
+    shared0: Offset,
+    is_and: bool,
+) -> Option<ScChainRaw> {
+    let shared = resolve(shared0)?;
+    let mut headers = vec![head];
+    let mut cur_cont = cont0;
+    let mut seen = HashSet::new();
+    seen.insert(head);
+    loop {
+        let Some(next) = resolve(cur_cont) else { break };
+        if !seen.insert(next) {
+            break; // a cycle of conditionals is a loop, not a chain
+        }
+        // The continuation must be a statement-free CondBranch that shares the same exit.
+        if !cfg.block(next).stmts.is_empty() || cfg.block(next).poison.is_some() {
+            break;
+        }
+        let Some((n_true, n_false)) = cond_branch(next) else { break };
+        let (n_cont, n_shared) = if is_and { (n_true, n_false) } else { (n_false, n_true) };
+        if resolve(n_shared) != Some(shared) {
+            break;
+        }
+        headers.push(next);
+        cur_cont = n_cont;
+        // The chain can keep going only if the next continuation is again a shared-exit
+        // CondBranch; otherwise this header is the last and `cur_cont` is the final target.
+        if resolve(cur_cont).and_then(|b| cond_branch(b)).is_none() {
+            break;
+        }
+    }
+    if headers.len() < 2 {
+        return None;
+    }
+    // `cur_cont` is the final continuation (consequent for And, alternative for Or).
+    let (then_off, els_off) = if is_and { (cur_cont, shared0) } else { (shared0, cur_cont) };
+    Some(ScChainRaw { kind: if is_and { BoolKind::And } else { BoolKind::Or }, headers, then_off, els_off })
+}
+
+/// Allocates each chain's folded `BoolOp(kind, [cond_i])` into the arena.
+fn allocate_chain_conds(cfg: &mut Cfg, raw: HashMap<BlockId, ScChainRaw>) -> HashMap<BlockId, ScChain> {
+    let mut out = HashMap::new();
+    for (head, chain) in raw {
+        let conds: Option<Vec<ValueId>> = chain
+            .headers
+            .iter()
+            .map(|h| match cfg.block(*h).terminator {
+                Terminator::CondBranch { cond, .. } => Some(cond),
+                _ => None,
+            })
+            .collect();
+        let Some(conds) = conds else { continue };
+        let cond = cfg.arena.alloc(Expr::BoolOp(chain.kind, conds));
+        out.insert(
+            head,
+            ScChain { kind: chain.kind, headers: chain.headers, cond, then_off: chain.then_off, els_off: chain.els_off },
+        );
+    }
+    out
+}
+
 struct Analyzer<'a> {
     cfg: &'a Cfg,
+    /// Short-circuit chains keyed by head block (see [`detect_short_circuits`]).
+    sc: HashMap<BlockId, ScChain>,
     /// Pure-jump trampolines threaded to their ultimate target (see [`build_thread_map`]).
     thread: HashMap<BlockId, BlockId>,
     loops: HashMap<BlockId, LoopShape>,
@@ -173,7 +317,7 @@ struct Analyzer<'a> {
 }
 
 impl<'a> Analyzer<'a> {
-    fn build(cfg: &'a Cfg) -> Option<Analyzer<'a>> {
+    fn build(cfg: &'a Cfg, sc: HashMap<BlockId, ScChain>) -> Option<Analyzer<'a>> {
         // Only the plain control-flow terminators are in scope; a Try/With/Finally is left
         // to the primary structurer (and its absence here keeps the graph model simple).
         for block in &cfg.blocks {
@@ -289,6 +433,7 @@ impl<'a> Analyzer<'a> {
 
         let mut analyzer = Analyzer {
             cfg,
+            sc,
             thread,
             loops: HashMap::new(),
             dom,
@@ -760,17 +905,37 @@ impl<'a> Analyzer<'a> {
                     cursor = None;
                 }
                 Terminator::CondBranch { if_true, if_false, .. } => {
-                    let true_block = self.resolve_off(*if_true);
-                    let false_block = self.resolve_off(*if_false);
+                    // A short-circuit chain headed here folds into one `if` (with the
+                    // pre-allocated `BoolOp` condition), so its shared exit arm is emitted
+                    // once. Only when no *absorbed* header (every header past the first) is a
+                    // loop header -- such a header must stay a real loop, not be folded away.
+                    let chain = self.sc.get(&cur).filter(|c| {
+                        c.headers[1..].iter().all(|h| !self.loops.contains_key(h))
+                    });
+                    let (true_off, false_off) = match chain {
+                        Some(c) => (c.then_off, c.els_off),
+                        None => (*if_true, *if_false),
+                    };
+                    let true_block = self.resolve_off(true_off);
+                    let false_block = self.resolve_off(false_off);
                     let merge = self.branch_merge(cur, stop, frames);
                     let then = self.build_arm(true_block, merge, frames, depth)?;
                     let els = self.build_arm(false_block, merge, frames, depth)?;
                     let both_terminate = self.region_terminates(&then) && self.region_terminates(&els);
-                    seq.push(Region::If {
-                        header: cur,
-                        then: Box::new(then),
-                        els: Box::new(els),
-                    });
+                    let region = match chain {
+                        Some(c) => Region::ShortCircuit {
+                            headers: c.headers.clone(),
+                            kind: c.kind,
+                            then: Box::new(then),
+                            els: Box::new(els),
+                        },
+                        None => Region::If {
+                            header: cur,
+                            then: Box::new(then),
+                            els: Box::new(els),
+                        },
+                    };
+                    seq.push(region);
                     cursor = if both_terminate { None } else { merge };
                 }
                 Terminator::Try { body, handlers, end } => {
@@ -1009,6 +1174,32 @@ impl<'a> Analyzer<'a> {
                 self.simulate(els, cont, frames, derived)?;
                 Some(())
             }
+            Region::ShortCircuit { headers, kind, then, els } => {
+                // The whole chain leaves to `then` (final consequent) or `els` (final
+                // alternative); each header's chaining arm goes to the next header. Derive
+                // each header's labelled edges so the verifier checks every chain block.
+                let t = self.entry_dest(std::slice::from_ref(then.as_ref()), cont, frames)?;
+                let f = self.entry_dest(std::slice::from_ref(els.as_ref()), cont, frames)?;
+                for (i, h) in headers.iter().enumerate() {
+                    let last = i + 1 == headers.len();
+                    let edges = match kind {
+                        BoolKind::And => {
+                            let true_dest = if last { t } else { Dest::Block(headers[i + 1]) };
+                            vec![(Edge::True, true_dest), (Edge::False, f)]
+                        }
+                        BoolKind::Or => {
+                            let false_dest = if last { f } else { Dest::Block(headers[i + 1]) };
+                            vec![(Edge::True, t), (Edge::False, false_dest)]
+                        }
+                    };
+                    if derived.insert(*h, edges).is_some() {
+                        return None;
+                    }
+                }
+                self.simulate(then, cont, frames, derived)?;
+                self.simulate(els, cont, frames, derived)?;
+                Some(())
+            }
             Region::ForLoop { header, body, els, follow } => {
                 let after = cont;
                 let exit_dest = if els.is_empty() {
@@ -1121,6 +1312,7 @@ impl<'a> Analyzer<'a> {
                 | Region::WhileLoop { header: b, .. }
                 | Region::InfLoop { header: b, .. }
                 | Region::Try { header: b, .. } => return Some(Dest::Block(*b)),
+                Region::ShortCircuit { headers, .. } => return Some(Dest::Block(headers[0])),
                 Region::Seq(inner) => {
                     let d = self.entry_dest(inner, cont, frames)?;
                     // An all-empty inner sequence falls through to the next item.
@@ -1172,6 +1364,18 @@ impl<'a> Analyzer<'a> {
             Region::If { header, then, els } => {
                 out.extend(self.cfg.block(*header).stmts.iter().cloned());
                 let cond = self.cond_of(*header);
+                out.push(Stmt::If {
+                    cond,
+                    then: self.lower(then),
+                    els: self.lower(els),
+                });
+            }
+            Region::ShortCircuit { headers, then, els, .. } => {
+                // The head's statements compute the first operand and run before the `if`;
+                // the absorbed headers are statement-free. The folded condition was
+                // pre-allocated in the arena.
+                out.extend(self.cfg.block(headers[0]).stmts.iter().cloned());
+                let cond = self.sc.get(&headers[0]).map(|c| c.cond).unwrap_or_else(|| self.cond_of(headers[0]));
                 out.push(Stmt::If {
                     cond,
                     then: self.lower(then),
@@ -1257,7 +1461,7 @@ impl<'a> Analyzer<'a> {
                 Terminator::Return(_) | Terminator::Raise(_)
             ),
             Region::Seq(items) => items.last().is_some_and(|r| self.region_terminates(r)),
-            Region::If { then, els, .. } => {
+            Region::If { then, els, .. } | Region::ShortCircuit { then, els, .. } => {
                 self.region_terminates(then) && self.region_terminates(els)
             }
             // A merge-less try has no continuation (its body exits, its handlers absorb the
@@ -1451,7 +1655,7 @@ mod tests {
         let ret = arena.alloc(Expr::Const(crate::ir::expr::ConstId(2)));
         // B0 entry -> B1; B1 header: if c1 -> B2(break) else B3; B3: if c2 -> B4(break)
         // else B5; B5: back edge -> B1; B6: return.
-        let cfg = cfg_of(
+        let mut cfg = cfg_of(
             vec![
                 (vec![], Terminator::Fallthrough(off(1))),
                 (vec![], Terminator::CondBranch { cond: c1, if_true: off(2), if_false: off(3) }),
@@ -1464,7 +1668,7 @@ mod tests {
             arena,
         );
 
-        let body = structure(&cfg).expect("should structure and verify");
+        let body = structure(&mut cfg).expect("should structure and verify");
         // A single `while True:` loop, then the return.
         assert!(matches!(body.last(), Some(Stmt::Return(_))), "got: {:?}", body);
         let loop_body = body
@@ -1527,7 +1731,7 @@ mod tests {
         // B3: stmt; Jump B6 (trampoline); B4 if c3 -> B5 else B6 (trampoline);
         // B5: stmt; Jump B1 (continue); B6: empty; Jump B1 (continue trampoline); B7 return.
         // B6 is reached from B3 (a then-arm) and B4 (a false-arm) -- two arms, not a merge.
-        let cfg = cfg_of(
+        let mut cfg = cfg_of(
             vec![
                 (vec![], Terminator::Fallthrough(off(1))),
                 (vec![], Terminator::CondBranch { cond, if_true: off(2), if_false: off(7) }),
@@ -1540,7 +1744,7 @@ mod tests {
             ],
             arena,
         );
-        let body = structure(&cfg).expect("shared continue-trampoline should structure and verify");
+        let body = structure(&mut cfg).expect("shared continue-trampoline should structure and verify");
         let wbody = body
             .iter()
             .find_map(|s| match s {
@@ -1577,7 +1781,7 @@ mod tests {
         let mut arena = ExprArena::new();
         let c = arena.alloc(Expr::Const(crate::ir::expr::ConstId(0)));
         // B0: if c -> B1 else B2; B1 -> B2; B2 -> B1 (cycle entered at two points).
-        let cfg = cfg_of(
+        let mut cfg = cfg_of(
             vec![
                 (vec![], Terminator::CondBranch { cond: c, if_true: off(1), if_false: off(2) }),
                 (vec![], Terminator::Jump(off(2))),
@@ -1585,7 +1789,7 @@ mod tests {
             ],
             arena,
         );
-        assert!(structure(&cfg).is_none(), "irreducible CFG must not be structured");
+        assert!(structure(&mut cfg).is_none(), "irreducible CFG must not be structured");
     }
 
     /// A nested-loop archetype: a `for` whose break target is *past* its FOR_ITER exit
@@ -1620,7 +1824,7 @@ mod tests {
         cfg.for_targets.insert(BlockId(1), LValue::Local(VarId(0)));
         cfg.blocks[0].stack_out = vec![it]; // GET_ITER value for the loop's iterable
 
-        let body = structure(&cfg).expect("for-else with break should structure and verify");
+        let body = structure(&mut cfg).expect("for-else with break should structure and verify");
         let forelse = body.iter().find(|s| matches!(s, Stmt::ForElse { .. }));
         let Some(Stmt::ForElse { body, els, .. }) = forelse else {
             panic!("expected a ForElse, got: {:?}", body);
@@ -1640,7 +1844,7 @@ mod tests {
         let hand_v = arena.alloc(Expr::Const(ConstId(2)));
         let ret = arena.alloc(Expr::Const(ConstId(3)));
         // B0 try(body=B1, except->B2, end=B3); B1 body -> B3; B2 handler -> B3; B3 return.
-        let cfg = cfg_of(
+        let mut cfg = cfg_of(
             vec![
                 (
                     vec![],
@@ -1656,7 +1860,7 @@ mod tests {
             ],
             arena,
         );
-        let body = structure(&cfg).expect("try/except should structure and verify");
+        let body = structure(&mut cfg).expect("try/except should structure and verify");
         let Some(Stmt::Try { handlers, .. }) = body.iter().find(|s| matches!(s, Stmt::Try { .. }))
         else {
             panic!("expected a Try, got: {:?}", body);
@@ -1678,7 +1882,7 @@ mod tests {
         let hand = arena.alloc(Expr::Const(ConstId(2)));
         let ret_b = arena.alloc(Expr::Const(ConstId(3)));
         // B0 try(body=B1, except->B2, end=None); B1: return a; B2: stmt; return b.
-        let cfg = cfg_of(
+        let mut cfg = cfg_of(
             vec![
                 (
                     vec![],
@@ -1693,7 +1897,7 @@ mod tests {
             ],
             arena,
         );
-        let body = structure(&cfg).expect("merge-less try with returning body should structure");
+        let body = structure(&mut cfg).expect("merge-less try with returning body should structure");
         let Some(Stmt::Try { body: tbody, handlers }) =
             body.iter().find(|s| matches!(s, Stmt::Try { .. }))
         else {
@@ -1715,7 +1919,7 @@ mod tests {
         let ret = arena.alloc(Expr::Const(ConstId(3)));
         // B0 header: if c -> B1 (body) else B3 (else); B1: if d -> B2 (break) else B0
         // (continue); B2: break -> B4; B3 else -> B4; B4 return.
-        let cfg = cfg_of(
+        let mut cfg = cfg_of(
             vec![
                 (vec![], Terminator::CondBranch { cond, if_true: off(1), if_false: off(3) }),
                 (vec![], Terminator::CondBranch { cond: d, if_true: off(2), if_false: off(0) }),
@@ -1725,7 +1929,7 @@ mod tests {
             ],
             arena,
         );
-        let body = structure(&cfg).expect("while/else+break should structure and verify");
+        let body = structure(&mut cfg).expect("while/else+break should structure and verify");
         let Some(Stmt::WhileElse { body: wbody, els, .. }) =
             body.iter().find(|s| matches!(s, Stmt::WhileElse { .. }))
         else {
@@ -1733,5 +1937,42 @@ mod tests {
         };
         assert!(!els.is_empty(), "else clause should be recovered");
         assert_eq!(count_breaks(wbody), 1, "break should be inside the while body");
+    }
+
+    /// `if A and B: X else: Y` -- two `CondBranch`es sharing a false target. The plain
+    /// region walk emits the shared `else` (B2) in both arms, which the verifier rejects;
+    /// the short-circuit fold recovers it as one `if (A and B):` with `Y` emitted once.
+    #[test]
+    fn short_circuit_and_shared_else() {
+        use crate::ir::expr::{BoolKind, ConstId};
+        let mut arena = ExprArena::new();
+        let a = arena.alloc(Expr::Const(ConstId(0)));
+        let b = arena.alloc(Expr::Const(ConstId(1)));
+        let x = arena.alloc(Expr::Const(ConstId(2)));
+        let y = arena.alloc(Expr::Const(ConstId(3)));
+        let ret = arena.alloc(Expr::Const(ConstId(4)));
+        // B0: if A -> B1 else B2; B1: if B -> B3 else B2 (shared false);
+        // B2: Y -> B4; B3: X -> B4; B4: return.
+        let mut cfg = cfg_of(
+            vec![
+                (vec![], Terminator::CondBranch { cond: a, if_true: off(1), if_false: off(2) }),
+                (vec![], Terminator::CondBranch { cond: b, if_true: off(3), if_false: off(2) }),
+                (vec![Stmt::Expr(y)], Terminator::Fallthrough(off(4))),
+                (vec![Stmt::Expr(x)], Terminator::Fallthrough(off(4))),
+                (vec![], Terminator::Return(Some(ret))),
+            ],
+            arena,
+        );
+        let body = structure(&mut cfg).expect("short-circuit `and` should structure and verify");
+        let Some(Stmt::If { cond, then, els }) = body.iter().find(|s| matches!(s, Stmt::If { .. }))
+        else {
+            panic!("expected an If, got: {:?}", body);
+        };
+        match cfg.arena.get(*cond) {
+            Expr::BoolOp(BoolKind::And, ops) => assert_eq!(ops, &vec![a, b], "folded `A and B`"),
+            other => panic!("expected folded `A and B`, got: {:?}", other),
+        }
+        assert_eq!(count_expr(then, x), 1, "then has X once");
+        assert_eq!(count_expr(els, y), 1, "els has Y once, not duplicated");
     }
 }

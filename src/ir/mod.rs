@@ -183,7 +183,7 @@ impl DecodedFunction {
                 // other path failed, so it can only convert a failure into a recovery.
                 if let Ok(mut cfg) = Cfg::build(&self.instrs) {
                     simplify::simplify(&mut cfg, &self.code);
-                    if let Some(mut body) = structural::structure(&cfg) {
+                    if let Some(mut body) = structural::structure(&mut cfg) {
                         structure::recognize_asserts(&mut body, &cfg.arena, &self.code);
                         return Ok(StructuredFunction { code: self.code, arena: cfg.arena, body });
                     }
