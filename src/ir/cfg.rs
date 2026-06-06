@@ -754,7 +754,9 @@ fn opaque_block_end(instrs: &[OffsetInstr], start: usize, code: &Code) -> Option
         // stack, so bail.
         let safe_boundary = class_bases
             || stopped_below_entry
-            || (end < instrs.len() && is_safe_consumer(instrs[end].instr.opcode.mnemonic()));
+            || (end < instrs.len()
+                && (is_safe_consumer(instrs[end].instr.opcode.mnemonic())
+                    || followed_by_class_construct(instrs, end)));
         if !safe_boundary {
             return None;
         }
@@ -860,6 +862,39 @@ fn is_class_bases_tail(instrs: &[OffsetInstr], idx: usize) -> bool {
         && at(idx + 3) == Some(Mnemonic::CALL_FUNCTION)
         && arg(idx + 3) == Some(0)
         && at(idx + 4) == Some(Mnemonic::BUILD_CLASS)
+}
+
+/// Whether the instructions from `start` are a class's real base loads leading into
+/// its bases `BUILD_TUPLE` and the class-creation tail. Used to accept a self-contained
+/// junk block whose boundary is the start of those base loads -- the obfuscator wedged
+/// the junk *before* the bases (e.g. an incomplete `UNPACK_SEQUENCE` leaving residue that
+/// would otherwise corrupt `BUILD_CLASS`'s name). The boundary op must push a value
+/// without consuming the junk residue beneath it (a fresh load), so a `LOAD_ATTR` -- which
+/// pops -- is rejected as a boundary, though it may appear later as part of a `mod.Base`.
+fn followed_by_class_construct(instrs: &[OffsetInstr], start: usize) -> bool {
+    match instrs.get(start).map(|i| i.instr.opcode.mnemonic()) {
+        Some(
+            Mnemonic::LOAD_NAME | Mnemonic::LOAD_GLOBAL | Mnemonic::LOAD_CONST | Mnemonic::LOAD_DEREF,
+        ) => {}
+        _ => return false,
+    }
+    let mut k = start;
+    while let Some(item) = instrs.get(k) {
+        match item.instr.opcode.mnemonic() {
+            Mnemonic::LOAD_NAME
+            | Mnemonic::LOAD_GLOBAL
+            | Mnemonic::LOAD_CONST
+            | Mnemonic::LOAD_DEREF
+            | Mnemonic::LOAD_ATTR => {}
+            Mnemonic::BUILD_TUPLE => return is_class_bases_tail(instrs, k),
+            _ => return false,
+        }
+        k += 1;
+        if k > start + 16 {
+            return false;
+        }
+    }
+    false
 }
 
 /// Whether `obj` is the obfuscator's marker constant: a 5-element tuple of integers

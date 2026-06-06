@@ -1871,6 +1871,59 @@ fn strips_opaque_predicate_wedged_in_class_bases() {
 }
 
 #[test]
+fn strips_opaque_predicate_before_class_bases() {
+    // The obfuscator wedges the opaque junk BEFORE a class's real base load, leaving
+    // residue on the stack (here an incomplete `UNPACK_SEQUENCE 5` with only two stores
+    // -> three junk values) that would otherwise become BUILD_CLASS's name. The real
+    // class construct (`LOAD_CONST 'C'; LOAD_NAME Base; BUILD_TUPLE 1; ... BUILD_CLASS`)
+    // follows intact. The strip must remove the self-contained junk block even though its
+    // boundary is the real base load (not a `safe_consumer`), restoring `class C(Base):`.
+    let body = Builder::new("C", 0, &[], &["__name__", "__module__", "x"], vec![Obj::None, long(1)])
+        .arg(Standard::LOAD_NAME, 0)
+        .arg(Standard::STORE_NAME, 1)
+        .arg(Standard::LOAD_CONST, 1)
+        .arg(Standard::STORE_NAME, 2)
+        .op(Standard::LOAD_LOCALS)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+    let body_obj = Obj::Code(Arc::new(RwLock::new((*body).clone())));
+    let tuple = Obj::Tuple(Arc::new(RwLock::new(vec![
+        long(244),
+        long(55),
+        long(12),
+        long(246),
+        long(255),
+    ])));
+    let code = Builder::new(
+        "f",
+        0,
+        &[],
+        &["Base", "a", "b", "C"],
+        vec![Obj::None, tuple, body_obj, pystr("C")],
+    )
+    .arg(Standard::LOAD_CONST, 3) // 'C'
+    .arg(Standard::LOAD_CONST, 1) // marker tuple
+    .arg(Standard::UNPACK_SEQUENCE, 5)
+    .arg(Standard::STORE_NAME, 1) // a -- only two stores, leaving three residue values
+    .arg(Standard::STORE_NAME, 2) // b
+    .arg(Standard::LOAD_NAME, 0) // Base (the real base, after the junk)
+    .arg(Standard::BUILD_TUPLE, 1)
+    .arg(Standard::LOAD_CONST, 2) // class body code
+    .arg(Standard::MAKE_FUNCTION, 0)
+    .arg(Standard::CALL_FUNCTION, 0)
+    .op(Standard::BUILD_CLASS)
+    .arg(Standard::STORE_NAME, 3) // C
+    .arg(Standard::LOAD_CONST, 0) // None
+    .op(Standard::RETURN_VALUE)
+    .finish();
+
+    let out = decompile(code);
+    assert!(out.contains("class C(Base):"), "expected `class C(Base):`, got:\n{}", out);
+    assert!(out.contains("x = 1"), "missing class body:\n{}", out);
+    assert!(!out.contains("__unrecovered__"), "should be fully recovered:\n{}", out);
+}
+
+#[test]
 fn ternary_arm_with_chained_comparison() {
     // def f(c, p, q, r): return 1 if c else 2 if p <= q < r else 3
     // The outer ternary's else arm holds a nested ternary whose condition is a chained
