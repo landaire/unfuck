@@ -65,6 +65,7 @@ struct Builder {
     consts: Vec<Obj>,
     items: Vec<Item>,
     flags: CodeFlags,
+    cellvars: Vec<Arc<BString>>,
 }
 
 impl Builder {
@@ -77,11 +78,17 @@ impl Builder {
             consts,
             items: Vec::new(),
             flags: CodeFlags::empty(),
+            cellvars: Vec::new(),
         }
     }
 
     fn flags(mut self, flags: CodeFlags) -> Builder {
         self.flags = flags;
+        self
+    }
+
+    fn cellvars(mut self, cellvars: &[&str]) -> Builder {
+        self.cellvars = cellvars.iter().map(|c| bstr(c)).collect();
         self
     }
 
@@ -146,7 +153,7 @@ impl Builder {
             names: self.names,
             varnames: self.varnames,
             freevars: vec![],
-            cellvars: vec![],
+            cellvars: self.cellvars,
             filename: bstr("test"),
             name: bstr(&self.name),
             firstlineno: 1,
@@ -214,6 +221,34 @@ fn out_of_range_predicate_is_stripped() {
         .finish();
 
     assert_eq!(decompile(code), "def f(a):\n    return a\n");
+}
+
+#[test]
+fn from_import_bound_to_closure_cell() {
+    // A conditional import binds its name to a closure cell (`STORE_DEREF`), e.g.
+    // `from hashlib import md5 as _hash_new` where an inner function captures
+    // `_hash_new`. `import_binding` must resolve the deref target (cellvars/freevars),
+    // not leave it as `from hashlib import __unrecovered__`.
+    let code = Builder::new("f", 0, &[], &["hashlib", "md5"], vec![
+        Obj::None,
+        long(-1),
+        Obj::Tuple(Arc::new(RwLock::new(vec![pystr("md5")]))),
+    ])
+    .cellvars(&["_hash_new"])
+    .arg(Standard::LOAD_CONST, 1) // -1 (level)
+    .arg(Standard::LOAD_CONST, 2) // ('md5',) (fromlist)
+    .arg(Standard::IMPORT_NAME, 0) // hashlib
+    .arg(Standard::IMPORT_FROM, 1) // md5
+    .arg(Standard::STORE_DEREF, 0) // _hash_new (closure cell)
+    .op(Standard::POP_TOP)
+    .arg(Standard::LOAD_CONST, 0) // None
+    .op(Standard::RETURN_VALUE)
+    .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f():\n    from hashlib import md5 as _hash_new\n    return None\n"
+    );
 }
 
 #[test]

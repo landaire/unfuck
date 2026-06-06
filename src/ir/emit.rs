@@ -1134,15 +1134,33 @@ impl<'a> Emitter<'a> {
         format!("from {} import {}", module, parts.join(", "))
     }
 
-    /// The raw bound name of a simple import target (`STORE_NAME`/`STORE_FAST`).
+    /// The raw bound name of a simple import target (`STORE_NAME`/`STORE_FAST`/
+    /// `STORE_DEREF`). A deref target is a closure cell -- a conditional import bound to
+    /// a name a nested function captures, e.g. `try: from hashlib import md5 as _hash_new`
+    /// where `_hash_new` is read by an inner constructor.
     fn import_binding(&self, target: &LValue) -> Option<String> {
         match target {
             LValue::Name(name) | LValue::Global(name) => {
                 self.code.names.get(name.0 as usize).map(|n| n.to_string())
             }
             LValue::Local(var) => self.code.varnames.get(var.0 as usize).map(|n| n.to_string()),
+            LValue::Deref(deref) => self.raw_derefname(*deref),
             _ => None,
         }
+    }
+
+    /// The raw (unsanitized) name behind a `LOAD_DEREF`/`STORE_DEREF` index, resolved
+    /// against `co_cellvars` then `co_freevars` -- the unsanitized companion to
+    /// [`derefname`], used where the caller compares or sanitizes the name itself.
+    fn raw_derefname(&self, deref: DerefId) -> Option<String> {
+        let index = deref.0 as usize;
+        let cells = self.code.cellvars.len();
+        if index < cells {
+            self.code.cellvars.get(index)
+        } else {
+            self.code.freevars.get(index - cells)
+        }
+        .map(|n| n.to_string())
     }
 
     fn name(&self, name: NameId) -> String {
