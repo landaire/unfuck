@@ -224,6 +224,42 @@ fn out_of_range_predicate_is_stripped() {
 }
 
 #[test]
+fn dead_constant_integer_predicate_is_folded() {
+    // Control-flow-flattening junk: a marker block whose integers are ground through
+    // arithmetic into a constant comparison feeding a conditional jump, wedged in front of
+    // real code. Here `a < b` is `10 < 20` = True with POP_JUMP_IF_FALSE, so the branch is
+    // never taken -- the whole self-contained, stack-neutral predicate is dead and must be
+    // folded away, leaving just `return 5`. (The jump target is dead code it never reaches.)
+    let tuple = Obj::Tuple(Arc::new(RwLock::new(vec![
+        long(10),
+        long(20),
+        long(0),
+        long(0),
+        long(255),
+    ])));
+    let code = Builder::new("f", 0, &[], &["a", "b", "c", "d", "e"], vec![Obj::None, long(5), tuple])
+        .arg(Standard::LOAD_CONST, 2) // marker tuple
+        .arg(Standard::UNPACK_SEQUENCE, 5)
+        .arg(Standard::STORE_NAME, 0) // a = 10
+        .arg(Standard::STORE_NAME, 1) // b = 20
+        .arg(Standard::STORE_NAME, 2) // c
+        .arg(Standard::STORE_NAME, 3) // d
+        .arg(Standard::STORE_NAME, 4) // e
+        .arg(Standard::LOAD_NAME, 0) // 10
+        .arg(Standard::LOAD_NAME, 1) // 20
+        .arg(Standard::COMPARE_OP, 0) // 10 < 20 -> True
+        .jump(Standard::POP_JUMP_IF_FALSE, "dead") // never taken
+        .arg(Standard::LOAD_CONST, 1) // 5
+        .op(Standard::RETURN_VALUE)
+        .label("dead")
+        .arg(Standard::LOAD_CONST, 0) // None (dead)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f():\n    return 5\n");
+}
+
+#[test]
 fn from_import_bound_to_closure_cell() {
     // A conditional import binds its name to a closure cell (`STORE_DEREF`), e.g.
     // `from hashlib import md5 as _hash_new` where an inner function captures

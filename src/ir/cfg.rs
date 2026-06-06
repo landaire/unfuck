@@ -8,7 +8,9 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use num_traits::ToPrimitive;
+use num_bigint::BigInt;
+use num_integer::Integer;
+use num_traits::{Signed, ToPrimitive, Zero};
 use py27_marshal::{Code, Obj};
 use pydis::opcode::py27::{Mnemonic, Standard};
 use pydis::prelude::*;
@@ -582,6 +584,191 @@ pub fn strip_degenerate_predicates(instrs: &mut [OffsetInstr]) {
             }
         }
     }
+}
+
+/// Extracts the five integers of an obfuscation marker tuple (`(a, b, c, d, 255)`), or
+/// `None` if `obj` is not one. The companion to [`is_obfuscation_tuple`] that yields the
+/// values so a constant predicate built from them can be evaluated.
+fn marker_tuple_ints(obj: &Obj) -> Option<Vec<BigInt>> {
+    let Obj::Tuple(items) = obj else {
+        return None;
+    };
+    let items = items.read().unwrap();
+    if items.len() != 5 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(5);
+    for o in items.iter() {
+        let Obj::Long(v) = o else {
+            return None;
+        };
+        out.push(v.read().unwrap().clone());
+    }
+    if out.last()?.to_i64() != Some(255) {
+        return None;
+    }
+    Some(out)
+}
+
+/// Evaluates a self-contained constant-integer opaque predicate beginning at the marker
+/// `LOAD_CONST` at `start`: `LOAD_CONST <marker tuple>; UNPACK_SEQUENCE 5; <integer
+/// arithmetic over the unpacked temps>; COMPARE_OP; POP_JUMP_IF_{TRUE,FALSE}`. The
+/// obfuscator wedges this between a real value and its consumer to flatten control flow;
+/// the comparison is over junk it itself produced, so its branch direction is a constant.
+///
+/// Returns `(pop_jump_index, taken, stored_temp_names)` when the region is provably
+/// self-contained (it touches only values it pushed -- the stack returns to empty at the
+/// comparison) and every value is a known integer, so the branch direction is certain.
+/// Returns `None` for anything not fully modelled (a non-integer constant, a load of a name
+/// it did not store, an unmodelled opcode, a negative bitwise operand, division by zero, a
+/// comparison not immediately consumed by a conditional jump), so an uncertain predicate is
+/// never folded. Integer arithmetic uses Python 2 semantics (floor division and modulo).
+fn eval_int_marker_predicate(
+    instrs: &[OffsetInstr],
+    start: usize,
+    code: &Code,
+) -> Option<(usize, bool, Vec<u16>)> {
+    use Mnemonic::*;
+    let marker_const = instrs[start].instr.arg? as usize;
+    let ints = marker_tuple_ints(code.consts.get(marker_const)?)?;
+    if instrs.get(start + 1)?.instr.opcode.mnemonic() != UNPACK_SEQUENCE
+        || instrs[start + 1].instr.arg != Some(5)
+    {
+        return None;
+    }
+    // UNPACK_SEQUENCE pushes the elements so the first ends up on top of the stack.
+    let mut stack: Vec<BigInt> = ints.iter().rev().cloned().collect();
+    let mut temps: HashMap<u16, BigInt> = HashMap::new();
+    let mut stored: Vec<u16> = Vec::new();
+    let mut idx = start + 2;
+    while let Some(item) = instrs.get(idx) {
+        let m = item.instr.opcode.mnemonic();
+        match m {
+            LOAD_CONST => match code.consts.get(item.instr.arg? as usize)? {
+                Obj::Long(v) => stack.push(v.read().unwrap().clone()),
+                _ => return None,
+            },
+            LOAD_NAME => stack.push(temps.get(&item.instr.arg?)?.clone()),
+            STORE_NAME => {
+                let name = item.instr.arg?;
+                let value = stack.pop()?;
+                temps.insert(name, value);
+                stored.push(name);
+            }
+            BINARY_MULTIPLY | INPLACE_MULTIPLY | BINARY_ADD | INPLACE_ADD | BINARY_SUBTRACT
+            | INPLACE_SUBTRACT | BINARY_DIVIDE | INPLACE_DIVIDE | BINARY_FLOOR_DIVIDE
+            | INPLACE_FLOOR_DIVIDE | BINARY_MODULO | INPLACE_MODULO | BINARY_AND | INPLACE_AND
+            | BINARY_OR | INPLACE_OR | BINARY_XOR | INPLACE_XOR => {
+                let b = stack.pop()?;
+                let a = stack.pop()?;
+                let r = match m {
+                    BINARY_MULTIPLY | INPLACE_MULTIPLY => a * b,
+                    BINARY_ADD | INPLACE_ADD => a + b,
+                    BINARY_SUBTRACT | INPLACE_SUBTRACT => a - b,
+                    BINARY_DIVIDE | INPLACE_DIVIDE | BINARY_FLOOR_DIVIDE | INPLACE_FLOOR_DIVIDE => {
+                        if b.is_zero() {
+                            return None;
+                        }
+                        a.div_floor(&b)
+                    }
+                    BINARY_MODULO | INPLACE_MODULO => {
+                        if b.is_zero() {
+                            return None;
+                        }
+                        a.mod_floor(&b)
+                    }
+                    // Bitwise on negative operands differs between representations; only the
+                    // non-negative case is unambiguous, so anything else bails.
+                    _ => {
+                        if a.is_negative() || b.is_negative() {
+                            return None;
+                        }
+                        match m {
+                            BINARY_AND | INPLACE_AND => a & b,
+                            BINARY_OR | INPLACE_OR => a | b,
+                            _ => a ^ b,
+                        }
+                    }
+                };
+                stack.push(r);
+            }
+            UNARY_NEGATIVE => {
+                let a = stack.pop()?;
+                stack.push(-a);
+            }
+            UNARY_POSITIVE => {
+                let a = stack.pop()?;
+                stack.push(a);
+            }
+            COMPARE_OP => {
+                let b = stack.pop()?;
+                let a = stack.pop()?;
+                // cmp_op order (py2.7): 0 '<', 1 '<=', 2 '==', 3 '!=', 4 '>', 5 '>='.
+                let result = match item.instr.arg? {
+                    0 => a < b,
+                    1 => a <= b,
+                    2 => a == b,
+                    3 => a != b,
+                    4 => a > b,
+                    5 => a >= b,
+                    _ => return None,
+                };
+                // The comparison must be self-contained: the predicate consumed exactly the
+                // junk it produced, so the stack is empty here (the value it was wedged in
+                // front of sits below the predicate's entry and is untouched).
+                if !stack.is_empty() {
+                    return None;
+                }
+                let taken = match instrs.get(idx + 1)?.instr.opcode.mnemonic() {
+                    POP_JUMP_IF_TRUE => result,
+                    POP_JUMP_IF_FALSE => !result,
+                    _ => return None,
+                };
+                return Some((idx + 1, taken, stored));
+            }
+            _ => return None,
+        }
+        idx += 1;
+    }
+    None
+}
+
+/// Folds the obfuscator's dead constant-integer opaque predicates (control-flow
+/// flattening). A self-contained constant predicate whose branch is provably NOT taken
+/// (see [`eval_int_marker_predicate`]) is dead junk wedged into real code; its region is
+/// stack-neutral (the unpacked temps are consumed by its own comparison), so overwriting it
+/// with `NOP`s restores the surrounding statement and drops the dead branch edge. Only
+/// never-taken predicates are folded -- the fall-through is then the sole live path -- and
+/// only when the temps it stores are dead outside the region (a real binding is never
+/// dropped), mirroring [`strip_opaque_predicates`]. Offset-preserving, like the other strips.
+pub fn fold_dead_marker_predicates(instrs: &mut [OffsetInstr], code: &Code) {
+    let mut i = 0;
+    while i < instrs.len() {
+        if instrs[i].instr.opcode.mnemonic() == Mnemonic::LOAD_CONST {
+            if let Some((end, taken, stored)) = eval_int_marker_predicate(instrs, i, code) {
+                let dead = !taken && !stored.iter().any(|&n| name_read_outside(instrs, i, end, n));
+                if dead {
+                    for slot in &mut instrs[i..=end] {
+                        slot.instr.opcode = Standard::NOP;
+                        slot.instr.arg = None;
+                    }
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
+/// Whether `name` is read via `LOAD_NAME` anywhere outside the inclusive region
+/// `[start, end]` -- if so it is a real binding, not a dead junk temp.
+fn name_read_outside(instrs: &[OffsetInstr], start: usize, end: usize, name: u16) -> bool {
+    instrs.iter().enumerate().any(|(idx, item)| {
+        (idx < start || idx > end)
+            && item.instr.opcode.mnemonic() == Mnemonic::LOAD_NAME
+            && item.instr.arg == Some(name)
+    })
 }
 
 /// Neutralizes the obfuscator's opaque-predicate stack injections.

@@ -93,6 +93,13 @@ impl DecodedFunction {
             // Drop the obfuscator's no-op forward jumps, which only fragment the
             // instruction stream and break straight-line pattern matching.
             cfg::strip_noop_jumps(&mut instrs);
+            // Fold the obfuscator's dead constant-integer opaque predicates (control-flow
+            // flattening): a marker block whose junk feeds a COMPARE + POP_JUMP that
+            // provably never branches. Runs before the block stripper so the marker is
+            // intact for evaluation; the predicate is wedged into real code (between a
+            // value and its consumer), so removing the whole stack-neutral region restores
+            // the statement and drops the dead edge into the flattening trampoline.
+            cfg::fold_dead_marker_predicates(&mut instrs, &code);
             // Neutralize the obfuscator's opaque-predicate stack injections so the
             // buried operands of imports/class/function defs reach the unstacker. Runs
             // before strip_degenerate_predicates so the marker-tuple form (whose dead
