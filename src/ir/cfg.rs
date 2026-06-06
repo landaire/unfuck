@@ -2353,12 +2353,22 @@ fn recover_try(
     // (up to its branch target) extends past it. A SETUP_FINALLY that sits *after* this
     // try, or a sibling that ends before it, is not an enclosing cleanup and so does not
     // need this guard -- declining those needlessly loses recoverable objects (whichdb).
-    let enclosed_by_cleanup = instrs.iter().any(|item| {
+    let enclosed_by_cleanup = instrs.iter().enumerate().any(|(idx, item)| {
         matches!(
             item.instr.opcode.mnemonic(),
             Mnemonic::SETUP_FINALLY | Mnemonic::SETUP_WITH
         ) && item.offset < setup.offset
             && branch_target(item).is_ok_and(|target| target > setup.offset)
+            // A cleanup whose protected body IS this try (its body entry is this
+            // SETUP_EXCEPT, modulo a relinearizer trampoline) poses no double-emission
+            // risk: the handler's fall-through reaches the cleanup as normal body flow,
+            // emitted once. `try: try: return X except E: pass finally: cleanup` (bdb
+            // runeval) is such a case. Only a cleanup this try is nested *deeper* inside,
+            // where the relinearizer can scatter the fall-through, needs the guard.
+            && instrs
+                .get(skip_nops(instrs, idx + 1))
+                .map(|body| body.offset)
+                != Some(setup.offset)
     });
     if end.is_none()
         && enclosed_by_cleanup

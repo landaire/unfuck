@@ -2492,11 +2492,14 @@ fn mergeless_finally() {
 }
 
 #[test]
-fn mergeless_except_in_finally_is_rejected() {
-    // A merge-less try/except nested in a try/finally: the inner body returns, so its
-    // POP_BLOCK is gone, and the bare handler falls through to the finally's cleanup.
-    // Absorbing that cleanup into the handler would double it with the finally clause,
-    // so the merge-less recovery is rejected when the object contains a finally/with.
+fn mergeless_except_in_finally_recovers() {
+    // A merge-less try/except that IS the body of a try/finally: the inner body returns,
+    // so its POP_BLOCK is gone, and the bare handler falls through to the finally's
+    // cleanup. Because the try is the finally's immediate body, that fall-through is
+    // normal body flow -- the cleanup is emitted once by the finally clause, not doubled
+    // -- so it recovers (the guard only fires when the try is nested deeper, where the
+    // relinearizer can scatter the fall-through). `try: (try: return g() except: pass)
+    // finally: cleanup()` (bdb runeval's shape).
     // try: (try: return g() except: pass) finally: cleanup()
     let code = Builder::new("f", 0, &[], &["g", "cleanup"], vec![Obj::None])
         .jump(Standard::SETUP_FINALLY, "finally")
@@ -2521,8 +2524,11 @@ fn mergeless_except_in_finally_is_rejected() {
         .op(Standard::RETURN_VALUE)
         .finish();
 
-    let result = unfuck::ir::decompile_function(code);
-    assert!(matches!(result, Err(unfuck::ir::IrError::HasControlFlow(_))));
+    assert_eq!(
+        decompile(code),
+        "def f():\n    try:\n        try:\n            return g()\n        except:\n            pass\n    \
+         finally:\n        cleanup()\n\n    return None\n"
+    );
 }
 
 #[test]
