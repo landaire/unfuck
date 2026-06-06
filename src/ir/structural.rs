@@ -75,11 +75,14 @@ enum Region {
         els: Vec<Region>,
         follow: Option<BlockId>,
     },
-    /// A `while cond:` loop headed by a pure `CondBranch` test block.
+    /// A `while cond:` loop headed by a pure `CondBranch` test block. `els` is the
+    /// `while ... else` clause (the region the exit arm runs before the real follow, which
+    /// `break` skips); empty when there is none.
     WhileLoop {
         header: BlockId,
         negated: bool,
         body: Box<Region>,
+        els: Vec<Region>,
         follow: Option<BlockId>,
     },
     /// A `while True:` loop: the header is the first block of `body` (processed inline),
@@ -204,22 +207,45 @@ impl<'a> Analyzer<'a> {
         let entry_node = nodes[cfg.entry.0 as usize];
         let dom = simple_fast(&graph, entry_node);
 
-        // Post-dominators over NORMAL edges only, so a try's merge post-dominates the try
-        // even when a handler returns/raises (an exceptional edge would route to the exit
-        // and defeat the merge). For non-exception blocks normal == all successors.
+        // Post-dominators over SEMANTIC, normal edges: a `Break` reaches its `follow` (not
+        // its in-loop `fallback`), so a loop's real merge -- reachable only via the break
+        // targets -- post-dominates the blocks before it; and a try's merge post-dominates
+        // the try even when a handler returns/raises (an exceptional edge would route to the
+        // exit and defeat the merge). Without this the merge is unreachable on the graph
+        // edges and the post-dominator collapses to the function exit, which makes branch
+        // merges and loop follows wrong. The dominator graph above stays on the raw CFG
+        // edges so loop bodies still include break-arm and trampoline blocks.
+        let normal_semantic = |block: &super::cfg::Block| -> Vec<Dest> {
+            match &block.terminator {
+                // A try's handlers run only on an exception; normal flow is the body.
+                Terminator::Try { body, .. } => vec![dest_of(cfg, *body)],
+                Terminator::With { body, end, .. } => vec![dest_of(cfg, *body), dest_of(cfg, *end)],
+                Terminator::Finally { body, finalbody, .. } => {
+                    let mut v = vec![dest_of(cfg, *body)];
+                    v.extend(finalbody.map(|fb| dest_of(cfg, fb)));
+                    v
+                }
+                Terminator::Break { follow, .. } => vec![dest_of(cfg, *follow)],
+                _ => block
+                    .successors()
+                    .iter()
+                    .map(|o| dest_of(cfg, *o))
+                    .collect(),
+            }
+        };
         let mut rev = DiGraph::<(), ()>::new();
         let rnodes: Vec<NodeIndex> = (0..cfg.blocks.len()).map(|_| rev.add_node(())).collect();
         let rexit = rev.add_node(());
         for (idx, block) in cfg.blocks.iter().enumerate() {
             let from = rnodes[idx];
-            let succ = block.normal_successors();
+            let succ = normal_semantic(block);
             if succ.is_empty() {
                 rev.add_edge(from, rexit, ());
             }
-            for target in succ {
-                match cfg.by_offset.get(&target) {
-                    Some(to) => rev.add_edge(from, rnodes[to.0 as usize], ()),
-                    None => rev.add_edge(from, rexit, ()),
+            for d in succ {
+                match d {
+                    Dest::Block(to) => rev.add_edge(from, rnodes[to.0 as usize], ()),
+                    Dest::Exit => rev.add_edge(from, rexit, ()),
                 };
             }
         }
@@ -329,12 +355,27 @@ impl<'a> Analyzer<'a> {
 
     fn detect_loops(&mut self) -> Option<()> {
         let preds = self.predecessors();
+        // Reachability over the CFG GRAPH edges (a `Break` uses its in-loop `fallback`), so
+        // a relinearizer trampoline reached only by a break's fallback -- the block that
+        // actually carries the loop's back edge -- still counts as a latch. (Using the
+        // semantic reachable set here would drop it and leave the loop body incomplete.)
+        let graph_reachable = {
+            let mut seen = HashSet::new();
+            let mut stack = vec![self.cfg.entry];
+            while let Some(b) = stack.pop() {
+                if !seen.insert(b) {
+                    continue;
+                }
+                stack.extend(self.graph_succ(b));
+            }
+            seen
+        };
         // Headers are back-edge targets. A back edge whose target does not dominate its
         // source is irreducible -- reject the whole function.
         let mut headers: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
         for (idx, block) in self.cfg.blocks.iter().enumerate() {
             let source = BlockId(idx as u32);
-            if !self.reachable.contains(&source) {
+            if !graph_reachable.contains(&source) {
                 continue;
             }
             for target in block.successors() {
@@ -433,36 +474,56 @@ impl<'a> Analyzer<'a> {
             Terminator::CondBranch { if_true, if_false, .. } => {
                 let t = self.cfg.by_offset.get(if_true).copied();
                 let f = self.cfg.by_offset.get(if_false).copied();
+                let t_in = t.is_some_and(|b| body.contains(&b));
+                let f_in = f.is_some_and(|b| body.contains(&b));
                 let pd = self.immediate_postdom(header);
-                // A `while` test: one arm leaves the loop straight to the follow, which is
-                // then the header's post-dominator. The other arm is the body.
-                if pd.is_some() && pd == f {
-                    Some(LoopShape {
-                        body,
-                        kind: LoopKind::While { negated: false },
-                        follow: pd,
-                        body_entry: t?,
-                        else_start: None,
-                    })
-                } else if pd.is_some() && pd == t {
-                    Some(LoopShape {
-                        body,
-                        kind: LoopKind::While { negated: true },
-                        follow: pd,
-                        body_entry: f?,
-                        else_start: None,
-                    })
-                } else {
+                match (t_in, f_in) {
+                    // A `while` test: one arm is the loop body, the other leaves the loop.
+                    // The follow is the header's post-dominator (where the normal exit and
+                    // every `break` converge). When the exit arm reaches the follow through
+                    // a region rather than directly, that region is the `while ... else`
+                    // clause; `break` skips it.
+                    (true, false) => {
+                        let exit_arm = f?;
+                        let follow = pd.or(Some(exit_arm))?;
+                        let else_start = if exit_arm != follow { Some(exit_arm) } else { None };
+                        Some(LoopShape {
+                            body,
+                            kind: LoopKind::While { negated: false },
+                            follow: Some(follow),
+                            body_entry: t?,
+                            else_start,
+                        })
+                    }
+                    (false, true) => {
+                        let exit_arm = t?;
+                        let follow = pd.or(Some(exit_arm))?;
+                        let else_start = if exit_arm != follow { Some(exit_arm) } else { None };
+                        Some(LoopShape {
+                            body,
+                            kind: LoopKind::While { negated: true },
+                            follow: Some(follow),
+                            body_entry: f?,
+                            else_start,
+                        })
+                    }
                     // Both arms stay in the loop: a `while True:` whose header begins the
-                    // body and breaks from within. Its follow is the break convergence.
-                    let follow = self.converge(&self.out_targets(&body), &body)?;
-                    Some(LoopShape {
-                        body,
-                        kind: LoopKind::Infinite,
-                        follow,
-                        body_entry: header,
-                        else_start: None,
-                    })
+                    // body and breaks from within. Its follow is the post-dominator, or the
+                    // break convergence when the graph edges leave the follow unreachable.
+                    (true, true) => {
+                        let follow = match pd {
+                            Some(p) if !body.contains(&p) => Some(p),
+                            _ => self.converge(&self.out_targets(&body), &body)?,
+                        };
+                        Some(LoopShape {
+                            body,
+                            kind: LoopKind::Infinite,
+                            follow,
+                            body_entry: header,
+                            else_start: None,
+                        })
+                    }
+                    (false, false) => None,
                 }
             }
             // A plain-edge header that is a loop header is an infinite loop beginning at it.
@@ -765,12 +826,19 @@ impl<'a> Analyzer<'a> {
                     follow,
                 }
             }
-            LoopKind::While { negated } => Region::WhileLoop {
-                header,
-                negated,
-                body: Box::new(body),
-                follow,
-            },
+            LoopKind::While { negated } => {
+                let els = match shape.else_start {
+                    Some(start) => flatten(self.build_region(start, follow, frames, depth + 1)?),
+                    None => Vec::new(),
+                };
+                Region::WhileLoop {
+                    header,
+                    negated,
+                    body: Box::new(body),
+                    els,
+                    follow,
+                }
+            }
             LoopKind::Infinite => Region::InfLoop {
                 header,
                 body: Box::new(body),
@@ -883,8 +951,13 @@ impl<'a> Analyzer<'a> {
                 }
                 Some(())
             }
-            Region::WhileLoop { header, negated, body, follow } => {
-                let out = cont;
+            Region::WhileLoop { header, negated, body, els, follow } => {
+                let after = cont;
+                let exit_dest = if els.is_empty() {
+                    after
+                } else {
+                    self.entry_dest(els, after, frames)?
+                };
                 let body_dest = {
                     frames.push(Frame { header: *header, follow: *follow });
                     let d = self.entry_dest(std::slice::from_ref(body.as_ref()), Dest::Block(*header), frames);
@@ -892,9 +965,9 @@ impl<'a> Analyzer<'a> {
                     d?
                 };
                 let edges = if *negated {
-                    vec![(Edge::True, out), (Edge::False, body_dest)]
+                    vec![(Edge::True, exit_dest), (Edge::False, body_dest)]
                 } else {
-                    vec![(Edge::True, body_dest), (Edge::False, out)]
+                    vec![(Edge::True, body_dest), (Edge::False, exit_dest)]
                 };
                 if derived.insert(*header, edges).is_some() {
                     return None;
@@ -902,6 +975,14 @@ impl<'a> Analyzer<'a> {
                 frames.push(Frame { header: *header, follow: *follow });
                 self.simulate(body, Dest::Block(*header), frames, derived)?;
                 frames.pop();
+                for (i, item) in els.iter().enumerate() {
+                    let next = if i + 1 < els.len() {
+                        self.entry_dest(&els[i + 1..], after, frames)?
+                    } else {
+                        after
+                    };
+                    self.simulate(item, next, frames, derived)?;
+                }
                 Some(())
             }
             Region::InfLoop { header, body, follow } => {
@@ -1024,13 +1105,18 @@ impl<'a> Analyzer<'a> {
                     out.push(Stmt::ForElse { target, iter, body, els: e });
                 }
             }
-            Region::WhileLoop { header, negated, body, .. } => {
+            Region::WhileLoop { header, negated, body, els, .. } => {
                 let cond = self.cond_of(*header);
-                out.push(Stmt::While {
-                    cond,
-                    negated: *negated,
-                    body: self.lower(body),
-                });
+                let body = self.lower(body);
+                if els.is_empty() {
+                    out.push(Stmt::While { cond, negated: *negated, body });
+                } else {
+                    let mut e = Vec::new();
+                    for item in els {
+                        self.lower_into(item, &mut e);
+                    }
+                    out.push(Stmt::WhileElse { cond, negated: *negated, body, els: e });
+                }
             }
             Region::InfLoop { body, .. } => {
                 out.push(Stmt::Loop { body: self.lower(body) });
@@ -1155,6 +1241,15 @@ fn natural_loop(
         }
     }
     body
+}
+
+/// Resolves a terminator offset to a [`Dest`] using only the CFG (usable before the
+/// [`Analyzer`] exists).
+fn dest_of(cfg: &Cfg, offset: super::expr::Offset) -> Dest {
+    match cfg.by_offset.get(&offset) {
+        Some(&b) => Dest::Block(b),
+        None => Dest::Exit,
+    }
 }
 
 fn edge_key(e: Edge) -> u8 {
@@ -1357,5 +1452,37 @@ mod tests {
         };
         assert_eq!(handlers.len(), 1, "expected one except handler");
         assert!(matches!(body.last(), Some(Stmt::Return(_))), "tail return after try");
+    }
+
+    /// `while c: if d: break; ... else: els` -- a `break` skips the else clause, so the
+    /// else is distinct from after-loop code (without the break the two are equivalent).
+    #[test]
+    fn while_else_with_break() {
+        use crate::ir::expr::ConstId;
+        let mut arena = ExprArena::new();
+        let cond = arena.alloc(Expr::Const(ConstId(0)));
+        let d = arena.alloc(Expr::Const(ConstId(1)));
+        let else_v = arena.alloc(Expr::Const(ConstId(2)));
+        let ret = arena.alloc(Expr::Const(ConstId(3)));
+        // B0 header: if c -> B1 (body) else B3 (else); B1: if d -> B2 (break) else B0
+        // (continue); B2: break -> B4; B3 else -> B4; B4 return.
+        let cfg = cfg_of(
+            vec![
+                (vec![], Terminator::CondBranch { cond, if_true: off(1), if_false: off(3) }),
+                (vec![], Terminator::CondBranch { cond: d, if_true: off(2), if_false: off(0) }),
+                (vec![], Terminator::Jump(off(4))),
+                (vec![Stmt::Expr(else_v)], Terminator::Fallthrough(off(4))),
+                (vec![], Terminator::Return(Some(ret))),
+            ],
+            arena,
+        );
+        let body = structure(&cfg).expect("while/else+break should structure and verify");
+        let Some(Stmt::WhileElse { body: wbody, els, .. }) =
+            body.iter().find(|s| matches!(s, Stmt::WhileElse { .. }))
+        else {
+            panic!("expected a WhileElse, got: {:?}", body);
+        };
+        assert!(!els.is_empty(), "else clause should be recovered");
+        assert_eq!(count_breaks(wbody), 1, "break should be inside the while body");
     }
 }

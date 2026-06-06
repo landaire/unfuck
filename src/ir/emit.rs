@@ -521,6 +521,7 @@ impl<'a> Emitter<'a> {
             stmt,
             Stmt::If { .. }
                 | Stmt::While { .. }
+                | Stmt::WhileElse { .. }
                 | Stmt::Loop { .. }
                 | Stmt::For { .. }
                 | Stmt::ForElse { .. }
@@ -637,6 +638,19 @@ impl<'a> Emitter<'a> {
                 };
                 self.line(&rendered);
                 self.block(body);
+            }
+            Stmt::WhileElse { cond, negated, body, els } => {
+                let rendered = if *negated {
+                    format!("while not {}:", self.expr(*cond, prec::UNARY))
+                } else {
+                    format!("while {}:", self.expr(*cond, 0))
+                };
+                self.line(&rendered);
+                self.block(body);
+                if !els.is_empty() {
+                    self.line("else:");
+                    self.block(els);
+                }
             }
             Stmt::Loop { body } => {
                 self.line("while True:");
@@ -1299,6 +1313,9 @@ fn contains_return(stmts: &[Stmt]) -> bool {
         | Stmt::Loop { body }
         | Stmt::For { body, .. }
         | Stmt::With { body, .. } => contains_return(body),
+        Stmt::ForElse { body, els, .. } | Stmt::WhileElse { body, els, .. } => {
+            contains_return(body) || contains_return(els)
+        }
         Stmt::Try { body, handlers } => {
             contains_return(body) || handlers.iter().any(|h| contains_return(&h.body))
         }

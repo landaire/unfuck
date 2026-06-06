@@ -338,6 +338,14 @@ pub enum Stmt {
         negated: bool,
         body: Vec<Stmt>,
     },
+    /// `while cond: body else: els`. The `else` clause runs only when the loop completes
+    /// without `break` (the exit arm runs it before the real follow that `break` skips to).
+    WhileElse {
+        cond: ValueId,
+        negated: bool,
+        body: Vec<Stmt>,
+        els: Vec<Stmt>,
+    },
     /// `while True:` -- an unconditional-header loop (the bytecode has no condition
     /// test at the header, only a back edge), exited only by `break`/`return`/`raise`.
     Loop {

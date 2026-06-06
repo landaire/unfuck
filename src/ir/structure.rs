@@ -78,7 +78,7 @@ pub(crate) fn cleanup(stmts: &mut Vec<Stmt>) {
                 cleanup(body);
                 strip_tail_continue(body);
             }
-            Stmt::ForElse { body, els, .. } => {
+            Stmt::ForElse { body, els, .. } | Stmt::WhileElse { body, els, .. } => {
                 cleanup(body);
                 strip_tail_continue(body);
                 cleanup(els);
@@ -1063,7 +1063,7 @@ fn stmt_blocks_mut(stmt: &mut Stmt) -> Vec<&mut Vec<Stmt>> {
         | Stmt::Loop { body }
         | Stmt::For { body, .. }
         | Stmt::With { body, .. } => vec![body],
-        Stmt::ForElse { body, els, .. } => vec![body, els],
+        Stmt::ForElse { body, els, .. } | Stmt::WhileElse { body, els, .. } => vec![body, els],
         Stmt::Try { body, handlers } => {
             let mut blocks = vec![body];
             blocks.extend(handlers.iter_mut().map(|handler| &mut handler.body));
