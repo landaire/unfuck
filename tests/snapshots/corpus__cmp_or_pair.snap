@@ -1,0 +1,6 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+---
+def cmp_or_pair(x, t, a, b):
+    return x == t and a or x != t and b

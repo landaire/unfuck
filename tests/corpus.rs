@@ -107,6 +107,8 @@ fn cases() {
         "asserts_plain",
         "asserts_message",
         "asserts_midbody",
+        "cmp_or_pair",
+        "disjoint_predicate",
     ] {
         insta::assert_snapshot!(name, decompile(fixture, name));
     }

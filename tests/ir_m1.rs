@@ -1333,7 +1333,8 @@ fn cross_block_boolean_return() {
     // def f(a, b, c): return (a or b) and not c
     // The boolean is compiled to cross-block short-circuit control flow: a's
     // POP_JUMP_IF_TRUE and b's JUMP_IF_FALSE_OR_POP. recover_returned_bool folds it
-    // back (as a faithful, gate-verified ternary translation).
+    // back, factoring the shared `not c` tail of both arms into an `and`/`or` chain
+    // (a faithful, gate-verified boolean) rather than a ternary that duplicates it.
     let code = Builder::new("f", 3, &["a", "b", "c"], &[], vec![Obj::None])
         .arg(Standard::LOAD_FAST, 0)
         .jump(Standard::POP_JUMP_IF_TRUE, "notc")
@@ -1348,7 +1349,7 @@ fn cross_block_boolean_return() {
 
     assert_eq!(
         decompile(code),
-        "def f(a, b, c):\n    return not c if a else b and not c\n"
+        "def f(a, b, c):\n    return (a or b) and not c\n"
     );
 }
 
@@ -1438,7 +1439,9 @@ fn straightline_midexpression_boolean() {
     // The ternary's then-arm is `a or 0` whose `or` short-circuits to the merge, and
     // the else-arm shares that `0` -- a POP_JUMP split with no JUMP_FORWARD that the
     // block path cannot rejoin. The straight-line fallback folds it (verified) after
-    // the normal path fails, then the assignment and return fold normally.
+    // the normal path fails, then the assignment and return fold normally. The shared
+    // `0` tail factors out, recovering the equivalent `c and a or 0` (the same bytecode
+    // a ternary compiles to) rather than duplicating it.
     let code = Builder::new("f", 2, &["c", "a", "x"], &[], vec![Obj::None, long(0)])
         .arg(Standard::LOAD_FAST, 0)
         .jump(Standard::POP_JUMP_IF_FALSE, "elseb")
@@ -1454,7 +1457,7 @@ fn straightline_midexpression_boolean() {
 
     assert_eq!(
         decompile(code),
-        "def f(c, a):\n    x = a or 0 if c else 0\n    return x\n"
+        "def f(c, a):\n    x = c and a or 0\n    return x\n"
     );
 }
 
@@ -1509,7 +1512,7 @@ fn shared_else_boolean_in_statement() {
 
     assert_eq!(
         decompile(code),
-        "def f(c, d, a, b):\n    if c:\n        g(a or b if d else b)\n\n    return None\n",
+        "def f(c, d, a, b):\n    if c:\n        g(d and a or b)\n\n    return None\n",
     );
 }
 
@@ -1537,7 +1540,7 @@ fn if_branch_returns_shared_else_boolean() {
 
     assert_eq!(
         decompile(code),
-        "def f(c, z, x, y):\n    if c:\n        return x or y if z else y\n\n    return 0\n",
+        "def f(c, z, x, y):\n    if c:\n        return z and x or y\n\n    return 0\n",
     );
 }
 

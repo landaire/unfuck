@@ -387,3 +387,11 @@ def asserts_midbody(x):
     assert a > 0
     b = a * 2
     return b
+
+
+def cmp_or_pair(x, t, a, b):
+    return x == t and a or x != t and b
+
+
+def disjoint_predicate(e, sid, tid, tt):
+    return isinstance(e, int) and e.alive and (e.id != sid or tt & 1) and (e.team == tid and tt & 2 or e.team != tid and tt & 4) or isinstance(e, str) and e.alive and (e.team == tid and tt & 8 or e.team != tid and tt & 16)

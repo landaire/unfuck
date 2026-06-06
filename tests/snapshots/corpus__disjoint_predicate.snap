@@ -1,0 +1,6 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+---
+def disjoint_predicate(e, sid, tid, tt):
+    return isinstance(e, int) and e.alive and (e.id != sid or tt & 1) and (e.team == tid and tt & 2 or e.team != tid and tt & 4) or isinstance(e, str) and e.alive and (e.team == tid and tt & 8 or e.team != tid and tt & 16)

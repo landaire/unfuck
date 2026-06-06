@@ -1090,10 +1090,17 @@ impl Unstacker {
                 self.step(&instrs[j].instr, instrs[j].offset).ok()?;
                 j += 1;
             }
-            let value = self.pop_value().ok()?;
+            let raw = self.pop_value().ok()?;
             if !self.stack_is_empty() {
                 return None; // the leaf left more than one value: not this shape
             }
+            // Canonicalise structurally-identical leaves to one shared value. The same
+            // condition compiled into two mutually-exclusive branches (e.g. `e.alive`
+            // appears in both an `isinstance(e, A)` and an `isinstance(e, B)` arm) lowers
+            // to distinct arena nodes; collapsing them keeps the verified leaf count (the
+            // truth-table gate enumerates 2^leaves) from overflowing its cap on wide
+            // disjunctions, and re-uses one node so the recovered source is unchanged.
+            let value = canonical_leaf(&self.arena, &leaf_order, raw);
             leaf_index.entry(value).or_insert_with(|| {
                 leaf_order.push(value);
                 leaf_order.len() - 1
@@ -1350,9 +1357,7 @@ impl Unstacker {
                         } else {
                             (e, t)
                         };
-                        let id = self.arena.alloc(Expr::Ternary { cond, then, otherwise });
-                        structure.insert(id);
-                        id
+                        self.build_cond(cond, then, otherwise, structure)
                     }
                     Mnemonic::JUMP_IF_TRUE_OR_POP | Mnemonic::JUMP_IF_FALSE_OR_POP => {
                         if target != merge {
@@ -1374,6 +1379,127 @@ impl Unstacker {
         };
         memo.insert(start, value);
         Some(value)
+    }
+
+    /// Builds `cond ? then : otherwise` for a returned-boolean region, folding it into
+    /// `and`/`or` when the two arms share a common short-circuit tail so the recovered
+    /// source is the idiomatic boolean rather than a ternary that duplicates the shared
+    /// sub-expression (which, over a wide disjunction, blows up exponentially). The
+    /// folds are short-circuit-order-preserving identities, and every result is still
+    /// checked by the caller's truth-table gate, so a missed or wrong fold can only fall
+    /// back to the (verified) ternary, never emit an unfaithful boolean.
+    fn build_cond(
+        &mut self,
+        cond: ValueId,
+        then: ValueId,
+        otherwise: ValueId,
+        structure: &mut HashSet<ValueId>,
+    ) -> ValueId {
+        if let Some(folded) = self.factor_suffix(cond, then, otherwise, BoolKind::Or, structure) {
+            return folded;
+        }
+        if let Some(folded) = self.factor_suffix(cond, then, otherwise, BoolKind::And, structure) {
+            return folded;
+        }
+        let id = self.arena.alloc(Expr::Ternary { cond, then, otherwise });
+        structure.insert(id);
+        id
+    }
+
+    /// Attempts to fold `cond ? then : otherwise` by factoring the longest common
+    /// `kind`-chain suffix `S` shared by both arms. With `kind = Or` and arms
+    /// `then = P.. or S`, `otherwise = Q.. or S`:
+    ///   - `Q` empty (`otherwise == S`): `(cond and P) or S`
+    ///   - both non-empty: `(cond ? P : Q) or S` (the prefix ternary recurses)
+    /// and the dual for `kind = And`:
+    ///   - `P` empty (`then == S`): `(cond or Q) and S`
+    ///   - both non-empty: `(cond ? P : Q) and S`
+    /// The two remaining empty-prefix cases need a negated `cond` (`not cond and ...`),
+    /// which the leaf-index truth-table model cannot represent, so they are left to the
+    /// ternary fallback. Returns `None` when there is no shared suffix.
+    fn factor_suffix(
+        &mut self,
+        cond: ValueId,
+        then: ValueId,
+        otherwise: ValueId,
+        kind: BoolKind,
+        structure: &mut HashSet<ValueId>,
+    ) -> Option<ValueId> {
+        let t_items = self.as_chain(then, kind);
+        let e_items = self.as_chain(otherwise, kind);
+        let mut s = 0;
+        while s < t_items.len()
+            && s < e_items.len()
+            && struct_eq(&self.arena, t_items[t_items.len() - 1 - s], e_items[e_items.len() - 1 - s])
+        {
+            s += 1;
+        }
+        if s == 0 {
+            return None;
+        }
+        let p = &t_items[..t_items.len() - s];
+        let q = &e_items[..e_items.len() - s];
+        let suffix = e_items[e_items.len() - s..].to_vec();
+        let inner = match (p.is_empty(), q.is_empty()) {
+            (true, true) => return None, // arms identical: keep the (verified) ternary
+            (false, true) => match kind {
+                // `cond ? (P or S) : S` == `(cond and P) or S`
+                BoolKind::Or => {
+                    let pe = self.chain_expr(p, kind, structure);
+                    let n = self.combine_bool(BoolKind::And, cond, pe);
+                    structure.insert(n);
+                    n
+                }
+                BoolKind::And => return None, // `(not cond or P) and S`: needs `not`
+            },
+            (true, false) => match kind {
+                BoolKind::Or => return None, // `(not cond and Q) or S`: needs `not`
+                // `cond ? S : (Q and S)` == `(cond or Q) and S`
+                BoolKind::And => {
+                    let qe = self.chain_expr(q, kind, structure);
+                    let n = self.combine_bool(BoolKind::Or, cond, qe);
+                    structure.insert(n);
+                    n
+                }
+            },
+            (false, false) => {
+                let pe = self.chain_expr(p, kind, structure);
+                let qe = self.chain_expr(q, kind, structure);
+                self.build_cond(cond, pe, qe, structure)
+            }
+        };
+        let mut result = inner;
+        for &item in &suffix {
+            result = self.combine_bool(kind, result, item);
+            structure.insert(result);
+        }
+        Some(result)
+    }
+
+    /// The operands of `value` when it is a `BoolOp` of `kind`, else `value` as a
+    /// one-element chain. Used to factor a shared suffix in [`Self::factor_suffix`].
+    fn as_chain(&self, value: ValueId, kind: BoolKind) -> Vec<ValueId> {
+        match self.arena.get(value) {
+            Expr::BoolOp(k, items) if *k == kind => items.clone(),
+            _ => vec![value],
+        }
+    }
+
+    /// Combines `items` into one `kind` chain (a single item is returned as-is),
+    /// registering each new node as structure for the truth-table gate.
+    fn chain_expr(
+        &mut self,
+        items: &[ValueId],
+        kind: BoolKind,
+        structure: &mut HashSet<ValueId>,
+    ) -> ValueId {
+        let mut iter = items.iter();
+        let mut acc = *iter.next().expect("chain_expr on empty items");
+        for &item in iter {
+            acc = self.combine_bool(kind, acc, item);
+            structure.insert(acc);
+        }
+        acc
     }
 
     /// Evaluates the reconstructed expression under a leaf-truthiness assignment,
@@ -2021,6 +2147,66 @@ fn is_bool_jump(m: Mnemonic) -> bool {
             | Mnemonic::JUMP_IF_TRUE_OR_POP
             | Mnemonic::JUMP_IF_FALSE_OR_POP
     )
+}
+
+/// Returns a value structurally equal to `raw` already present in `leaves`, or `raw`
+/// itself when none matches. Lets the returned-boolean reconstruction treat a repeated
+/// condition -- the same expression compiled into two mutually-exclusive branches -- as
+/// one leaf, keeping the truth-table gate's `2^leaves` enumeration under its cap.
+fn canonical_leaf(arena: &ExprArena, leaves: &[ValueId], raw: ValueId) -> ValueId {
+    leaves.iter().copied().find(|&c| struct_eq(arena, c, raw)).unwrap_or(raw)
+}
+
+/// Conservative structural equality over two arena values: equal variant and equal
+/// operands, recursing through child `ValueId`s. Only the pure-expression variants that
+/// can form a boolean leaf condition are compared; anything else (or a structural
+/// mismatch) is unequal, so unrelated leaves are never merged.
+fn struct_eq(arena: &ExprArena, a: ValueId, b: ValueId) -> bool {
+    if a == b {
+        return true;
+    }
+    use Expr::*;
+    match (arena.get(a), arena.get(b)) {
+        (Const(x), Const(y)) => x == y,
+        (Local(x), Local(y)) => x == y,
+        (Deref(x), Deref(y)) => x == y,
+        (Global(x), Global(y)) => x == y,
+        (Name(x), Name(y)) => x == y,
+        (Attr(v1, n1), Attr(v2, n2)) => n1 == n2 && struct_eq(arena, *v1, *v2),
+        (Subscript(v1, k1), Subscript(v2, k2)) => {
+            struct_eq(arena, *v1, *v2) && struct_eq(arena, *k1, *k2)
+        }
+        (BinOp(o1, l1, r1), BinOp(o2, l2, r2)) => {
+            o1 == o2 && struct_eq(arena, *l1, *l2) && struct_eq(arena, *r1, *r2)
+        }
+        (Unary(o1, v1), Unary(o2, v2)) => o1 == o2 && struct_eq(arena, *v1, *v2),
+        (Compare(o1, l1, r1), Compare(o2, l2, r2)) => {
+            o1 == o2 && struct_eq(arena, *l1, *l2) && struct_eq(arena, *r1, *r2)
+        }
+        (
+            Call { func: f1, args: a1, kwargs: k1, star: s1, kwstar: w1 },
+            Call { func: f2, args: a2, kwargs: k2, star: s2, kwstar: w2 },
+        ) => {
+            struct_eq(arena, *f1, *f2)
+                && a1.len() == a2.len()
+                && a1.iter().zip(a2).all(|(x, y)| struct_eq(arena, *x, *y))
+                && k1.len() == k2.len()
+                && k1.iter().zip(k2).all(|((kn1, kv1), (kn2, kv2))| {
+                    struct_eq(arena, *kn1, *kn2) && struct_eq(arena, *kv1, *kv2)
+                })
+                && opt_struct_eq(arena, *s1, *s2)
+                && opt_struct_eq(arena, *w1, *w2)
+        }
+        _ => false,
+    }
+}
+
+fn opt_struct_eq(arena: &ExprArena, a: Option<ValueId>, b: Option<ValueId>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => struct_eq(arena, x, y),
+        _ => false,
+    }
 }
 
 /// Whether a mnemonic transfers control or manages a block, so it cannot appear in a
