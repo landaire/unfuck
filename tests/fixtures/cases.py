@@ -364,6 +364,10 @@ def list_comp_tuple(items):
     return [a + func(c) for a, b, c in items if b]
 
 
+def list_comp_nested_unpack(pairs):
+    return [a + b + c for a, (b, c) in pairs]
+
+
 def not_operand(a, b, c):
     return a % (not b), not a == b, -(a + c), not (b and c)
 

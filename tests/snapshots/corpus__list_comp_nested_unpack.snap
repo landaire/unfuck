@@ -1,0 +1,6 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+---
+def list_comp_nested_unpack(pairs):
+    return [a + b + c for a, (b, c) in pairs]

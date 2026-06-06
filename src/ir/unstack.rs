@@ -550,27 +550,14 @@ impl Unstacker {
             self.resolve_pending(item.offset)?;
             match item.instr.opcode.mnemonic() {
                 // A `for` clause: the iterable is on the stack (GET_ITER was a no-op),
-                // and the target (single store, or UNPACK_SEQUENCE plus one store per
-                // element) follows FOR_ITER.
+                // and the target (a single store, or an UNPACK_SEQUENCE whose elements are
+                // themselves targets -- so nested tuples `a, (b, c)` recurse) follows
+                // FOR_ITER.
                 Mnemonic::FOR_ITER => {
                     let loop_top = item.offset;
                     let iter = self.pop()?;
                     i += 1;
-                    let target = if mnemonic(i) == Some(Mnemonic::UNPACK_SEQUENCE) {
-                        let arity = region[i].instr.arg.ok_or(IrError::MissingOperand)? as usize;
-                        i += 1;
-                        let mut targets = Vec::with_capacity(arity);
-                        for _ in 0..arity {
-                            let store = region.get(i).ok_or(IrError::Decode)?;
-                            targets.push(comp_target(&store.instr)?);
-                            i += 1;
-                        }
-                        LValue::Tuple(targets)
-                    } else {
-                        let t = comp_target(&region.get(i).ok_or(IrError::Decode)?.instr)?;
-                        i += 1;
-                        t
-                    };
+                    let target = comp_target_at(region, &mut i)?;
                     clauses.push(ListClause::For { target, iter });
                     loop_tops.push(loop_top);
                     // A boolean filter `if a or b` guarding this loop short-circuits to
@@ -2214,6 +2201,27 @@ fn comp_target(instr: &Instruction<Standard>) -> Result<LValue, IrError> {
         Mnemonic::STORE_DEREF => LValue::Deref(DerefId(arg)),
         other => return Err(IrError::Unsupported(other)),
     })
+}
+
+/// Parses a comprehension `for` clause's target starting at `region[*i]`, advancing `*i`
+/// past every instruction it consumes. A bare store is a simple target; an
+/// `UNPACK_SEQUENCE` introduces a tuple target whose `arity` elements are each parsed the
+/// same way, so a nested target like `a, (b, c)` recovers as a nested [`LValue::Tuple`].
+fn comp_target_at(region: &[&OffsetInstr], i: &mut usize) -> Result<LValue, IrError> {
+    let item = region.get(*i).ok_or(IrError::Decode)?;
+    if item.instr.opcode.mnemonic() == Mnemonic::UNPACK_SEQUENCE {
+        let arity = item.instr.arg.ok_or(IrError::MissingOperand)? as usize;
+        *i += 1;
+        let mut targets = Vec::with_capacity(arity);
+        for _ in 0..arity {
+            targets.push(comp_target_at(region, i)?);
+        }
+        Ok(LValue::Tuple(targets))
+    } else {
+        let t = comp_target(&item.instr)?;
+        *i += 1;
+        Ok(t)
+    }
 }
 
 fn binary_op(mnemonic: Mnemonic) -> Option<BinOp> {
