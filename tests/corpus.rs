@@ -103,6 +103,9 @@ fn cases() {
         "run_exec",
         "print_to_file",
         "not_operand",
+        "asserts_plain",
+        "asserts_message",
+        "asserts_midbody",
     ] {
         insta::assert_snapshot!(name, decompile(fixture, name));
     }

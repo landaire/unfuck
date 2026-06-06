@@ -600,6 +600,14 @@ impl<'a> Emitter<'a> {
                     self.line(&format!("raise {}", rendered.join(", ")));
                 }
             }
+            Stmt::Assert { test, msg } => {
+                // `assert` binds its test at the precedence of a bare expression; a
+                // message, when present, is a second comma-separated expression.
+                match msg {
+                    Some(m) => self.line(&format!("assert {}, {}", self.expr(*test, 0), self.expr(*m, 0))),
+                    None => self.line(&format!("assert {}", self.expr(*test, 0))),
+                }
+            }
             Stmt::While { cond, negated, body } => {
                 let rendered = if *negated {
                     format!("while not {}:", self.expr(*cond, prec::UNARY))

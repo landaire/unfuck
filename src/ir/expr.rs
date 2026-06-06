@@ -308,6 +308,13 @@ pub enum Stmt {
     },
     /// `raise`, `raise exc`, `raise exc, value`, or `raise exc, value, tb`.
     Raise(Vec<ValueId>),
+    /// `assert test` or `assert test, msg`. Recovered from the `POP_JUMP_IF_TRUE
+    /// over a `raise AssertionError[, msg]`' shape the compiler emits for `assert`
+    /// (and for the indistinguishable `if not test: raise AssertionError`).
+    Assert {
+        test: ValueId,
+        msg: Option<ValueId>,
+    },
     /// A nested function definition: `def name(...): ...`, decompiled from the
     /// code constant `code` and bound to `target`.
     FunctionDef {

@@ -15,8 +15,9 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::Reversed;
 
 use super::cfg::{BlockId, Cfg, Terminator};
-use super::expr::{ExceptHandler, Stmt};
+use super::expr::{ExceptHandler, Expr, ExprArena, Stmt, ValueId};
 use super::IrError;
+use py27_marshal::Code;
 
 /// Guards against runaway recursion if the graph violates the reducible, well
 /// nested assumptions the structurer relies on. Kept well below the point a deep
@@ -1018,4 +1019,102 @@ fn predecessors(cfg: &Cfg) -> HashMap<BlockId, Vec<BlockId>> {
         }
     }
     preds
+}
+
+/// Whether `args` (the operands of a `raise`) reconstruct an `AssertionError`: the
+/// first operand is the bare `AssertionError` name (a global, or a class-scope name),
+/// with at most one trailing message operand. Returns `Some(message)` on a match (the
+/// message is `None` for a bare `assert`). A `raise AssertionError(...)` whose first
+/// operand is a *call* does not match -- only the `assert`-lowered bare-name form.
+fn assertion_raise(args: &[ValueId], arena: &ExprArena, code: &Code) -> Option<Option<ValueId>> {
+    let is_assertion_error = |id: ValueId| match arena.get(id) {
+        Expr::Global(name) | Expr::Name(name) => {
+            code.names.get(name.0 as usize).map(|n| n.to_string()).as_deref() == Some("AssertionError")
+        }
+        _ => false,
+    };
+    // A single raise operand: either the bare `AssertionError` (`assert test`) or the
+    // `AssertionError(msg)` call the compiler emits for `assert test, msg` -- a single
+    // positional argument, no keywords or splats.
+    let [only] = args else {
+        return None;
+    };
+    if is_assertion_error(*only) {
+        return Some(None);
+    }
+    if let Expr::Call { func, args: cargs, kwargs, star, kwstar } = arena.get(*only) {
+        if is_assertion_error(*func)
+            && kwargs.is_empty()
+            && star.is_none()
+            && kwstar.is_none()
+            && cargs.len() == 1
+        {
+            return Some(Some(cargs[0]));
+        }
+    }
+    None
+}
+
+/// The mutable statement-list blocks nested directly in `stmt`, for recursion.
+fn stmt_blocks_mut(stmt: &mut Stmt) -> Vec<&mut Vec<Stmt>> {
+    match stmt {
+        Stmt::If { then, els, .. } => vec![then, els],
+        Stmt::While { body, .. }
+        | Stmt::Loop { body }
+        | Stmt::For { body, .. }
+        | Stmt::With { body, .. } => vec![body],
+        Stmt::ForElse { body, els, .. } => vec![body, els],
+        Stmt::Try { body, handlers } => {
+            let mut blocks = vec![body];
+            blocks.extend(handlers.iter_mut().map(|handler| &mut handler.body));
+            blocks
+        }
+        Stmt::TryFinally { body, finalbody } => vec![body, finalbody],
+        _ => Vec::new(),
+    }
+}
+
+/// Folds the compiler's `assert` lowering back into [`Stmt::Assert`]. `assert test`
+/// (indistinguishable in bytecode from `if not test: raise AssertionError`) compiles to
+/// a branch that jumps over a `raise AssertionError[, msg]` when `test` holds. The
+/// structurer renders that branch one of two equivalent ways, both folded here:
+///   * else-arm form: `if test: <rest> else: raise AssertionError[, msg]`;
+///   * sibling form: `if test: <rest>` (where `<rest>` always leaves the block) followed
+///     by a sibling `raise AssertionError[, msg]`.
+/// Each becomes `assert test[, msg]` with `<rest>` spliced in after, which is the same
+/// control flow. Recurses into every nested block first so inner asserts fold too.
+pub(crate) fn recognize_asserts(body: &mut Vec<Stmt>, arena: &ExprArena, code: &Code) {
+    let mut items = std::mem::take(body).into_iter().peekable();
+    let mut out: Vec<Stmt> = Vec::new();
+    while let Some(mut stmt) = items.next() {
+        for block in stmt_blocks_mut(&mut stmt) {
+            recognize_asserts(block, arena, code);
+        }
+        if let Stmt::If { cond, mut then, els } = stmt {
+            // else-arm form: the else is exactly the assertion raise.
+            if let [Stmt::Raise(args)] = els.as_slice() {
+                if let Some(msg) = assertion_raise(args, arena, code) {
+                    out.push(Stmt::Assert { test: cond, msg });
+                    out.append(&mut then);
+                    continue;
+                }
+            }
+            // sibling form: empty else, the taken arm always leaves the block, and the
+            // next sibling is the assertion raise (so reaching it means `test` failed).
+            if els.is_empty() && then.last().is_some_and(terminates) {
+                if let Some(Stmt::Raise(args)) = items.peek() {
+                    if let Some(msg) = assertion_raise(args, arena, code) {
+                        out.push(Stmt::Assert { test: cond, msg });
+                        out.append(&mut then);
+                        items.next();
+                        continue;
+                    }
+                }
+            }
+            out.push(Stmt::If { cond, then, els });
+        } else {
+            out.push(stmt);
+        }
+    }
+    *body = out;
 }

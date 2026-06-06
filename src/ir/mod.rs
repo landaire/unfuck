@@ -168,7 +168,12 @@ impl DecodedFunction {
         // Fold opaque-predicate branches before structuring so the junk they guard
         // becomes unreachable and is never emitted.
         simplify::simplify(&mut cfg, &self.code);
-        let body = structure::structure(&cfg)?;
+        let mut body = structure::structure(&cfg)?;
+        // Fold the compiler's `assert` lowering (a branch over a `raise AssertionError`)
+        // back into `assert` statements. This both recovers the faithful construct and
+        // un-buries the implicit `return locals()` a class body's assert otherwise traps
+        // inside an `if` arm, which would make the class fail to recover as a body.
+        structure::recognize_asserts(&mut body, &cfg.arena, &self.code);
         Ok((cfg.arena, body))
     }
 }
@@ -430,6 +435,24 @@ impl StructuredFunction {
 /// caller never receives invalid or partial source.
 pub fn decompile_function(code: Arc<Code>) -> Result<String, IrError> {
     decompile_function_with_defaults(code, &[])
+}
+
+/// Whether `root` (a module's own body) recovers fully as a top-level module via the
+/// real whole-module path. True implies every nested object inlined without an
+/// `__unrecovered__` marker. Exposed for honest, artifact-faithful coverage tooling
+/// that must not mismeasure a module root by wrapping it in a `def` (illegal for
+/// `import *`/`from __future__`); see the `honest_stats` example.
+pub fn decompile_module_body_ok(root: Arc<Code>) -> bool {
+    decompile_module_body(root).is_ok()
+}
+
+/// Like [`decompile_module_body_ok`] but returns the failure reason as a string when
+/// the root does not recover as a whole module, for fallback-cause diagnostics. A root
+/// that fails during decode/structure reports that specific error (e.g. an underflow in
+/// the module body itself); a root that renders but inlines an unrecoverable nested
+/// object reports `Incomplete` ("partially recovered").
+pub fn decompile_module_body_err(root: Arc<Code>) -> Result<(), String> {
+    decompile_module_body(root).map(|_| ()).map_err(|e| format!("{}", e))
 }
 
 /// Collects `code` and every code object nested in its consts (functions, class

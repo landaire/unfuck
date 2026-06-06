@@ -1,0 +1,8 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def asserts_plain(x):
+    assert x
+    return x

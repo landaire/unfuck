@@ -366,3 +366,20 @@ def list_comp_tuple(items):
 
 def not_operand(a, b, c):
     return a % (not b), not a == b, -(a + c), not (b and c)
+
+
+def asserts_plain(x):
+    assert x
+    return x
+
+
+def asserts_message(x, y):
+    assert x < y, 'too big'
+    return x
+
+
+def asserts_midbody(x):
+    a = x + 1
+    assert a > 0
+    b = a * 2
+    return b

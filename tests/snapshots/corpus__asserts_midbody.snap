@@ -1,0 +1,10 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+snapshot_kind: text
+---
+def asserts_midbody(x):
+    a = x + 1
+    assert a > 0
+    b = a * 2
+    return b
