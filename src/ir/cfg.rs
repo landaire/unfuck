@@ -985,6 +985,9 @@ fn opaque_block_end(instrs: &[OffsetInstr], start: usize, code: &Code) -> Option
     // trailing junk loads displacing the real bases. The `BUILD_TUPLE` is real and must
     // stay; removing the junk above the real bases restores it as their builder.
     let mut class_bases = false;
+    // The index of a below-entry collection consumer (a `BUILD_*` that pops part of the junk
+    // plus values from below the block), recorded for the post-loop stack-validity gate.
+    let mut consumer_idx: Option<usize> = None;
     for (idx, item) in instrs.iter().enumerate().skip(start) {
         let mnemonic = item.instr.opcode.mnemonic();
         // Class-bases hijack: a `BUILD_TUPLE` immediately followed by the class-creation
@@ -1014,6 +1017,18 @@ fn opaque_block_end(instrs: &[OffsetInstr], start: usize, code: &Code) -> Option
             depth -= 1;
             end = idx + 1;
             dead_predicate = true;
+            break;
+        }
+        // An empty `BUILD_{TUPLE,LIST,SET}` (arg 0) pops nothing, so it cannot be grinding the
+        // junk temps -- it produces a fresh real value (`[]`, `()`, `set()`, e.g. a `name = []`).
+        // Stop before it so the block never swallows a real operand producer, which would leave
+        // the following consumer (a `STORE_*`) with nothing to consume.
+        if matches!(
+            mnemonic,
+            Mnemonic::BUILD_TUPLE | Mnemonic::BUILD_LIST | Mnemonic::BUILD_SET
+        ) && item.instr.arg == Some(0)
+        {
+            end = idx;
             break;
         }
         // `pops` is how many stack values the instruction consumes, or `None` if it is
@@ -1055,6 +1070,7 @@ fn opaque_block_end(instrs: &[OffsetInstr], start: usize, code: &Code) -> Option
             // with a value pushed before the block). A safe place to end.
             Some(_) => {
                 stopped_below_entry = true;
+                consumer_idx = Some(idx);
                 end = idx;
                 break;
             }
@@ -1115,6 +1131,23 @@ fn opaque_block_end(instrs: &[OffsetInstr], start: usize, code: &Code) -> Option
             return None;
         }
     }
+    // Stack-validity gate for a below-entry collection consumer. Such a consumer (a `BUILD_*`)
+    // pops some of the junk plus values from below the block. Removing the block is only safe
+    // if the consumer still has enough operands afterwards: junk that DISPLACED a real operand
+    // (the displaced value sits below, orphaned, and fills back in) is safe, but junk ADDED to
+    // a collection's bumped element count would underflow it. Decide via the real stack depth
+    // below the block entry -- computed only when the prefix is provably straight-line -- and
+    // bail (keep the block) when it cannot be established or the consumer would underflow. The
+    // instructions kept between the trimmed region end and the consumer are the trailing
+    // `LOAD_CONST`s, each restoring one real operand.
+    if let Some(cons) = consumer_idx {
+        let below = straightline_entry_depth(instrs, start)?;
+        let cons_pops = pure_value_pops(&instrs[cons].instr)?;
+        let trailing = (cons - end) as isize;
+        if below + trailing < cons_pops {
+            return None;
+        }
+    }
     // The temps it computes must be dead: if any is read outside the block, it is a
     // real variable and removing its stores would change behavior. Together with the
     // self-containment proof above, a block read by nothing outside itself is dead
@@ -1150,6 +1183,95 @@ fn pure_value_pops(instr: &Instruction<Standard>) -> Option<isize> {
         BUILD_TUPLE | BUILD_LIST | BUILD_SET => instr.arg.unwrap_or(0) as isize,
         _ => return None,
     })
+}
+
+/// The exact net stack effect of `instr`, or `None` for control flow and any opcode whose
+/// effect is not modelled precisely here. Unlike `pydis`'s `stack_adjustment_after`, this
+/// uses the correct collapsing effect for `BUILD_{TUPLE,LIST,SET}` (`1 - arg`), `BUILD_CLASS`
+/// (`-2`), and `MAKE_FUNCTION` (`-arg`), so a depth computed by summing it can be trusted.
+/// Returning `None` for everything uncertain keeps [`straightline_entry_depth`] sound.
+fn straightline_delta(instr: &Instruction<Standard>) -> Option<isize> {
+    use Mnemonic::*;
+    let arg = instr.arg.unwrap_or(0) as isize;
+    Some(match instr.opcode.mnemonic() {
+        NOP | STOP_CODE | ROT_TWO | ROT_THREE | ROT_FOUR => 0,
+        POP_TOP => -1,
+        DUP_TOP => 1,
+        DUP_TOPX => arg,
+        UNARY_POSITIVE | UNARY_NEGATIVE | UNARY_NOT | UNARY_CONVERT | UNARY_INVERT | GET_ITER => 0,
+        BINARY_POWER | BINARY_MULTIPLY | BINARY_DIVIDE | BINARY_FLOOR_DIVIDE | BINARY_TRUE_DIVIDE
+        | BINARY_MODULO | BINARY_ADD | BINARY_SUBTRACT | BINARY_SUBSC | BINARY_LSHIFT
+        | BINARY_RSHIFT | BINARY_AND | BINARY_XOR | BINARY_OR | INPLACE_POWER | INPLACE_MULTIPLY
+        | INPLACE_DIVIDE | INPLACE_FLOOR_DIVIDE | INPLACE_TRUE_DIVIDE | INPLACE_MODULO
+        | INPLACE_ADD | INPLACE_SUBTRACT | INPLACE_LSHIFT | INPLACE_RSHIFT | INPLACE_AND
+        | INPLACE_XOR | INPLACE_OR | COMPARE_OP => -1,
+        LOAD_CONST | LOAD_NAME | LOAD_GLOBAL | LOAD_FAST | LOAD_DEREF | LOAD_CLOSURE
+        | LOAD_LOCALS => 1,
+        LOAD_ATTR => 0,
+        STORE_NAME | STORE_FAST | STORE_GLOBAL | STORE_DEREF => -1,
+        STORE_ATTR => -2,
+        STORE_SUBSCR => -3,
+        STORE_MAP => -2,
+        DELETE_NAME | DELETE_FAST | DELETE_GLOBAL => 0,
+        DELETE_ATTR => -1,
+        DELETE_SUBSCR => -2,
+        BUILD_TUPLE | BUILD_LIST | BUILD_SET | BUILD_SLICE => 1 - arg,
+        BUILD_MAP => 1,
+        UNPACK_SEQUENCE => arg - 1,
+        IMPORT_NAME => -1,
+        IMPORT_FROM => 1,
+        IMPORT_STAR => -1,
+        BUILD_CLASS => -2,
+        MAKE_FUNCTION => -arg,
+        CALL_FUNCTION => {
+            let a = instr.arg.unwrap_or(0);
+            -((a & 0xff) as isize + ((a >> 8) & 0xff) as isize)
+        }
+        PRINT_ITEM => -1,
+        PRINT_NEWLINE => 0,
+        PRINT_ITEM_TO => -2,
+        PRINT_NEWLINE_TO => -1,
+        SLICE_0 => 0,
+        SLICE_1 => -1,
+        SLICE_2 => -2,
+        SLICE_3 => -3,
+        STORE_SLICE_0 => -1,
+        STORE_SLICE_1 => -2,
+        STORE_SLICE_2 => -3,
+        STORE_SLICE_3 => -4,
+        DELETE_SLICE_0 => -1,
+        DELETE_SLICE_1 => -2,
+        DELETE_SLICE_2 => -3,
+        DELETE_SLICE_3 => -4,
+        _ => return None,
+    })
+}
+
+/// The exact stack depth at instruction `start`, valid only when the prefix `[0, start)` is a
+/// single straight-line run reached purely by fall-through -- no control flow within it, and
+/// nothing branches into it. Returns `None` otherwise, so a caller relying on "how many real
+/// values sit below this point" stays sound on obfuscated input rather than trusting a guessed
+/// depth.
+fn straightline_entry_depth(instrs: &[OffsetInstr], start: usize) -> Option<isize> {
+    let lo = instrs.first()?.offset;
+    let hi = instrs.get(start)?.offset;
+    // Nothing may jump into the prefix: a join there could be reached with a different depth,
+    // so a single linear pass would not be authoritative.
+    for item in instrs {
+        if let Ok(target) = branch_target(item) {
+            if target >= lo && target < hi {
+                return None;
+            }
+        }
+    }
+    let mut depth = 0isize;
+    for item in &instrs[..start] {
+        depth += straightline_delta(&item.instr)?;
+        if depth < 0 {
+            return None;
+        }
+    }
+    Some(depth)
 }
 
 /// Whether `mnemonic` is a non-arithmetic opcode that may legitimately consume an

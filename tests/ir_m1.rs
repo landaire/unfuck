@@ -2201,6 +2201,87 @@ fn strips_opaque_predicate_before_class_bases() {
 }
 
 #[test]
+fn strips_opaque_predicate_feeding_a_tuple() {
+    // The obfuscator wedges a marker block whose set arithmetic leaves one junk value on the
+    // stack between a value tuple's operands and its `BUILD_TUPLE`, so the tuple grabs the junk
+    // and a real operand instead of the two real operands (the shape that buries a dict literal's
+    // `{k: (a, b)}` value, failing the following `STORE_MAP`). The consumer is an ordinary
+    // below-entry `BUILD_TUPLE`; with two real operands sitting below the block, the
+    // stack-validity gate confirms removing the junk leaves the tuple satisfiable. Stripping it
+    // restores `return (x, y)`.
+    let tuple = Obj::Tuple(Arc::new(RwLock::new(vec![
+        long(7),
+        long(19),
+        long(33),
+        long(64),
+        long(255),
+    ])));
+    let code = Builder::new("f", 0, &[], &["x", "y", "a", "b", "c", "d", "e"], vec![
+        Obj::None,
+        tuple,
+    ])
+    .arg(Standard::LOAD_NAME, 0) // x  (real operand, sits below the junk)
+    .arg(Standard::LOAD_NAME, 1) // y  (real operand)
+    .arg(Standard::LOAD_CONST, 1) // marker tuple
+    .arg(Standard::UNPACK_SEQUENCE, 5)
+    .arg(Standard::STORE_NAME, 2) // a
+    .arg(Standard::STORE_NAME, 3) // b
+    .arg(Standard::STORE_NAME, 4) // c
+    .arg(Standard::STORE_NAME, 5) // d
+    .arg(Standard::STORE_NAME, 6) // e
+    .arg(Standard::LOAD_NAME, 2)
+    .arg(Standard::LOAD_NAME, 3)
+    .arg(Standard::BUILD_SET, 2) // {a, b}
+    .arg(Standard::LOAD_NAME, 4)
+    .arg(Standard::LOAD_NAME, 5)
+    .arg(Standard::LOAD_NAME, 6)
+    .arg(Standard::BUILD_SET, 3) // {c, d, e}
+    .op(Standard::BINARY_AND) // leaves one junk set on the stack
+    .arg(Standard::BUILD_TUPLE, 2) // below-entry consumer: combines junk with `y`, burying `x`
+    .op(Standard::RETURN_VALUE)
+    .finish();
+
+    assert_eq!(decompile(code), "def f():\n    return (x, y)\n");
+}
+
+#[test]
+fn opaque_junk_feeding_empty_build_is_not_stripped() {
+    // Regression guard: the junk leaves one value, then a real `BUILD_LIST 0` (an empty list,
+    // consuming nothing) whose result a `STORE_GLOBAL` stores -- the real `g = []`. The empty
+    // build must NOT be swallowed into the junk block (doing so would NOP the real list builder
+    // and leave `STORE_GLOBAL` underflowing). The block is left intact and the assignment
+    // survives. `g` is global (a module-body shape), so this runs as a module.
+    let tuple = Obj::Tuple(Arc::new(RwLock::new(vec![
+        long(9),
+        long(17),
+        long(40),
+        long(88),
+        long(255),
+    ])));
+    let code = Builder::new("<module>", 0, &[], &["g", "a", "b", "c", "d", "e"], vec![
+        Obj::None,
+        tuple,
+    ])
+    .arg(Standard::LOAD_CONST, 1) // marker tuple
+    .arg(Standard::UNPACK_SEQUENCE, 5)
+    .arg(Standard::STORE_NAME, 1) // a
+    .arg(Standard::STORE_NAME, 2) // b
+    .arg(Standard::STORE_NAME, 3) // c
+    .arg(Standard::STORE_NAME, 4) // d
+    .arg(Standard::STORE_NAME, 5) // e
+    .arg(Standard::LOAD_NAME, 1) // junk temp, leaves one value
+    .arg(Standard::BUILD_LIST, 0) // real empty list -- must survive
+    .arg(Standard::STORE_GLOBAL, 0) // g = []
+    .arg(Standard::LOAD_CONST, 0) // None
+    .op(Standard::RETURN_VALUE)
+    .finish();
+
+    let out = decompile(code);
+    assert!(out.contains("g = []"), "real `g = []` must survive, got:\n{}", out);
+    assert!(!out.contains("__unrecovered__"), "must not fail/underflow, got:\n{}", out);
+}
+
+#[test]
 fn ternary_arm_with_chained_comparison() {
     // def f(c, p, q, r): return 1 if c else 2 if p <= q < r else 3
     // The outer ternary's else arm holds a nested ternary whose condition is a chained

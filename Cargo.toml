@@ -53,4 +53,4 @@ reduced_functionality = []
 
 [patch.crates-io]
 #py27-marshal = { path = "../py-marshal" }
-#pydis = { path = "../pydis" }
+pydis = { path = "../pydis" }
