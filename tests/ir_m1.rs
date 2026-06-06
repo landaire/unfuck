@@ -2864,3 +2864,44 @@ fn mergeless_typed_except() {
         "def f():\n    try:\n        raise g()\n    except Exception as e:\n        log(e)\n        return None\n"
     );
 }
+
+#[test]
+fn loop_body_is_try_except() {
+    // `while True: try: g() except E: return` -- a try/except is the whole loop body, so
+    // the loop header carries a Try terminator whose merge is the header (the protected
+    // body falls back to the loop top). The structurer must compose the loop with the try
+    // rather than rejecting the Try-at-header shape.
+    let code = Builder::new("f", 0, &[], &["g", "E"], vec![Obj::None])
+        .jump(Standard::SETUP_LOOP, "end")
+        .label("top")
+        .jump(Standard::SETUP_EXCEPT, "handler")
+        .arg(Standard::LOAD_GLOBAL, 0)
+        .arg(Standard::CALL_FUNCTION, 0)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_BLOCK)
+        .jump(Standard::JUMP_ABSOLUTE, "top")
+        .label("handler")
+        .op(Standard::DUP_TOP)
+        .arg(Standard::LOAD_GLOBAL, 1)
+        .arg(Standard::COMPARE_OP, 10)
+        .jump(Standard::POP_JUMP_IF_FALSE, "reraise")
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .op(Standard::POP_TOP)
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .label("reraise")
+        .op(Standard::END_FINALLY)
+        .label("end")
+        .arg(Standard::LOAD_CONST, 0)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    // The trailing `return None` is the SETUP_LOOP exit; this `while True:` never breaks
+    // so it is unreachable, but is still emitted (recompilable, faithful to the bytecode).
+    assert_eq!(
+        decompile(code),
+        "def f():\n    while True:\n        try:\n            g()\n        except E:\n            \
+         return None\n\n    return None\n"
+    );
+}

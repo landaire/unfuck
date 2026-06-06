@@ -678,9 +678,35 @@ impl Structurer<'_> {
             body.push(Stmt::Break);
             return Ok(body);
         }
+        // A `try`/`except` at the loop header (`while True: try: ... except E: break`,
+        // the iterate-until-StopIteration idiom): the loop body is that try, whose merge
+        // is the loop header (the protected body falls back to the loop top each
+        // iteration) and whose handler typically breaks out. Structure it like region()'s
+        // Try arm, bounding the body and every handler at that merge.
+        if let Terminator::Try { body: try_off, handlers, end } =
+            self.cfg.block(header).terminator.clone()
+        {
+            // A merge-less try at a loop header (no normal exit) is not handled here.
+            let Some(end) = end else {
+                return Err(IrError::Unstructurable);
+            };
+            let follow = Point::Block(self.cfg.target(end)?);
+            let try_body = self.region(self.cfg.target(try_off)?, follow, depth + 1)?;
+            let mut arms = Vec::with_capacity(handlers.len());
+            for handler in &handlers {
+                let arm_body = self.region(self.cfg.target(handler.body)?, follow, depth + 1)?;
+                arms.push(ExceptHandler {
+                    exc_type: handler.exc_type,
+                    name: handler.name.clone(),
+                    body: arm_body,
+                });
+            }
+            body.push(Stmt::Try { body: try_body, handlers: arms });
+            return Ok(body);
+        }
         // The header's terminator leads back into the loop. Only a plain edge is the
         // `while True:` shape; a conditional or for header is handled above, and a
-        // try/with/finally at the header is a shape this does not yet recover.
+        // with/finally at the header is a shape this does not yet recover.
         let cont = match &self.cfg.block(header).terminator {
             Terminator::Jump(target) | Terminator::Fallthrough(target) => self.cfg.target(*target)?,
             _ => return Err(IrError::Unstructurable),
