@@ -30,7 +30,7 @@ use petgraph::algo::dominators::{simple_fast, Dominators};
 use petgraph::graph::{DiGraph, NodeIndex};
 
 use super::cfg::{BlockId, Cfg, Terminator};
-use super::expr::{Stmt, ValueId};
+use super::expr::{ExceptHandler, LValue, Stmt, ValueId};
 
 /// A control-flow destination: a block, or the function exit.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -48,6 +48,10 @@ enum Edge {
     False,
     ForBody,
     ForExit,
+    /// The `try` block's edge to its protected body.
+    TryBody,
+    /// The `try` block's edge to one `except` handler.
+    TryHandler,
 }
 
 /// A recovered region of the CFG, tagged with the blocks it covers so the result can be
@@ -85,9 +89,26 @@ enum Region {
         body: Box<Region>,
         follow: Option<BlockId>,
     },
+    /// A `try`/`except` region headed by a `SETUP_EXCEPT` block. The body and every
+    /// handler converge at `follow` (the merge); `follow` is `None` for a merge-less try
+    /// (the body always exits, so a handler that falls through continues to the enclosing
+    /// region's stop).
+    Try {
+        header: BlockId,
+        body: Box<Region>,
+        handlers: Vec<TryHandler>,
+        follow: Option<BlockId>,
+    },
     Break,
     Continue,
     Empty,
+}
+
+/// One recovered `except` clause within a [`Region::Try`].
+struct TryHandler {
+    exc_type: Option<ValueId>,
+    name: Option<LValue>,
+    body: Region,
 }
 
 /// The kind and resolved shape of a natural loop.
@@ -157,7 +178,9 @@ impl<'a> Analyzer<'a> {
                 | Terminator::Return(_)
                 | Terminator::Raise(_)
                 | Terminator::Break { .. }
-                | Terminator::ForIter { .. } => {}
+                | Terminator::ForIter { .. }
+                | Terminator::Try { .. } => {}
+                // `With`/`Finally` are not yet handled by this fallback.
                 _ => return None,
             }
         }
@@ -181,13 +204,15 @@ impl<'a> Analyzer<'a> {
         let entry_node = nodes[cfg.entry.0 as usize];
         let dom = simple_fast(&graph, entry_node);
 
-        // Post-dominators over normal edges (a Try has none here, so successors == normal).
+        // Post-dominators over NORMAL edges only, so a try's merge post-dominates the try
+        // even when a handler returns/raises (an exceptional edge would route to the exit
+        // and defeat the merge). For non-exception blocks normal == all successors.
         let mut rev = DiGraph::<(), ()>::new();
         let rnodes: Vec<NodeIndex> = (0..cfg.blocks.len()).map(|_| rev.add_node(())).collect();
         let rexit = rev.add_node(());
         for (idx, block) in cfg.blocks.iter().enumerate() {
             let from = rnodes[idx];
-            let succ = block.successors();
+            let succ = block.normal_successors();
             if succ.is_empty() {
                 rev.add_edge(from, rexit, ());
             }
@@ -278,6 +303,13 @@ impl<'a> Analyzer<'a> {
             }
             Terminator::ForIter { body, exit } => {
                 vec![(Edge::ForBody, self.dest(*body)), (Edge::ForExit, self.dest(*exit))]
+            }
+            Terminator::Try { body, handlers, .. } => {
+                let mut edges = vec![(Edge::TryBody, self.dest(*body))];
+                for h in handlers {
+                    edges.push((Edge::TryHandler, self.dest(h.body)));
+                }
+                edges
             }
             // Out of scope; build() already rejected these.
             _ => vec![],
@@ -590,6 +622,45 @@ impl<'a> Analyzer<'a> {
                     });
                     cursor = if both_terminate { None } else { merge };
                 }
+                Terminator::Try { body, handlers, end } => {
+                    // The body and every handler converge at `end` (the merge). A
+                    // merge-less try (`end` None) has no merge: the body always exits, so a
+                    // handler that falls through continues to the enclosing region's stop.
+                    let body_off = *body;
+                    let handlers = handlers.clone();
+                    let end = *end;
+                    let follow = match end {
+                        Some(e) => Some(self.cfg.by_offset.get(&e).copied()?),
+                        None => stop,
+                    };
+                    let body_entry = self.cfg.by_offset.get(&body_off).copied()?;
+                    let body_region = self.build_region(body_entry, follow, frames, depth + 1)?;
+                    // A merge-less try's body must terminate (no normal exit), or the
+                    // recovery would be wrong; reject otherwise.
+                    if end.is_none() && !region_terminates(&body_region) {
+                        return None;
+                    }
+                    let mut arms = Vec::with_capacity(handlers.len());
+                    for h in &handlers {
+                        let hb = self.cfg.by_offset.get(&h.body).copied()?;
+                        let arm = self.build_region(hb, follow, frames, depth + 1)?;
+                        arms.push(TryHandler {
+                            exc_type: h.exc_type,
+                            name: h.name.clone(),
+                            body: arm,
+                        });
+                    }
+                    seq.push(Region::Try {
+                        header: cur,
+                        body: Box::new(body_region),
+                        handlers: arms,
+                        follow,
+                    });
+                    cursor = follow;
+                    if cursor.is_none() {
+                        break;
+                    }
+                }
                 // A ForIter is always a loop header, handled by the loop check above.
                 Terminator::ForIter { .. } => return None,
                 _ => return None,
@@ -839,6 +910,30 @@ impl<'a> Analyzer<'a> {
                 frames.pop();
                 r
             }
+            Region::Try { header, body, handlers, follow } => {
+                // The body and handlers converge at the merge (`follow`); a merge-less try
+                // continues to `cont` (the enclosing continuation).
+                let after = match follow {
+                    Some(b) => Dest::Block(*b),
+                    None => cont,
+                };
+                let mut edges =
+                    vec![(Edge::TryBody, self.entry_dest(std::slice::from_ref(body.as_ref()), after, frames)?)];
+                for h in handlers {
+                    edges.push((
+                        Edge::TryHandler,
+                        self.entry_dest(std::slice::from_ref(&h.body), after, frames)?,
+                    ));
+                }
+                if derived.insert(*header, edges).is_some() {
+                    return None;
+                }
+                self.simulate(body, after, frames, derived)?;
+                for h in handlers {
+                    self.simulate(&h.body, after, frames, derived)?;
+                }
+                Some(())
+            }
         }
     }
 
@@ -853,7 +948,8 @@ impl<'a> Analyzer<'a> {
                 | Region::If { header: b, .. }
                 | Region::ForLoop { header: b, .. }
                 | Region::WhileLoop { header: b, .. }
-                | Region::InfLoop { header: b, .. } => return Some(Dest::Block(*b)),
+                | Region::InfLoop { header: b, .. }
+                | Region::Try { header: b, .. } => return Some(Dest::Block(*b)),
                 Region::Seq(inner) => {
                     let d = self.entry_dest(inner, cont, frames)?;
                     // An all-empty inner sequence falls through to the next item.
@@ -939,6 +1035,18 @@ impl<'a> Analyzer<'a> {
             Region::InfLoop { body, .. } => {
                 out.push(Stmt::Loop { body: self.lower(body) });
             }
+            Region::Try { header, body, handlers, .. } => {
+                out.extend(self.cfg.block(*header).stmts.iter().cloned());
+                let handlers = handlers
+                    .iter()
+                    .map(|h| ExceptHandler {
+                        exc_type: h.exc_type,
+                        name: h.name.clone(),
+                        body: self.lower(&h.body),
+                    })
+                    .collect();
+                out.push(Stmt::Try { body: self.lower(body), handlers });
+            }
         }
     }
 
@@ -971,6 +1079,9 @@ fn region_terminates(region: &Region) -> bool {
         Region::Linear(_) => false, // Return/Raise are handled via the surrounding seq's cont
         Region::Seq(items) => items.last().is_some_and(region_terminates),
         Region::If { then, els, .. } => region_terminates(then) && region_terminates(els),
+        // A merge-less try has no continuation (its body exits, its handlers absorb the
+        // rest), so nothing follows it in the sequence.
+        Region::Try { follow, .. } => follow.is_none(),
         _ => false,
     }
 }
@@ -1053,6 +1164,8 @@ fn edge_key(e: Edge) -> u8 {
         Edge::False => 2,
         Edge::ForBody => 3,
         Edge::ForExit => 4,
+        Edge::TryBody => 5,
+        Edge::TryHandler => 6,
     }
 }
 
@@ -1208,5 +1321,41 @@ mod tests {
         };
         assert_eq!(count_breaks(body), 1, "break should be inside the for body");
         assert!(!els.is_empty(), "else clause should be recovered");
+    }
+
+    /// A `try`/`except` whose body and handler converge at a merge, then a tail block.
+    #[test]
+    fn try_except_with_merge() {
+        use crate::ir::cfg::HandlerArm;
+        use crate::ir::expr::ConstId;
+        let mut arena = ExprArena::new();
+        let exc = arena.alloc(Expr::Const(ConstId(0)));
+        let body_v = arena.alloc(Expr::Const(ConstId(1)));
+        let hand_v = arena.alloc(Expr::Const(ConstId(2)));
+        let ret = arena.alloc(Expr::Const(ConstId(3)));
+        // B0 try(body=B1, except->B2, end=B3); B1 body -> B3; B2 handler -> B3; B3 return.
+        let cfg = cfg_of(
+            vec![
+                (
+                    vec![],
+                    Terminator::Try {
+                        body: off(1),
+                        handlers: vec![HandlerArm { exc_type: Some(exc), name: None, body: off(2) }],
+                        end: Some(off(3)),
+                    },
+                ),
+                (vec![Stmt::Expr(body_v)], Terminator::Fallthrough(off(3))),
+                (vec![Stmt::Expr(hand_v)], Terminator::Fallthrough(off(3))),
+                (vec![], Terminator::Return(Some(ret))),
+            ],
+            arena,
+        );
+        let body = structure(&cfg).expect("try/except should structure and verify");
+        let Some(Stmt::Try { handlers, .. }) = body.iter().find(|s| matches!(s, Stmt::Try { .. }))
+        else {
+            panic!("expected a Try, got: {:?}", body);
+        };
+        assert_eq!(handlers.len(), 1, "expected one except handler");
+        assert!(matches!(body.last(), Some(Stmt::Return(_))), "tail return after try");
     }
 }
