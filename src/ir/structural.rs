@@ -765,7 +765,7 @@ impl<'a> Analyzer<'a> {
                     let merge = self.branch_merge(cur, stop, frames);
                     let then = self.build_arm(true_block, merge, frames, depth)?;
                     let els = self.build_arm(false_block, merge, frames, depth)?;
-                    let both_terminate = region_terminates(&then) && region_terminates(&els);
+                    let both_terminate = self.region_terminates(&then) && self.region_terminates(&els);
                     seq.push(Region::If {
                         header: cur,
                         then: Box::new(then),
@@ -788,7 +788,7 @@ impl<'a> Analyzer<'a> {
                     let body_region = self.build_region(body_entry, follow, frames, depth + 1)?;
                     // A merge-less try's body must terminate (no normal exit), or the
                     // recovery would be wrong; reject otherwise.
-                    if end.is_none() && !region_terminates(&body_region) {
+                    if end.is_none() && !self.region_terminates(&body_region) {
                         return None;
                     }
                     let mut arms = Vec::with_capacity(handlers.len());
@@ -1245,20 +1245,26 @@ impl<'a> Analyzer<'a> {
             .find(|p| !self.dominates(header, *p))?;
         self.cfg.block(entry_pred).stack_out.last().copied()
     }
-}
 
-/// Whether a region always transfers control out of its sequence (so nothing after it in
-/// the same suite runs): a break/continue/return/raise, or an `if` whose arms both do.
-fn region_terminates(region: &Region) -> bool {
-    match region {
-        Region::Break | Region::Continue => true,
-        Region::Linear(_) => false, // Return/Raise are handled via the surrounding seq's cont
-        Region::Seq(items) => items.last().is_some_and(region_terminates),
-        Region::If { then, els, .. } => region_terminates(then) && region_terminates(els),
-        // A merge-less try has no continuation (its body exits, its handlers absorb the
-        // rest), so nothing follows it in the sequence.
-        Region::Try { follow, .. } => follow.is_none(),
-        _ => false,
+    /// Whether a region always transfers control out of its sequence (so nothing after it
+    /// in the same suite runs): a break/continue, a `Linear` whose terminator is a
+    /// `return`/`raise`, or an `if` whose arms both do.
+    fn region_terminates(&self, region: &Region) -> bool {
+        match region {
+            Region::Break | Region::Continue => true,
+            Region::Linear(b) => matches!(
+                self.cfg.block(*b).terminator,
+                Terminator::Return(_) | Terminator::Raise(_)
+            ),
+            Region::Seq(items) => items.last().is_some_and(|r| self.region_terminates(r)),
+            Region::If { then, els, .. } => {
+                self.region_terminates(then) && self.region_terminates(els)
+            }
+            // A merge-less try has no continuation (its body exits, its handlers absorb the
+            // rest), so nothing follows it in the sequence.
+            Region::Try { follow, .. } => follow.is_none(),
+            _ => false,
+        }
     }
 }
 
@@ -1657,6 +1663,44 @@ mod tests {
         };
         assert_eq!(handlers.len(), 1, "expected one except handler");
         assert!(matches!(body.last(), Some(Stmt::Return(_))), "tail return after try");
+    }
+
+    /// A merge-less `try` (`end` None) whose body is a bare `return` -- the lazy-init
+    /// `try: return self.cached except E: <compute>; return result` shape. The body always
+    /// exits via the return, so the merge-less try is well-formed and must structure.
+    #[test]
+    fn merge_less_try_with_returning_body() {
+        use crate::ir::cfg::HandlerArm;
+        use crate::ir::expr::ConstId;
+        let mut arena = ExprArena::new();
+        let exc = arena.alloc(Expr::Const(ConstId(0)));
+        let ret_a = arena.alloc(Expr::Const(ConstId(1)));
+        let hand = arena.alloc(Expr::Const(ConstId(2)));
+        let ret_b = arena.alloc(Expr::Const(ConstId(3)));
+        // B0 try(body=B1, except->B2, end=None); B1: return a; B2: stmt; return b.
+        let cfg = cfg_of(
+            vec![
+                (
+                    vec![],
+                    Terminator::Try {
+                        body: off(1),
+                        handlers: vec![HandlerArm { exc_type: Some(exc), name: None, body: off(2) }],
+                        end: None,
+                    },
+                ),
+                (vec![], Terminator::Return(Some(ret_a))),
+                (vec![Stmt::Expr(hand)], Terminator::Return(Some(ret_b))),
+            ],
+            arena,
+        );
+        let body = structure(&cfg).expect("merge-less try with returning body should structure");
+        let Some(Stmt::Try { body: tbody, handlers }) =
+            body.iter().find(|s| matches!(s, Stmt::Try { .. }))
+        else {
+            panic!("expected a Try, got: {:?}", body);
+        };
+        assert_eq!(handlers.len(), 1, "expected one except handler");
+        assert!(matches!(tbody.last(), Some(Stmt::Return(_))), "try body returns");
     }
 
     /// `while c: if d: break; ... else: els` -- a `break` skips the else clause, so the
