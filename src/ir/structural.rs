@@ -188,16 +188,27 @@ impl<'a> Analyzer<'a> {
             }
         }
 
+        // Forward graph for dominators. Each block keeps its raw CFG successors (a `Break`
+        // uses its in-loop `fallback`) AND, for a `Break`, an extra edge to its `follow`.
+        // The follow edge is what makes a second loop reached only through the first loop's
+        // break target -- whose blocks are unreachable on the raw edges -- reachable here,
+        // so its back edge is dominated and detected; the fallback edge keeps the first
+        // loop's body intact. (Both together = the union of raw and semantic edges.)
         let mut graph = DiGraph::<(), ()>::new();
         let nodes: Vec<NodeIndex> = (0..cfg.blocks.len()).map(|_| graph.add_node(())).collect();
         let exit_node = graph.add_node(());
         for (idx, block) in cfg.blocks.iter().enumerate() {
             let from = nodes[idx];
-            let succ = block.successors();
-            if succ.is_empty() {
+            let mut targets = block.successors();
+            if let Terminator::Break { follow, .. } = &block.terminator {
+                if !targets.contains(follow) {
+                    targets.push(*follow);
+                }
+            }
+            if targets.is_empty() {
                 graph.add_edge(from, exit_node, ());
             }
-            for target in succ {
+            for target in targets {
                 match cfg.by_offset.get(&target) {
                     Some(to) => graph.add_edge(from, nodes[to.0 as usize], ()),
                     None => graph.add_edge(from, exit_node, ()),
@@ -355,10 +366,13 @@ impl<'a> Analyzer<'a> {
 
     fn detect_loops(&mut self) -> Option<()> {
         let preds = self.predecessors();
-        // Reachability over the CFG GRAPH edges (a `Break` uses its in-loop `fallback`), so
-        // a relinearizer trampoline reached only by a break's fallback -- the block that
-        // actually carries the loop's back edge -- still counts as a latch. (Using the
-        // semantic reachable set here would drop it and leave the loop body incomplete.)
+        // Reachability over BOTH the raw CFG edges (a `Break` uses its in-loop `fallback`)
+        // and the semantic edges (a `Break` reaches its `follow`). The union is needed
+        // because a back-edge source can hide behind either: a relinearizer trampoline is
+        // reached only by a break's fallback, while a *second* loop following the first is
+        // reached only by the first loop's break `follow` (its blocks are unreachable on the
+        // raw edges). Filtering candidate latches by this union keeps both kinds of loop
+        // visible while still excluding genuine orphan junk blocks.
         let graph_reachable = {
             let mut seen = HashSet::new();
             let mut stack = vec![self.cfg.entry];
@@ -367,6 +381,11 @@ impl<'a> Analyzer<'a> {
                     continue;
                 }
                 stack.extend(self.graph_succ(b));
+                for (_, d) in self.ground_truth(b) {
+                    if let Dest::Block(t) = d {
+                        stack.push(t);
+                    }
+                }
             }
             seen
         };
