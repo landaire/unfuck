@@ -409,6 +409,63 @@ fn always_taken_set_predicate_is_folded() {
 }
 
 #[test]
+fn nested_marker_predicates_are_folded() {
+    // The obfuscator nests marker blocks: a complete inner predicate's setup is wedged
+    // between two of an outer block's own unpack stores. The inner `1 < 2` (True,
+    // POP_JUMP_IF_FALSE, never taken) is self-contained and stack-neutral, so folding it to
+    // NOPs leaves the outer block's residue untouched -- and the outer scan must then skip
+    // those NOPs to fold its own `1 < 2` predicate. A single pass cannot do both (the outer
+    // scan is blocked by the live inner marker), so the fold iterates to a fixpoint. Both
+    // dead, both fold, leaving just `return 5`.
+    let tuple = Obj::Tuple(Arc::new(RwLock::new(vec![
+        long(1),
+        long(2),
+        long(3),
+        long(4),
+        long(255),
+    ])));
+    let code = Builder::new(
+        "f",
+        0,
+        &[],
+        &["a0", "a1", "a2", "a3", "a4", "b0", "b1", "b2", "b3", "b4"],
+        vec![Obj::None, long(5), tuple],
+    )
+    .arg(Standard::LOAD_CONST, 2) // outer marker tuple
+    .arg(Standard::UNPACK_SEQUENCE, 5)
+    .arg(Standard::STORE_NAME, 0) // a0 = 1
+    .arg(Standard::STORE_NAME, 1) // a1 = 2
+    // --- inner predicate wedged between the outer block's stores ---
+    .arg(Standard::LOAD_CONST, 2) // inner marker tuple
+    .arg(Standard::UNPACK_SEQUENCE, 5)
+    .arg(Standard::STORE_NAME, 5) // b0 = 1
+    .arg(Standard::STORE_NAME, 6) // b1 = 2
+    .arg(Standard::STORE_NAME, 7) // b2
+    .arg(Standard::STORE_NAME, 8) // b3
+    .arg(Standard::STORE_NAME, 9) // b4
+    .arg(Standard::LOAD_NAME, 5)
+    .arg(Standard::LOAD_NAME, 6)
+    .arg(Standard::COMPARE_OP, 0) // 1 < 2 -> True
+    .jump(Standard::POP_JUMP_IF_FALSE, "dead") // never taken
+    // --- the outer block's remaining stores, then its own predicate ---
+    .arg(Standard::STORE_NAME, 2) // a2
+    .arg(Standard::STORE_NAME, 3) // a3
+    .arg(Standard::STORE_NAME, 4) // a4
+    .arg(Standard::LOAD_NAME, 0)
+    .arg(Standard::LOAD_NAME, 1)
+    .arg(Standard::COMPARE_OP, 0) // 1 < 2 -> True
+    .jump(Standard::POP_JUMP_IF_FALSE, "dead") // never taken
+    .arg(Standard::LOAD_CONST, 1) // 5
+    .op(Standard::RETURN_VALUE)
+    .label("dead")
+    .arg(Standard::LOAD_CONST, 0) // None (dead)
+    .op(Standard::RETURN_VALUE)
+    .finish();
+
+    assert_eq!(decompile(code), "def f():\n    return 5\n");
+}
+
+#[test]
 fn from_import_bound_to_closure_cell() {
     // A conditional import binds its name to a closure cell (`STORE_DEREF`), e.g.
     // `from hashlib import md5 as _hash_new` where an inner function captures

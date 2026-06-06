@@ -681,6 +681,11 @@ fn eval_marker_predicate(
     while let Some(item) = instrs.get(idx) {
         let m = item.instr.opcode.mnemonic();
         match m {
+            // The obfuscator nests marker blocks: an inner predicate's stores can split an
+            // outer block's own stores. Once the inner block is folded to NOPs (it was
+            // stack-neutral), the outer scan must skip those NOPs to reach its own
+            // continuation -- they sit between the outer block's pushed values, untouched.
+            NOP => {}
             LOAD_CONST => match code.consts.get(item.instr.arg? as usize)? {
                 Obj::Long(v) => stack.push(Int(v.read().unwrap().clone())),
                 _ => return None,
@@ -837,28 +842,40 @@ fn eval_marker_predicate(
 /// binding is never dropped), mirroring [`strip_opaque_predicates`]. Offset-preserving.
 pub fn fold_dead_marker_predicates(instrs: &mut [OffsetInstr], code: &Code) {
     let valid: HashSet<Offset> = instrs.iter().map(|item| item.offset).collect();
-    let mut i = 0;
-    while i < instrs.len() {
-        if instrs[i].instr.opcode.mnemonic() == Mnemonic::LOAD_CONST {
-            if let Some((jmp, taken, stored)) = eval_marker_predicate(instrs, i, code) {
-                let end = if taken {
-                    always_taken_region_end(instrs, i, jmp, &valid)
-                } else {
-                    Some(jmp)
-                };
-                if let Some(end) = end {
-                    if !stored.iter().any(|&n| name_read_outside(instrs, i, end, n)) {
-                        for slot in &mut instrs[i..=end] {
-                            slot.instr.opcode = Standard::NOP;
-                            slot.instr.arg = None;
+    // Repeat to a fixpoint: the obfuscator nests and interleaves marker blocks (an inner
+    // predicate's setup splits an outer block's stores). Folding the inner block to NOPs
+    // is stack-neutral and exposes the enclosing one, whose scan was blocked by the live
+    // inner marker; `eval_marker_predicate` skips the resulting NOPs but not a live inner
+    // marker, so a second pass over the now-NOP'd interior recovers the outer predicate.
+    loop {
+        let mut folded = false;
+        let mut i = 0;
+        while i < instrs.len() {
+            if instrs[i].instr.opcode.mnemonic() == Mnemonic::LOAD_CONST {
+                if let Some((jmp, taken, stored)) = eval_marker_predicate(instrs, i, code) {
+                    let end = if taken {
+                        always_taken_region_end(instrs, i, jmp, &valid)
+                    } else {
+                        Some(jmp)
+                    };
+                    if let Some(end) = end {
+                        if !stored.iter().any(|&n| name_read_outside(instrs, i, end, n)) {
+                            for slot in &mut instrs[i..=end] {
+                                slot.instr.opcode = Standard::NOP;
+                                slot.instr.arg = None;
+                            }
+                            folded = true;
+                            i = end + 1;
+                            continue;
                         }
-                        i = end + 1;
-                        continue;
                     }
                 }
             }
+            i += 1;
         }
-        i += 1;
+        if !folded {
+            break;
+        }
     }
 }
 
