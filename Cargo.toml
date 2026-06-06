@@ -1,6 +1,6 @@
 [package]
 name = "unfuck"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "Python 2.7 bytecode deobfuscator"
 license = "MIT"
@@ -18,12 +18,12 @@ path = "src/bin.rs"
 structopt = "0.3"
 memmap = "0.7"
 byteorder = "1.3"
-py27-marshal = { version = "0.5" }
+py27-marshal = { version = "0.6" }
 base64 = "0.13"
 anyhow = "1.0"
 thiserror = "1.0"
 flate2 = "1.0"
-pydis = "0.4"
+pydis = "0.5"
 num-bigint = "0.4"
 num-integer = "0.1"
 log = "0.4"
@@ -42,7 +42,7 @@ crossbeam = "0.8"
 rayon = "1.5"
 
 [dev-dependencies]
-py27-marshal = { version = "0.5" }
+py27-marshal = { version = "0.6" }
 num-bigint = "0.4"
 num-complex = "0.4"
 pydis = "0.4"
@@ -52,5 +52,5 @@ insta = "1"
 reduced_functionality = []
 
 [patch.crates-io]
-py27-marshal = { path = "../py-marshal" }
-pydis = { path = "../pydis" }
+#py27-marshal = { path = "../py-marshal" }
+#pydis = { path = "../pydis" }
