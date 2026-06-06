@@ -260,6 +260,43 @@ fn dead_constant_integer_predicate_is_folded() {
 }
 
 #[test]
+fn dead_predicate_without_marker_tuple_is_folded() {
+    // The same constant predicate but with the junk integers loaded INDIVIDUALLY
+    // (`LOAD_CONST; STORE_NAME` pairs) instead of a marker-tuple `UNPACK` -- the form the
+    // obfuscator uses in some handlers/bodies. `t1 = 10; t2 = 20; t1 = t1 + 5` then
+    // `t1 < t2` (15 < 20 = True) with POP_JUMP_IF_FALSE is never taken; the self-contained,
+    // dead-temp, constant predicate folds away (it has >= 2 const-stores and real
+    // arithmetic, so a plain `x = const` can never match), leaving `return 42`.
+    let code = Builder::new("f", 0, &[], &["t1", "t2"], vec![
+        Obj::None,
+        long(10),
+        long(20),
+        long(5),
+        long(42),
+    ])
+    .arg(Standard::LOAD_CONST, 1) // 10
+    .arg(Standard::STORE_NAME, 0) // t1
+    .arg(Standard::LOAD_CONST, 2) // 20
+    .arg(Standard::STORE_NAME, 1) // t2
+    .arg(Standard::LOAD_NAME, 0)
+    .arg(Standard::LOAD_CONST, 3) // 5
+    .op(Standard::BINARY_ADD)
+    .arg(Standard::STORE_NAME, 0) // t1 = 15
+    .arg(Standard::LOAD_NAME, 0)
+    .arg(Standard::LOAD_NAME, 1)
+    .arg(Standard::COMPARE_OP, 0) // 15 < 20 -> True
+    .jump(Standard::POP_JUMP_IF_FALSE, "dead") // never taken
+    .arg(Standard::LOAD_CONST, 4) // 42
+    .op(Standard::RETURN_VALUE)
+    .label("dead")
+    .arg(Standard::LOAD_CONST, 0) // None (dead)
+    .op(Standard::RETURN_VALUE)
+    .finish();
+
+    assert_eq!(decompile(code), "def f():\n    return 42\n");
+}
+
+#[test]
 fn always_taken_set_predicate_is_folded() {
     // The other control-flow-flattening shape: a marker block grinds its integers into two
     // junk SETS whose comparison is a constant True, feeding POP_JUMP_IF_TRUE that always

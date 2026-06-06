@@ -632,6 +632,13 @@ enum PredVal {
 /// division by zero, a mixed int/set operation, a comparison not immediately consumed by a
 /// conditional jump), so an uncertain predicate is never folded. Integer arithmetic uses
 /// Python 2 semantics (floor division and modulo); set comparisons use (proper) subset.
+///
+/// Two starts are recognized: the marker form `LOAD_CONST <marker tuple>; UNPACK_SEQUENCE 5`
+/// (the tuple seeds the temps), and the equivalent un-packed form where the obfuscator loads
+/// the junk integers individually (`LOAD_CONST <int>; STORE_NAME <temp>` repeated). The
+/// latter has no marker-tuple signature, so it additionally requires at least two stored
+/// temps and real arithmetic (`MIN_PLAIN_STORES` / `saw_op`) -- a single real `x = const`
+/// assignment can never match -- with the caller's dead-temp check as the binding safeguard.
 fn eval_marker_predicate(
     instrs: &[OffsetInstr],
     start: usize,
@@ -639,18 +646,38 @@ fn eval_marker_predicate(
 ) -> Option<(usize, bool, Vec<u16>)> {
     use Mnemonic::*;
     use PredVal::{Int, Set};
-    let marker_const = instrs[start].instr.arg? as usize;
-    let ints = marker_tuple_ints(code.consts.get(marker_const)?)?;
-    if instrs.get(start + 1)?.instr.opcode.mnemonic() != UNPACK_SEQUENCE
-        || instrs[start + 1].instr.arg != Some(5)
-    {
-        return None;
-    }
-    // UNPACK_SEQUENCE pushes the elements so the first ends up on top of the stack.
-    let mut stack: Vec<PredVal> = ints.iter().rev().map(|v| Int(v.clone())).collect();
+
+    /// Minimum const-store temps for the un-anchored (no marker tuple) form, so an ordinary
+    /// single `x = const` assignment is never mistaken for a junk predicate setup.
+    const MIN_PLAIN_STORES: usize = 2;
+
+    // Detect the start shape: a marker tuple seeds five temps; otherwise the predicate must
+    // begin with an individual `LOAD_CONST <int>; STORE_NAME` (the un-packed junk form).
+    let marker = code
+        .consts
+        .get(instrs[start].instr.arg? as usize)
+        .and_then(marker_tuple_ints);
+    let (mut stack, mut idx, marker_anchored): (Vec<PredVal>, usize, bool) = match marker {
+        Some(ints)
+            if instrs.get(start + 1)?.instr.opcode.mnemonic() == UNPACK_SEQUENCE
+                && instrs[start + 1].instr.arg == Some(5) =>
+        {
+            // UNPACK_SEQUENCE pushes the elements so the first ends up on top of the stack.
+            (ints.iter().rev().map(|v| Int(v.clone())).collect(), start + 2, true)
+        }
+        _ => {
+            if instrs[start].instr.opcode.mnemonic() != LOAD_CONST
+                || !matches!(code.consts.get(instrs[start].instr.arg? as usize)?, Obj::Long(_))
+                || instrs.get(start + 1)?.instr.opcode.mnemonic() != STORE_NAME
+            {
+                return None;
+            }
+            (Vec::new(), start, false)
+        }
+    };
     let mut temps: HashMap<u16, PredVal> = HashMap::new();
     let mut stored: Vec<u16> = Vec::new();
-    let mut idx = start + 2;
+    let mut saw_op = false;
     while let Some(item) = instrs.get(idx) {
         let m = item.instr.opcode.mnemonic();
         match m {
@@ -666,6 +693,7 @@ fn eval_marker_predicate(
                 stored.push(name);
             }
             BUILD_SET => {
+                saw_op = true;
                 let n = item.instr.arg? as usize;
                 if stack.len() < n {
                     return None;
@@ -682,6 +710,7 @@ fn eval_marker_predicate(
                 stack.push(Set(set));
             }
             BINARY_AND | INPLACE_AND | BINARY_OR | INPLACE_OR | BINARY_XOR | INPLACE_XOR => {
+                saw_op = true;
                 let b = stack.pop()?;
                 let a = stack.pop()?;
                 match (a, b) {
@@ -708,6 +737,7 @@ fn eval_marker_predicate(
             BINARY_MULTIPLY | INPLACE_MULTIPLY | BINARY_ADD | INPLACE_ADD | BINARY_SUBTRACT
             | INPLACE_SUBTRACT | BINARY_DIVIDE | INPLACE_DIVIDE | BINARY_FLOOR_DIVIDE
             | INPLACE_FLOOR_DIVIDE | BINARY_MODULO | INPLACE_MODULO => {
+                saw_op = true;
                 let (Int(b), Int(a)) = (stack.pop()?, stack.pop()?) else {
                     return None;
                 };
@@ -768,6 +798,12 @@ fn eval_marker_predicate(
                 // junk it produced, so the stack is empty here (the value it was wedged in
                 // front of sits below the predicate's entry and is untouched).
                 if !stack.is_empty() {
+                    return None;
+                }
+                // The un-anchored (no marker tuple) form must have done real arithmetic over
+                // at least two stored temps, so a plain `x = const` (or two) feeding a real
+                // `if` is never mistaken for junk; the marker tuple vouches for its own form.
+                if !marker_anchored && (!saw_op || stored.len() < MIN_PLAIN_STORES) {
                     return None;
                 }
                 let taken = match instrs.get(idx + 1)?.instr.opcode.mnemonic() {
