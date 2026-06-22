@@ -395,3 +395,11 @@ def cmp_or_pair(x, t, a, b):
 
 def disjoint_predicate(e, sid, tid, tt):
     return isinstance(e, int) and e.alive and (e.id != sid or tt & 1) and (e.team == tid and tt & 2 or e.team != tid and tt & 4) or isinstance(e, str) and e.alive and (e.team == tid and tt & 8 or e.team != tid and tt & 16)
+
+
+def list_comp_nested_iter(z):
+    return [x for x in [y for y in z]]
+
+
+def list_comp_nested_iter_filtered(z):
+    return [x for x in [y * 2 for y in z if y] if x > 0]

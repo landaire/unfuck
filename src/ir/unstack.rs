@@ -604,6 +604,22 @@ impl Unstacker {
                     self.step(&item.instr, item.offset)?;
                     i += 1;
                 }
+                // A nested comprehension in the iterable position (`[x for x in [y for
+                // y in z]]`): the inner comp builds its own list then closes into the
+                // `GET_ITER` that feeds an enclosing `for` clause. Fold the sub-region
+                // recursively into one Expr::ListComp value left on the stack, then skip
+                // to the GET_ITER; the following FOR_ITER pops it as that clause's
+                // iterable. Checked before the element-comp case (which ends in an
+                // append) so the two nested shapes do not overlap.
+                Mnemonic::BUILD_LIST
+                    if item.instr.arg == Some(0)
+                        && nested_iter_comp_end(region, i).is_some() =>
+                {
+                    let end = nested_iter_comp_end(region, i).ok_or(IrError::Decode)?;
+                    let sub: Vec<&OffsetInstr> = region[i..end].to_vec();
+                    self.parse_list_comp(&sub)?;
+                    i = end;
+                }
                 // A nested element comprehension (`[[..] for ..]`): the element is
                 // itself a list comp, brought inline as its own `BUILD_LIST 0 .. back
                 // edge`. Fold that sub-region recursively into one Expr::ListComp value
@@ -2342,6 +2358,40 @@ fn nested_comp_end(region: &[&OffsetInstr], build: usize) -> Option<usize> {
             // and this build was a `[]` literal in its iterable.
             return match region.get(k + 1).map(|item| item.instr.opcode.mnemonic()) {
                 Some(Mnemonic::LIST_APPEND) => Some(k + 1),
+                _ => None,
+            };
+        }
+    }
+    None
+}
+
+/// Like [`nested_comp_end`] but for a nested comprehension in the iterable position
+/// (`[x for x in [y for y in z]]`): the inner comp's `BUILD_LIST 0` is at
+/// `region[build]` and its outer back edge is followed by the `GET_ITER` that feeds an
+/// enclosing `for` clause, rather than a `LIST_APPEND`. Returns the region index of
+/// that `GET_ITER` (exclusive end of the sub-comp), or `None` when the build is not an
+/// iterated nested comprehension.
+fn nested_iter_comp_end(region: &[&OffsetInstr], build: usize) -> Option<usize> {
+    let mut for_i = build + 1;
+    loop {
+        let mnemonic = region.get(for_i)?.instr.opcode.mnemonic();
+        if mnemonic == Mnemonic::FOR_ITER {
+            break;
+        }
+        let name = format!("{:?}", mnemonic);
+        if name.starts_with("STORE_") || name.starts_with("JUMP") || name.starts_with("POP_JUMP")
+        {
+            return None;
+        }
+        for_i += 1;
+    }
+    let loop_top = region[for_i].offset;
+    for k in (for_i + 1)..region.len() {
+        if region[k].instr.opcode.mnemonic() == Mnemonic::JUMP_ABSOLUTE
+            && region[k].instr.arg.map(|a| Offset(a as u32)) == Some(loop_top)
+        {
+            return match region.get(k + 1).map(|item| item.instr.opcode.mnemonic()) {
+                Some(Mnemonic::GET_ITER) => Some(k + 1),
                 _ => None,
             };
         }

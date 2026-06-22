@@ -1,0 +1,6 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+---
+def list_comp_nested_iter_filtered(z):
+    return [x for x in [y * 2 for y in z if y] if x > 0]

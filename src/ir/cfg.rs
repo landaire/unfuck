@@ -3081,11 +3081,12 @@ fn find_list_comps(
     let mut comps = HashMap::new();
     let mut interior = HashSet::new();
     let mut comp_ternaries = HashMap::new();
+    let mut memo: HashMap<usize, Option<(usize, usize)>> = HashMap::new();
     for (idx, item) in instrs.iter().enumerate() {
         if item.instr.opcode.mnemonic() != Mnemonic::BUILD_LIST || item.instr.arg != Some(0) {
             continue;
         }
-        if let Some((end_idx, for_exit_idx)) = recognize_list_comp(instrs, &index, idx) {
+        if let Some((end_idx, for_exit_idx)) = recognize_list_comp(instrs, &index, idx, &mut memo) {
             comps.insert(item.offset, instrs[end_idx].offset);
             for inner in &instrs[idx + 1..end_idx] {
                 interior.insert(inner.offset);
@@ -3116,10 +3117,32 @@ fn find_list_comps(
 /// the back edge and the exit. Anything else (a list literal, a nested or filtered
 /// shape the folder cannot parse) returns `None`, leaving the `LIST_APPEND`
 /// unsupported so the function is rejected rather than mis-recovered.
+/// Memoising wrapper around [`recognize_list_comp_inner`]. The recogniser recurses into
+/// nested `BUILD_LIST 0` builds (in the iterable position and as element comps), and is
+/// itself called for every `BUILD_LIST 0` by `find_list_comps`; without caching, a
+/// function with many nested or sequential list builds re-analyses the same inner spans
+/// combinatorially (observed: a multi-minute hang on real modules). Every recursive call
+/// targets a strictly greater index, so the memo is acyclic and each build is computed
+/// once, making recognition linear in the number of builds.
 fn recognize_list_comp(
     instrs: &[OffsetInstr],
     index: &HashMap<Offset, usize>,
     build_idx: usize,
+    memo: &mut HashMap<usize, Option<(usize, usize)>>,
+) -> Option<(usize, usize)> {
+    if let Some(&cached) = memo.get(&build_idx) {
+        return cached;
+    }
+    let result = recognize_list_comp_inner(instrs, index, build_idx, memo);
+    memo.insert(build_idx, result);
+    result
+}
+
+fn recognize_list_comp_inner(
+    instrs: &[OffsetInstr],
+    index: &HashMap<Offset, usize>,
+    build_idx: usize,
+    memo: &mut HashMap<usize, Option<(usize, usize)>>,
 ) -> Option<(usize, usize)> {
     // The iterable must lead straight into GET_ITER then FOR_ITER.
     let mut for_idx = build_idx + 1;
@@ -3127,6 +3150,21 @@ fn recognize_list_comp(
         let mnemonic = instrs.get(for_idx)?.instr.opcode.mnemonic();
         if mnemonic == Mnemonic::FOR_ITER {
             break;
+        }
+        // A nested comprehension in the iterable position (`[x for x in [y for y in
+        // z]]`) builds its own list then GET_ITERs it. Skip its whole span so the
+        // OUTER loop's FOR_ITER is found rather than the inner comprehension's: a
+        // recognised inner comp whose end is a GET_ITER is being iterated here, not
+        // appended.
+        if mnemonic == Mnemonic::BUILD_LIST && instrs[for_idx].instr.arg == Some(0) {
+            if let Some((inner_end, _)) = recognize_list_comp(instrs, index, for_idx, memo) {
+                if instrs.get(inner_end).map(|it| it.instr.opcode.mnemonic())
+                    == Some(Mnemonic::GET_ITER)
+                {
+                    for_idx = inner_end;
+                    continue;
+                }
+            }
         }
         if disqualifies_list_comp(mnemonic) {
             return None;
@@ -3184,7 +3222,7 @@ fn recognize_list_comp(
             // iterable (`q.get(k, [])`) borrows the following FOR_ITER, but that loop
             // exits by jumping back to an enclosing loop top, not into an append; the
             // end-is-append check rejects it so the real (single) append is still ours.
-            if let Some((inner_end, _)) = recognize_list_comp(instrs, index, scan) {
+            if let Some((inner_end, _)) = recognize_list_comp(instrs, index, scan, memo) {
                 if instrs
                     .get(inner_end)
                     .map(|item| item.instr.opcode.mnemonic())
