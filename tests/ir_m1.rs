@@ -278,6 +278,29 @@ fn arithmetic_return() {
 }
 
 #[test]
+fn non_integer_float_const_renders_exact_value() {
+    // Regression: a non-integer float const must render its exact value. The emitter
+    // truncated it through `to_i64` (0.5 -> 0, emitted "0.0"), corrupting every
+    // fractional float -- a wrong-value, recompilable-but-wrong bug.
+    let code = Builder::new(
+        "f",
+        0,
+        &[],
+        &[],
+        vec![Obj::None, Obj::Float(0.5), Obj::Float(0.001), Obj::Float(3.14)],
+    )
+    .arg(Standard::LOAD_CONST, 1)
+    .arg(Standard::LOAD_CONST, 2)
+    .op(Standard::BINARY_ADD)
+    .arg(Standard::LOAD_CONST, 3)
+    .op(Standard::BINARY_ADD)
+    .op(Standard::RETURN_VALUE)
+    .finish();
+
+    assert_eq!(decompile(code), "def f():\n    return 0.5 + 0.001 + 3.14\n");
+}
+
+#[test]
 fn degenerate_predicate_is_stripped() {
     // The obfuscator splices a conditional jump whose taken target IS its own
     // fall-through (here `a % 2` tested by a POP_JUMP_IF_FALSE to the next

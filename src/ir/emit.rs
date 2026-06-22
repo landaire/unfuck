@@ -1619,10 +1619,12 @@ fn complex_part(f: f64) -> String {
 }
 
 fn render_float(f: f64) -> String {
+    // A whole-valued finite float needs an explicit `.0` so it stays a float literal
+    // (`1` would be an int). A non-integer (or non-finite) float uses Rust's shortest
+    // round-tripping formatting, which preserves the exact value -- NOT `to_i64`, which
+    // truncates the fraction (rendering 0.5 as 0, emitted "0.0", a wrong-value bug).
     if f.is_finite() && f.fract() == 0.0 {
         format!("{:.1}", f)
-    } else if let Some(int) = f.to_i64() {
-        format!("{}.0", int)
     } else {
         format!("{}", f)
     }
