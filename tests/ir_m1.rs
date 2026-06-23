@@ -301,6 +301,35 @@ fn non_integer_float_const_renders_exact_value() {
 }
 
 #[test]
+fn fractional_float_adjacent_to_zero_in_multiply_renders_exact_value() {
+    // Regression (wowsdeob DECOMPILER_ISSUES_FOUND Issue 1/2, Vehicle.calcServerSpeed /
+    // calcMaxServerSpeed / fovRemapping): a fractional float used in a BINARY_MULTIPLY
+    // with 0.0 also present in co_consts must render its real value. The old `to_i64`
+    // emitter truncated 0.5/0.1/0.0001 -> "0.0"; because a genuine 0.0 const (here at
+    // index 2, e.g. a `>= 0.0` operand) still rendered correctly, the corruption looked
+    // like a wrong const-index lookup but was the float renderer. Each multiply must keep
+    // its own coefficient.
+    let code = Builder::new(
+        "f",
+        1,
+        &["v"],
+        &[],
+        vec![Obj::None, Obj::Float(0.5), Obj::Float(0.0), Obj::Float(0.1), Obj::Float(0.0001)],
+    )
+    .arg(Standard::LOAD_FAST, 0)
+    .arg(Standard::LOAD_CONST, 1)
+    .op(Standard::BINARY_MULTIPLY)
+    .arg(Standard::LOAD_CONST, 3)
+    .op(Standard::BINARY_MULTIPLY)
+    .arg(Standard::LOAD_CONST, 4)
+    .op(Standard::BINARY_MULTIPLY)
+    .op(Standard::RETURN_VALUE)
+    .finish();
+
+    assert_eq!(decompile(code), "def f(v):\n    return v * 0.5 * 0.1 * 0.0001\n");
+}
+
+#[test]
 fn degenerate_predicate_is_stripped() {
     // The obfuscator splices a conditional jump whose taken target IS its own
     // fall-through (here `a % 2` tested by a POP_JUMP_IF_FALSE to the next
