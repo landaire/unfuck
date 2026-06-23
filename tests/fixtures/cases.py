@@ -397,6 +397,15 @@ def disjoint_predicate(e, sid, tid, tt):
     return isinstance(e, int) and e.alive and (e.id != sid or tt & 1) and (e.team == tid and tt & 2 or e.team != tid and tt & 4) or isinstance(e, str) and e.alive and (e.team == tid and tt & 8 or e.team != tid and tt & 16)
 
 
+def nested_ternary_store(c1, c2, c3, a, b, c, d):
+    x = (a if c2 else b) if c1 else (c if c3 else d)
+    return x
+
+
+def nested_ternary_value(c1, c2, c3, a, b, c, d):
+    return (a if c2 else b) if c1 else (c if c3 else d)
+
+
 def list_comp_nested_iter(z):
     return [x for x in [y for y in z]]
 

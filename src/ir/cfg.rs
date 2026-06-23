@@ -220,6 +220,9 @@ enum BuildMode {
     /// A post-failure rebuild that keeps pure short-circuit boolean regions inside one
     /// block so the feed can fold them (see [`find_bool_regions`]).
     BoolRegions,
+    /// A post-failure rebuild that keeps value-producing ternary diamonds inside one
+    /// block so the feed can fold them (see [`find_value_ternary_regions`]).
+    TernaryRegions,
 }
 
 /// A function lowered to a control-flow graph of statement blocks.
@@ -263,6 +266,13 @@ impl Cfg {
     /// rebuild, so it cannot change a function the normal build already structures.
     pub fn build_bool_regions(instrs: &[OffsetInstr]) -> Result<Cfg, IrError> {
         Cfg::build_with(instrs, BuildMode::BoolRegions)
+    }
+
+    /// Builds the graph keeping value-producing ternary diamonds inside one block so the
+    /// feed can fold them (see [`find_value_ternary_regions`]). Used only as a
+    /// post-failure rebuild, so it cannot change a function the normal build structures.
+    pub fn build_ternary_regions(instrs: &[OffsetInstr]) -> Result<Cfg, IrError> {
+        Cfg::build_with(instrs, BuildMode::TernaryRegions)
     }
 
     fn build_with(instrs: &[OffsetInstr], mode: BuildMode) -> Result<Cfg, IrError> {
@@ -315,6 +325,15 @@ impl Cfg {
         // the normal build is unaffected.
         let bool_regions = if use_bool_regions {
             let (regions, interior) = find_bool_regions(instrs);
+            list_interior.extend(interior);
+            regions
+        } else {
+            HashMap::new()
+        };
+        // Post-failure only: keep value-producing ternary diamonds in one block (their
+        // interior never starts a block) and fold them in the feed. Empty otherwise.
+        let ternary_regions = if matches!(mode, BuildMode::TernaryRegions) {
+            let (regions, interior) = find_value_ternary_regions(instrs);
             list_interior.extend(interior);
             regions
         } else {
@@ -421,6 +440,7 @@ impl Cfg {
                 instrs,
                 &instr_index,
                 &bool_regions,
+                &ternary_regions,
                 &return_points,
             )
             // A block that does not lower (an unsupported opcode, a stack error) is
@@ -1523,6 +1543,7 @@ fn lower_block(
     instrs: &[OffsetInstr],
     instr_index: &HashMap<Offset, usize>,
     bool_regions: &HashMap<Offset, Offset>,
+    ternary_regions: &HashMap<Offset, Offset>,
     return_points: &HashSet<Offset>,
 ) -> Result<Block, IrError> {
     unstacker.start_block();
@@ -1572,6 +1593,20 @@ fn lower_block(
             unstacker
                 .fold_bool_region(instrs, instr_index, instr_index[&item.offset])
                 .ok_or(IrError::Unsupported(Mnemonic::JUMP_IF_FALSE_OR_POP))?;
+            let span = feed[i..]
+                .iter()
+                .position(|it| it.offset >= merge)
+                .map_or(feed.len(), |pos| i + pos);
+            i = span;
+            continue;
+        }
+        // A value-producing ternary diamond (post-failure rebuild only) whose first
+        // condition is now on the stack: fold the whole diamond to one verified value
+        // and skip to its merge, where a STORE/op or the terminator consumes it.
+        if let Some(&merge) = ternary_regions.get(&item.offset) {
+            unstacker
+                .fold_value_ternary_region(instrs, instr_index, instr_index[&item.offset], merge)
+                .ok_or(IrError::Unsupported(Mnemonic::JUMP_FORWARD))?;
             let span = feed[i..]
                 .iter()
                 .position(|it| it.offset >= merge)
@@ -1930,6 +1965,99 @@ fn scan_bool_region(instrs: &[OffsetInstr], start: usize) -> Option<(usize, bool
             Mnemonic::RETURN_VALUE => {
                 // An early-return exit from a branch; a terminal inside the region.
             }
+            other if is_statement_or_control(other) => return None,
+            _ => {}
+        }
+        k += 1;
+    }
+}
+
+/// Identifies value-producing ternary diamonds -- a tree of `POP_JUMP_IF_*` tests whose
+/// arms each compute a value and converge at one merge -- so they can be kept inside one
+/// block and folded as a single `Expr::Ternary` by the feed
+/// ([`Unstacker::fold_value_ternary_region`]). A nested
+/// `(a if c2 else b) if c1 else (c if c3 else d)` peephole-collapses so the inner then
+/// arm jumps straight to the shared merge (often `JUMP_ABSOLUTE`); the contiguous
+/// [`find_ternaries`] rejects that arm (its closing jump is not the `JUMP_FORWARD` it
+/// requires), and the block path then splits the diamond and underflows.
+///
+/// Returns a map from each diamond's first test offset to its merge offset, and the
+/// interior offsets (the whole `[first test, merge)` span) to keep inside one block. Used
+/// ONLY by the post-failure [`Cfg::build_ternary_regions`] rebuild: the feed folds each
+/// diamond with a self-verifying reconstruction, so a region that does not verify simply
+/// fails to lower (the function stays failed).
+fn find_value_ternary_regions(
+    instrs: &[OffsetInstr],
+) -> (HashMap<Offset, Offset>, HashSet<Offset>) {
+    let mut regions = HashMap::new();
+    let mut interior = HashSet::new();
+    for (i, item) in instrs.iter().enumerate() {
+        if !matches!(
+            item.instr.opcode.mnemonic(),
+            Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE
+        ) {
+            continue;
+        }
+        // Skip a test already absorbed into an outer diamond's interior; only the
+        // outermost test roots a region.
+        if interior.contains(&item.offset) {
+            continue;
+        }
+        if let Some(merge_idx) = scan_value_diamond(instrs, i) {
+            let merge = instrs[merge_idx].offset;
+            // A trivial diamond (a single test with two leaves) is an ordinary ternary
+            // the normal path handles; require at least one nested test so this targets
+            // only the peephole-collapsed nested diamonds the block path cannot fold.
+            let nested = instrs[i + 1..merge_idx].iter().any(|it| {
+                matches!(
+                    it.instr.opcode.mnemonic(),
+                    Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE
+                )
+            });
+            if !nested {
+                continue;
+            }
+            regions.insert(item.offset, merge);
+            for it in &instrs[i..merge_idx] {
+                interior.insert(it.offset);
+            }
+        }
+    }
+    (regions, interior)
+}
+
+/// Scans a candidate value-ternary diamond rooted at the `POP_JUMP_IF_*` `instrs[root]`,
+/// returning the merge's instruction index when it is a self-contained pure-value
+/// diamond, else None. The merge is where the running furthest target converges; only
+/// value ops, forward `POP_JUMP_IF_*` tests, and forward `JUMP`/`JUMP_ABSOLUTE` exits may
+/// appear -- never a statement, return, loop, or block setup. (The folder re-verifies the
+/// exact tree; this only bounds the region for block formation.)
+fn scan_value_diamond(instrs: &[OffsetInstr], root: usize) -> Option<usize> {
+    let mut max_target = 0u32;
+    let mut k = root;
+    loop {
+        let item = instrs.get(k)?;
+        if k > root && item.offset.0 == max_target {
+            return Some(k);
+        }
+        match item.instr.opcode.mnemonic() {
+            Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE => {
+                let t = branch_target(item).ok()?;
+                if t.0 <= item.offset.0 {
+                    return None;
+                }
+                max_target = max_target.max(t.0);
+            }
+            Mnemonic::JUMP_FORWARD | Mnemonic::JUMP_ABSOLUTE => {
+                let t = branch_target(item).ok()?;
+                if t.0 <= item.offset.0 {
+                    return None;
+                }
+                max_target = max_target.max(t.0);
+            }
+            // An arm that returns its value directly (`return X if c else Y` compiled with
+            // each branch returning) is a leaf terminal, not a disqualifying transfer.
+            Mnemonic::RETURN_VALUE => {}
             other if is_statement_or_control(other) => return None,
             _ => {}
         }
@@ -3622,7 +3750,7 @@ fn break_targets(instrs: &[OffsetInstr]) -> BreakInfo {
 }
 
 /// Computes the absolute target offset of a branch instruction.
-fn branch_target(item: &OffsetInstr) -> Result<Offset, IrError> {
+pub(crate) fn branch_target(item: &OffsetInstr) -> Result<Offset, IrError> {
     let arg = item.instr.arg.ok_or(IrError::MissingOperand)? as u32;
     Ok(match item.instr.opcode.mnemonic() {
         Mnemonic::JUMP_ABSOLUTE

@@ -111,6 +111,8 @@ fn cases() {
         "disjoint_predicate",
         "list_comp_nested_iter",
         "list_comp_nested_iter_filtered",
+        "nested_ternary_store",
+        "nested_ternary_value",
     ] {
         insta::assert_snapshot!(name, decompile(fixture, name));
     }

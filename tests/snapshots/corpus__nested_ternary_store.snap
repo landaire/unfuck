@@ -1,0 +1,7 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+---
+def nested_ternary_store(c1, c2, c3, a, b, c, d):
+    x = (a if c2 else b) if c1 else c if c3 else d
+    return x

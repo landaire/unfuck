@@ -177,6 +177,14 @@ impl DecodedFunction {
                 {
                     return Ok(StructuredFunction { code: self.code, arena, body });
                 }
+                // Rebuild keeping value-producing ternary diamonds in one block, so a
+                // nested ternary the block path split at its inner POP_JUMP/JUMP and
+                // could not rejoin folds into one self-verified value.
+                if let Ok((arena, body)) = Cfg::build_ternary_regions(&self.instrs)
+                    .and_then(|cfg| self.structure_with(cfg))
+                {
+                    return Ok(StructuredFunction { code: self.code, arena, body });
+                }
                 // Last resort: a general structural-analysis structurer (loop-aware,
                 // layout-robust) that self-verifies against the CFG and returns None
                 // unless it can prove the recovery faithful. Runs only here, after every

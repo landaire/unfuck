@@ -1346,6 +1346,167 @@ impl Unstacker {
         Some((value, m_idx))
     }
 
+    /// Folds a value-producing ternary diamond -- a tree of `POP_JUMP_IF_*` tests whose
+    /// arms each compute a value and converge at one merge -- into a single nested
+    /// `Expr::Ternary`, pushing it and returning the merge's instruction index. The
+    /// first test's condition is already on the stack (the feed stepped its value ops);
+    /// every other arm value is lowered by stepping its own value ops. Used only by the
+    /// post-failure [`Cfg::build_ternary_regions`] rebuild for diamonds the block path
+    /// splits at the inner `POP_JUMP`/`JUMP` and cannot rejoin (a nested
+    /// `(a if c2 else b) if c1 else (c if c3 else d)` peephole-collapsed so both arms
+    /// jump straight to the shared merge, e.g. via `JUMP_ABSOLUTE`).
+    ///
+    /// Faithful two ways. (1) Sound by construction: the tree mirrors the diamond's CFG
+    /// edges exactly -- a `POP_JUMP_IF_FALSE` branches to its else on failure, so its
+    /// target is the `otherwise` and its fall-through the `then` (the reverse for
+    /// `IF_TRUE`); each leaf is exactly the value ops on its path. (2) Verified: every
+    /// instruction in `[first test, merge)` must be visited exactly once (a true diamond
+    /// partitions into disjoint arms; any shared or skipped block is rejected), every
+    /// branch must stay inside the region and every leaf reach exactly `merge`, and the
+    /// stack must return to its entry height on each arm. Any deviation returns `None`
+    /// and the honest stub stands.
+    pub(crate) fn fold_value_ternary_region(
+        &mut self,
+        instrs: &[OffsetInstr],
+        index: &HashMap<Offset, usize>,
+        start_idx: usize,
+        merge: Offset,
+    ) -> Option<usize> {
+        let merge_idx = *index.get(&merge)?;
+        if merge_idx <= start_idx {
+            return None;
+        }
+        let it = &instrs[start_idx];
+        if !matches!(
+            it.instr.opcode.mnemonic(),
+            Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE
+        ) {
+            return None;
+        }
+        // The first condition was computed by the feed and is on top of the stack.
+        let cond = self.pop_value().ok()?;
+        let base = self.stack.len();
+        let mut visited: HashSet<Offset> = HashSet::new();
+        visited.insert(it.offset);
+        let mut budget: u32 = 256;
+        let value = self.build_value_node(
+            instrs, index, start_idx, cond, merge, base, &mut visited, &mut budget,
+        )?;
+        // Structural verify: every instruction of the diamond region was consumed once.
+        if visited.len() != merge_idx - start_idx {
+            return None;
+        }
+        if self.stack.len() != base {
+            return None;
+        }
+        self.stack.push(value);
+        Some(merge_idx)
+    }
+
+    /// Builds the `Expr::Ternary` for the `POP_JUMP_IF_*` test at `instrs[node_idx]`
+    /// whose condition `cond` has already been popped, recursing into both arms. See
+    /// [`Self::fold_value_ternary_region`].
+    #[allow(clippy::too_many_arguments)]
+    fn build_value_node(
+        &mut self,
+        instrs: &[OffsetInstr],
+        index: &HashMap<Offset, usize>,
+        node_idx: usize,
+        cond: ValueId,
+        merge: Offset,
+        base: usize,
+        visited: &mut HashSet<Offset>,
+        budget: &mut u32,
+    ) -> Option<ValueId> {
+        *budget = budget.checked_sub(1)?;
+        let it = &instrs[node_idx];
+        let kind = it.instr.opcode.mnemonic();
+        let target = super::cfg::branch_target(it).ok()?;
+        let after = instrs.get(node_idx + 1)?.offset;
+        // Both arms must land inside the region (forward, no further than the merge).
+        if target <= it.offset || target.0 > merge.0 || after.0 > merge.0 {
+            return None;
+        }
+        let (then_off, else_off) = if kind == Mnemonic::POP_JUMP_IF_TRUE {
+            (target, after)
+        } else {
+            (after, target)
+        };
+        let then = self.build_value_arm(instrs, index, then_off, merge, base, visited, budget)?;
+        let otherwise =
+            self.build_value_arm(instrs, index, else_off, merge, base, visited, budget)?;
+        Some(self.arena.alloc(Expr::Ternary { cond, then, otherwise }))
+    }
+
+    /// Lowers a single ternary arm starting at `off`: steps its value ops until the arm
+    /// ends, either at a nested `POP_JUMP_IF_*` test (recurse) or as a leaf that reaches
+    /// `merge` by an explicit `JUMP`/`JUMP_ABSOLUTE` or by falling through. The arm's
+    /// value is returned and the stack is left at `base`. See
+    /// [`Self::fold_value_ternary_region`].
+    #[allow(clippy::too_many_arguments)]
+    fn build_value_arm(
+        &mut self,
+        instrs: &[OffsetInstr],
+        index: &HashMap<Offset, usize>,
+        off: Offset,
+        merge: Offset,
+        base: usize,
+        visited: &mut HashSet<Offset>,
+        budget: &mut u32,
+    ) -> Option<ValueId> {
+        let mut j = *index.get(&off)?;
+        loop {
+            let it = instrs.get(j)?;
+            // Falling through to the merge: this arm's value is on the stack.
+            if it.offset == merge {
+                let value = self.pop_value().ok()?;
+                if self.stack.len() != base {
+                    return None;
+                }
+                return Some(value);
+            }
+            // A block reached twice is not a disjoint-arm diamond; reject.
+            if !visited.insert(it.offset) {
+                return None;
+            }
+            let m = it.instr.opcode.mnemonic();
+            match m {
+                Mnemonic::POP_JUMP_IF_FALSE | Mnemonic::POP_JUMP_IF_TRUE => {
+                    let cond = self.pop_value().ok()?;
+                    if self.stack.len() != base {
+                        return None;
+                    }
+                    return self
+                        .build_value_node(instrs, index, j, cond, merge, base, visited, budget);
+                }
+                Mnemonic::JUMP_FORWARD | Mnemonic::JUMP_ABSOLUTE => {
+                    if super::cfg::branch_target(it).ok()? != merge {
+                        return None;
+                    }
+                    let value = self.pop_value().ok()?;
+                    if self.stack.len() != base {
+                        return None;
+                    }
+                    return Some(value);
+                }
+                // An arm that returns its value directly (`return X if c else Y`): the
+                // returned value is this leaf's value.
+                Mnemonic::RETURN_VALUE => {
+                    let value = self.pop_value().ok()?;
+                    if self.stack.len() != base {
+                        return None;
+                    }
+                    return Some(value);
+                }
+                other if super::cfg::is_statement_or_control(other) => return None,
+                _ => {
+                    self.step(&it.instr, it.offset).ok()?;
+                    j += 1;
+                }
+            }
+        }
+    }
+
     /// Recursive translation of the boolean region rooted at the leaf starting at
     /// `start` (see [`Self::recover_returned_bool`]).
     fn eval_bool(
