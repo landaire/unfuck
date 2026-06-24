@@ -3434,37 +3434,36 @@ fn find_chained_comparisons(
         {
             continue;
         }
-        // Value form: the final comparison's `JUMP_FORWARD` sits right before the cleanup and
-        // names the merge where the chained value lands (often the merge is itself the
-        // consuming branch). Exclude the forward jump and the cleanup pair.
+        // Value form (contiguous): the final comparison's `JUMP_FORWARD` sits right before
+        // the cleanup and jumps OVER it to the merge that immediately follows (`l_idx + 2`),
+        // where the chained value lands. The jump-target-is-the-post-cleanup-merge check is
+        // load-bearing: without it a RELINEARIZED layout (cleanup displaced after the store,
+        // with an unrelated post-store `JUMP_FORWARD` happening to sit just before the
+        // displaced cleanup) mis-fires here with a wrong merge -- it must instead fall through
+        // to the relinearized form below.
         if instrs[l_idx - 1].instr.opcode.mnemonic() == Mnemonic::JUMP_FORWARD {
-            let Ok(merge) = branch_target(&instrs[l_idx - 1]) else {
-                continue;
-            };
-            overrides.insert(item.offset, merge);
-            excluded.insert(instrs[l_idx - 1].offset);
-            excluded.insert(instrs[l_idx].offset);
-            excluded.insert(instrs[l_idx + 1].offset);
-            continue;
+            if let Ok(merge) = branch_target(&instrs[l_idx - 1]) {
+                if instrs.get(l_idx + 2).map(|i| i.offset) == Some(merge) {
+                    overrides.insert(item.offset, merge);
+                    excluded.insert(instrs[l_idx - 1].offset);
+                    excluded.insert(instrs[l_idx].offset);
+                    excluded.insert(instrs[l_idx + 1].offset);
+                    continue;
+                }
+            }
         }
-        // Branch form (relinearized): the chained comparison feeds a branch, so the value lands
-        // at the consuming POP_JUMP itself. The obfuscator displaces the cleanup to after that
-        // consumer and reaches it with `ROT_TWO; POP_TOP; JUMP_ABSOLUTE <consumer>` (the
-        // short-circuit-taken path), while the fall-through (both comparisons evaluated) reaches
-        // the consumer directly. The merge is `<consumer>`, which must be a `POP_JUMP_IF_*`.
+        // Relinearized form: the obfuscator displaces the cleanup to after the merge and
+        // reaches it with `ROT_TWO; POP_TOP; JUMP_ABSOLUTE <merge>` (the short-circuit-taken
+        // path), while the fall-through (both comparisons evaluated) reaches `<merge>`
+        // directly. The merge is where the chained value lands: a consuming `POP_JUMP_IF_*`
+        // (the chain feeds a branch) OR a value consumer such as a `STORE_*` (the chain is
+        // assigned, e.g. `x = a <= b <= c`). Any merge is accepted -- a JIFOP whose target is
+        // `ROT_TWO; POP_TOP; JUMP_ABSOLUTE` is unambiguously a chained-comparison cleanup (a
+        // plain `and`/`or` short-circuit jumps straight to its merge, with no ROT_TWO/POP_TOP).
         if instrs.get(l_idx + 2).map(|i| i.instr.opcode.mnemonic()) == Some(Mnemonic::JUMP_ABSOLUTE)
         {
-            let Ok(consumer) = branch_target(&instrs[l_idx + 2]) else {
-                continue;
-            };
-            let consumer_is_branch = index.get(&consumer).is_some_and(|&ci| {
-                matches!(
-                    instrs[ci].instr.opcode.mnemonic(),
-                    Mnemonic::POP_JUMP_IF_TRUE | Mnemonic::POP_JUMP_IF_FALSE
-                )
-            });
-            if consumer_is_branch {
-                overrides.insert(item.offset, consumer);
+            if let Ok(merge) = branch_target(&instrs[l_idx + 2]) {
+                overrides.insert(item.offset, merge);
                 excluded.insert(instrs[l_idx].offset);
                 excluded.insert(instrs[l_idx + 1].offset);
                 excluded.insert(instrs[l_idx + 2].offset);

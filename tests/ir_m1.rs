@@ -301,6 +301,40 @@ fn non_integer_float_const_renders_exact_value() {
 }
 
 #[test]
+fn relinearized_chained_comparison_into_store_recovers() {
+    // Regression (G:\deob FactoryVisibility.findDepthRangeByValue): a chained comparison
+    // `a <= b <= c` stored to a variable, with the deob's RELINEARIZED layout -- the
+    // `ROT_TWO; POP_TOP` cleanup is displaced AFTER the store and reached by
+    // `JUMP_ABSOLUTE <store>`, and the second comparison's closing jump is a
+    // `JUMP_FORWARD 0` no-op falling into the store. find_chained_comparisons' value-form
+    // mis-fired here (the unrelated post-store JUMP_FORWARD sits right before the displaced
+    // cleanup), producing a wrong merge -> "unsupported opcode JUMP_IF_FALSE_OR_POP".
+    let code = Builder::new("f", 3, &["a", "b", "c", "x"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 0)
+        .arg(Standard::LOAD_FAST, 1)
+        .op(Standard::DUP_TOP)
+        .op(Standard::ROT_THREE)
+        .arg(Standard::COMPARE_OP, 1) // <=
+        .jump(Standard::JUMP_IF_FALSE_OR_POP, "cleanup")
+        .arg(Standard::LOAD_FAST, 2)
+        .arg(Standard::COMPARE_OP, 1) // <=
+        .jump(Standard::JUMP_FORWARD, "merge") // no-op (merge is next) -> arg 0
+        .label("merge")
+        .arg(Standard::STORE_FAST, 3)
+        .jump(Standard::JUMP_FORWARD, "end")
+        .label("cleanup")
+        .op(Standard::ROT_TWO)
+        .op(Standard::POP_TOP)
+        .jump(Standard::JUMP_ABSOLUTE, "merge")
+        .label("end")
+        .arg(Standard::LOAD_FAST, 3)
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(a, b, c):\n    x = a <= b <= c\n    return x\n");
+}
+
+#[test]
 fn fractional_float_adjacent_to_zero_in_multiply_renders_exact_value() {
     // Regression (wowsdeob DECOMPILER_ISSUES_FOUND Issue 1/2, Vehicle.calcServerSpeed /
     // calcMaxServerSpeed / fovRemapping): a fractional float used in a BINARY_MULTIPLY
