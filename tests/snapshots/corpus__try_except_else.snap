@@ -1,0 +1,13 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+---
+def try_except_else(x):
+    try:
+        y = risky(x)
+    except ValueError:
+        y = -1
+    else:
+        y = y + 1
+
+    return y

@@ -65,6 +65,9 @@ pub enum Terminator {
         body: Offset,
         handlers: Vec<HandlerArm>,
         end: Option<Offset>,
+        /// The `else:` suite entry (run when the body raised nothing), or `None`. It sits
+        /// between the body's `POP_BLOCK` and the handler dispatch and exits to `end`.
+        els: Option<Offset>,
     },
     /// `SETUP_WITH`: a `with` region. `body` is the managed suite; `end` is the
     /// merge after the construct. `target` is the `as` binding, if any. The context
@@ -108,10 +111,13 @@ impl Terminator {
                 map(body);
                 map(exit);
             }
-            Terminator::Try { body, handlers, end } => {
+            Terminator::Try { body, handlers, end, els } => {
                 map(body);
                 for arm in handlers {
                     map(&mut arm.body);
+                }
+                if let Some(els) = els {
+                    map(els);
                 }
                 if let Some(end) = end {
                     map(end);
@@ -1453,6 +1459,11 @@ fn block_leaders(
         if let Some(end) = shape.end {
             leaders.insert(end);
         }
+        // The `else:` suite begins its own block (the body falls through POP_BLOCK into
+        // it; nothing else jumps there, so it would not otherwise be a leader).
+        if let Some(els) = shape.els {
+            leaders.insert(els);
+        }
         for clause in &shape.clauses {
             leaders.insert(clause.body_entry);
         }
@@ -2369,6 +2380,10 @@ struct TryShape {
     /// body has no normal exit (always raises or returns) and the deob dropped the
     /// `POP_BLOCK; JUMP merge` body exit.
     end: Option<Offset>,
+    /// The `else:` suite entry (the code between the body's `POP_BLOCK` and the handler
+    /// dispatch, run only when the body raised nothing), or `None` for a plain
+    /// try/except. Its exit jump to `end` is excluded from block formation.
+    els: Option<Offset>,
     clauses: Vec<ClauseShape>,
 }
 
@@ -2913,6 +2928,8 @@ fn recover_try(
     // reached only through a handler and absorbed into that arm. The structurer's
     // `Point::Exit` guard rejects (rather than mis-emits) any body whose region does
     // not terminate, e.g. a nested merge-less try miscounted into this one.
+    // The `else:` suite entry (set below when a try/except/else is detected).
+    let mut els: Option<Offset> = None;
     let end = match pop_idx {
         Some(pop_idx) => {
             let jump = instrs.get(pop_idx + 1).ok_or(IrError::Unstructurable)?;
@@ -2922,13 +2939,85 @@ fn recover_try(
                     let merge = branch_target(jump)?;
                     let merge_idx =
                         skip_nops(instrs, *index.get(&merge).ok_or(IrError::BadOperand)?);
-                    Some(instrs.get(merge_idx).ok_or(IrError::Unstructurable)?.offset)
+                    let merge_off = instrs.get(merge_idx).ok_or(IrError::Unstructurable)?.offset;
+                    // Canonical try/except/else (CPython layout): the body's success jump
+                    // targets the `else:` suite, which sits AFTER the handler chain, and the
+                    // handlers jump PAST it to a later merge. Detect by scanning the handler
+                    // region for a forward jump whose target is beyond this jump's target;
+                    // when every such jump agrees on one offset M, that M is the real merge
+                    // and this jump's target is the else entry. A plain try/except has its
+                    // handlers converge at this jump's target itself, so no jump goes past it
+                    // and the else stays absent. (A failed/ambiguous detection leaves the
+                    // try/except faithful, just without the idiomatic `else:`.)
+                    let mut past: Option<Offset> = None;
+                    let mut consistent = true;
+                    for i in handler_idx..merge_idx {
+                        if matches!(
+                            instrs[i].instr.opcode.mnemonic(),
+                            Mnemonic::JUMP_FORWARD | Mnemonic::JUMP_ABSOLUTE
+                        ) {
+                            if let Ok(m) = branch_target(&instrs[i]) {
+                                if m.0 > merge_off.0 {
+                                    match past {
+                                        None => past = Some(m),
+                                        Some(p) if p == m => {}
+                                        Some(_) => consistent = false,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    match past.filter(|_| consistent) {
+                        Some(m) => {
+                            els = Some(merge_off);
+                            let m_idx =
+                                skip_nops(instrs, *index.get(&m).ok_or(IrError::BadOperand)?);
+                            Some(instrs.get(m_idx).ok_or(IrError::Unstructurable)?.offset)
+                        }
+                        None => Some(merge_off),
+                    }
                 }
-                // The deob drops the body's `JUMP merge` when the merge is physically
-                // the next instruction -- the body falls straight through POP_BLOCK
-                // into the post-try code (often the function epilogue, `LOAD_CONST
-                // None; RETURN_VALUE`). The merge is then that instruction itself.
-                _ => Some(jump.offset),
+                // The body does not exit with a bare `POP_BLOCK; JUMP merge`. Either a
+                // try/except/else interposes the else suite (`POP_BLOCK; <else>; JUMP
+                // merge`, the JUMP sitting right before the handler dispatch and skipping
+                // over the handler to a later merge), or the deob dropped the body's
+                // `JUMP merge` because the merge is physically the next instruction (the
+                // body falls straight through POP_BLOCK into the post-try code).
+                _ => {
+                    // The success-exit jump, if any, is the last non-NOP before the
+                    // handler dispatch.
+                    let mut exit_idx = handler_idx;
+                    while exit_idx > pop_idx + 1
+                        && instrs[exit_idx - 1].instr.opcode.mnemonic() == Mnemonic::NOP
+                    {
+                        exit_idx -= 1;
+                    }
+                    exit_idx = exit_idx.wrapping_sub(1);
+                    let exit_jump = (exit_idx > pop_idx).then(|| &instrs[exit_idx]).filter(|it| {
+                        matches!(
+                            it.instr.opcode.mnemonic(),
+                            Mnemonic::JUMP_FORWARD | Mnemonic::JUMP_ABSOLUTE
+                        )
+                    });
+                    match exit_jump.and_then(|it| branch_target(it).ok()) {
+                        // A forward jump right before the handler that skips over it to a
+                        // later merge marks a try/except/else: the code between POP_BLOCK
+                        // and that jump is the else suite.
+                        Some(merge) if merge.0 > instrs[handler_idx].offset.0 => {
+                            // The else suite's exit jump terminates its block (a Jump to
+                            // the merge); leave it in place so the else region stops there
+                            // rather than falling through into the handler.
+                            if exit_idx > pop_idx + 1 {
+                                els = Some(jump.offset);
+                            }
+                            let merge_idx =
+                                skip_nops(instrs, *index.get(&merge).ok_or(IrError::BadOperand)?);
+                            Some(instrs.get(merge_idx).ok_or(IrError::Unstructurable)?.offset)
+                        }
+                        // Fall-through merge: the merge is the instruction after POP_BLOCK.
+                        _ => Some(jump.offset),
+                    }
+                }
             }
         }
         // Merge-less: the body always raises or returns. A handler that falls through
@@ -3068,7 +3157,7 @@ fn recover_try(
         return Err(IrError::HasControlFlow(Mnemonic::SETUP_EXCEPT));
     }
 
-    Ok(TryShape { setup: setup.offset, body_entry, end, clauses })
+    Ok(TryShape { setup: setup.offset, body_entry, end, els, clauses })
 }
 
 /// Whether an `except` arm provably terminates: scanning forward from its body, a
@@ -3182,6 +3271,7 @@ fn build_try_terminators(
                 body: shape.body_entry,
                 handlers,
                 end: shape.end,
+                els: shape.els,
             },
         );
     }

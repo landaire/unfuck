@@ -365,11 +365,13 @@ pub enum Stmt {
         body: Vec<Stmt>,
         els: Vec<Stmt>,
     },
-    /// `try: ... except [type [as name]]: ...`. The handlers are emitted in source
-    /// order; a handler with no `exc_type` is a bare `except:`.
+    /// `try: ... except [type [as name]]: ... [else: ...]`. The handlers are emitted in
+    /// source order; a handler with no `exc_type` is a bare `except:`. `els` is the
+    /// `else:` suite (run when the body raised nothing), empty when absent.
     Try {
         body: Vec<Stmt>,
         handlers: Vec<ExceptHandler>,
+        els: Vec<Stmt>,
     },
     /// `with context [as target]: ...`, recovered from a `SETUP_WITH` region.
     With {

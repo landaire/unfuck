@@ -519,9 +519,10 @@ fn has_module_scope_return(stmts: &[Stmt]) -> bool {
         Stmt::ForElse { body, els, .. } => {
             has_module_scope_return(body) || has_module_scope_return(els)
         }
-        Stmt::Try { body, handlers } => {
+        Stmt::Try { body, handlers, els } => {
             has_module_scope_return(body)
                 || handlers.iter().any(|handler| has_module_scope_return(&handler.body))
+                || has_module_scope_return(els)
         }
         Stmt::TryFinally { body, finalbody } => {
             has_module_scope_return(body) || has_module_scope_return(finalbody)

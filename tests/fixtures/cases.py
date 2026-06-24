@@ -397,6 +397,28 @@ def disjoint_predicate(e, sid, tid, tt):
     return isinstance(e, int) and e.alive and (e.id != sid or tt & 1) and (e.team == tid and tt & 2 or e.team != tid and tt & 4) or isinstance(e, str) and e.alive and (e.team == tid and tt & 8 or e.team != tid and tt & 16)
 
 
+def try_except_else(x):
+    try:
+        y = risky(x)
+    except ValueError:
+        y = -1
+    else:
+        y = y + 1
+    return y
+
+
+def try_except_else_nonterm(x):
+    out = []
+    try:
+        v = risky(x)
+    except Exception:
+        out.append('err')
+    else:
+        out.append(v)
+    out.append('done')
+    return out
+
+
 def nested_ternary_store(c1, c2, c3, a, b, c, d):
     x = (a if c2 else b) if c1 else (c if c3 else d)
     return x

@@ -83,11 +83,12 @@ pub(crate) fn cleanup(stmts: &mut Vec<Stmt>) {
                 strip_tail_continue(body);
                 cleanup(els);
             }
-            Stmt::Try { body, handlers } => {
+            Stmt::Try { body, handlers, els } => {
                 cleanup(body);
                 for handler in handlers {
                     cleanup(&mut handler.body);
                 }
+                cleanup(els);
             }
             Stmt::With { body, .. } => cleanup(body),
             Stmt::TryFinally { body, finalbody } => {
@@ -119,11 +120,12 @@ fn strip_tail_continue(stmts: &mut Vec<Stmt>) {
             strip_tail_continue(then);
             strip_tail_continue(els);
         }
-        Some(Stmt::Try { body, handlers }) => {
+        Some(Stmt::Try { body, handlers, els }) => {
             strip_tail_continue(body);
             for handler in handlers.iter_mut() {
                 strip_tail_continue(&mut handler.body);
             }
+            strip_tail_continue(els);
         }
         Some(Stmt::With { body, .. }) => strip_tail_continue(body),
         _ => {}
@@ -307,7 +309,7 @@ impl Structurer<'_> {
                     });
                     cursor = if both_terminate { None } else { self.point_block(follow) };
                 }
-                Terminator::Try { body, handlers, end } => {
+                Terminator::Try { body, handlers, end, els } => {
                     // A merge-less try (`end` is `None`) has no merge of its own: the
                     // body always raises or returns, so any merge is reached only
                     // through a handler that falls through. Such a handler continues to
@@ -321,7 +323,20 @@ impl Structurer<'_> {
                         Some(end) => Point::Block(self.cfg.target(*end)?),
                         None => stop,
                     };
-                    let try_body = self.region(self.cfg.target(*body)?, follow, depth + 1)?;
+                    // On success the protected body flows into the `else:` suite (when
+                    // present), which then converges at the merge; otherwise it goes
+                    // straight to the merge. Bounding the body at the else entry keeps the
+                    // else clause out of the protected region (it is not protected -- an
+                    // exception there is not caught).
+                    let body_follow = match els {
+                        Some(els) => Point::Block(self.cfg.target(*els)?),
+                        None => follow,
+                    };
+                    let try_body = self.region(self.cfg.target(*body)?, body_follow, depth + 1)?;
+                    let els_body = match els {
+                        Some(els) => self.region(self.cfg.target(*els)?, follow, depth + 1)?,
+                        None => Vec::new(),
+                    };
                     let mut arms = Vec::with_capacity(handlers.len());
                     for handler in handlers {
                         let arm_body = self.region(self.cfg.target(handler.body)?, follow, depth + 1)?;
@@ -338,7 +353,7 @@ impl Structurer<'_> {
                     if end.is_none() && !try_body.last().is_some_and(terminates) {
                         return Err(IrError::Unstructurable);
                     }
-                    out.push(Stmt::Try { body: try_body, handlers: arms });
+                    out.push(Stmt::Try { body: try_body, handlers: arms, els: els_body });
                     cursor = self.point_block(follow);
                 }
                 Terminator::With { body, end, target } => {
@@ -684,7 +699,7 @@ impl Structurer<'_> {
         // is the loop header (the protected body falls back to the loop top each
         // iteration) and whose handler typically breaks out. Structure it like region()'s
         // Try arm, bounding the body and every handler at that merge.
-        if let Terminator::Try { body: try_off, handlers, end } =
+        if let Terminator::Try { body: try_off, handlers, end, els } =
             self.cfg.block(header).terminator.clone()
         {
             // A merge-less try at a loop header (no normal exit) is not handled here.
@@ -692,7 +707,15 @@ impl Structurer<'_> {
                 return Err(IrError::Unstructurable);
             };
             let follow = Point::Block(self.cfg.target(end)?);
-            let try_body = self.region(self.cfg.target(try_off)?, follow, depth + 1)?;
+            let body_follow = match els {
+                Some(els) => Point::Block(self.cfg.target(els)?),
+                None => follow,
+            };
+            let try_body = self.region(self.cfg.target(try_off)?, body_follow, depth + 1)?;
+            let els_body = match els {
+                Some(els) => self.region(self.cfg.target(els)?, follow, depth + 1)?,
+                None => Vec::new(),
+            };
             let mut arms = Vec::with_capacity(handlers.len());
             for handler in &handlers {
                 let arm_body = self.region(self.cfg.target(handler.body)?, follow, depth + 1)?;
@@ -702,7 +725,7 @@ impl Structurer<'_> {
                     body: arm_body,
                 });
             }
-            body.push(Stmt::Try { body: try_body, handlers: arms });
+            body.push(Stmt::Try { body: try_body, handlers: arms, els: els_body });
             return Ok(body);
         }
         // The header's terminator leads back into the loop. Only a plain edge is the
@@ -1064,9 +1087,10 @@ fn stmt_blocks_mut(stmt: &mut Stmt) -> Vec<&mut Vec<Stmt>> {
         | Stmt::For { body, .. }
         | Stmt::With { body, .. } => vec![body],
         Stmt::ForElse { body, els, .. } | Stmt::WhileElse { body, els, .. } => vec![body, els],
-        Stmt::Try { body, handlers } => {
+        Stmt::Try { body, handlers, els } => {
             let mut blocks = vec![body];
             blocks.extend(handlers.iter_mut().map(|handler| &mut handler.body));
+            blocks.push(els);
             blocks
         }
         Stmt::TryFinally { body, finalbody } => vec![body, finalbody],

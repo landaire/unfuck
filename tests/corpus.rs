@@ -113,6 +113,8 @@ fn cases() {
         "list_comp_nested_iter_filtered",
         "nested_ternary_store",
         "nested_ternary_value",
+        "try_except_else",
+        "try_except_else_nonterm",
     ] {
         insta::assert_snapshot!(name, decompile(fixture, name));
     }

@@ -1,0 +1,16 @@
+---
+source: tests/corpus.rs
+expression: "decompile(fixture, name)"
+---
+def try_except_else_nonterm(x):
+    out = []
+
+    try:
+        v = risky(x)
+    except Exception:
+        out.append('err')
+    else:
+        out.append(v)
+
+    out.append('done')
+    return out

@@ -672,7 +672,7 @@ impl<'a> Emitter<'a> {
                     self.block(els);
                 }
             }
-            Stmt::Try { body, handlers } => {
+            Stmt::Try { body, handlers, els } => {
                 self.line("try:");
                 self.block(body);
                 for handler in handlers {
@@ -692,6 +692,10 @@ impl<'a> Emitter<'a> {
                     };
                     self.line(&header);
                     self.block(&handler.body);
+                }
+                if !els.is_empty() {
+                    self.line("else:");
+                    self.block(els);
                 }
             }
             Stmt::With { context, target, body } => {
@@ -1316,8 +1320,10 @@ fn contains_return(stmts: &[Stmt]) -> bool {
         Stmt::ForElse { body, els, .. } | Stmt::WhileElse { body, els, .. } => {
             contains_return(body) || contains_return(els)
         }
-        Stmt::Try { body, handlers } => {
-            contains_return(body) || handlers.iter().any(|h| contains_return(&h.body))
+        Stmt::Try { body, handlers, els } => {
+            contains_return(body)
+                || handlers.iter().any(|h| contains_return(&h.body))
+                || contains_return(els)
         }
         Stmt::TryFinally { body, finalbody } => {
             contains_return(body) || contains_return(finalbody)

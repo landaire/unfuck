@@ -110,6 +110,8 @@ enum Region {
         header: BlockId,
         body: Box<Region>,
         handlers: Vec<TryHandler>,
+        /// The `else:` suite (run when the body raised nothing), or `None`.
+        els: Option<Box<Region>>,
         follow: Option<BlockId>,
     },
     Break,
@@ -938,24 +940,39 @@ impl<'a> Analyzer<'a> {
                     seq.push(region);
                     cursor = if both_terminate { None } else { merge };
                 }
-                Terminator::Try { body, handlers, end } => {
+                Terminator::Try { body, handlers, end, els } => {
                     // The body and every handler converge at `end` (the merge). A
                     // merge-less try (`end` None) has no merge: the body always exits, so a
                     // handler that falls through continues to the enclosing region's stop.
                     let body_off = *body;
                     let handlers = handlers.clone();
                     let end = *end;
+                    let els = *els;
                     let follow = match end {
                         Some(e) => Some(self.resolve_off(e)?),
                         None => stop,
                     };
+                    // On success the body flows into the `else:` suite (when present),
+                    // which converges at the merge; the else is not protected.
+                    let els_entry = match els {
+                        Some(e) => Some(self.resolve_off(e)?),
+                        None => None,
+                    };
+                    let body_follow = match els_entry {
+                        Some(e) => Some(e),
+                        None => follow,
+                    };
                     let body_entry = self.resolve_off(body_off)?;
-                    let body_region = self.build_region(body_entry, follow, frames, depth + 1)?;
+                    let body_region = self.build_region(body_entry, body_follow, frames, depth + 1)?;
                     // A merge-less try's body must terminate (no normal exit), or the
                     // recovery would be wrong; reject otherwise.
                     if end.is_none() && !self.region_terminates(&body_region) {
                         return None;
                     }
+                    let els_region = match els_entry {
+                        Some(e) => Some(Box::new(self.build_region(e, follow, frames, depth + 1)?)),
+                        None => None,
+                    };
                     let mut arms = Vec::with_capacity(handlers.len());
                     for h in &handlers {
                         let hb = self.resolve_off(h.body)?;
@@ -970,6 +987,7 @@ impl<'a> Analyzer<'a> {
                         header: cur,
                         body: Box::new(body_region),
                         handlers: arms,
+                        els: els_region,
                         follow,
                     });
                     cursor = follow;
@@ -1284,15 +1302,23 @@ impl<'a> Analyzer<'a> {
                 frames.pop();
                 r
             }
-            Region::Try { header, body, handlers, follow } => {
+            Region::Try { header, body, handlers, els, follow } => {
                 // The body and handlers converge at the merge (`follow`); a merge-less try
                 // continues to `cont` (the enclosing continuation).
                 let after = match follow {
                     Some(b) => Dest::Block(*b),
                     None => cont,
                 };
-                let mut edges =
-                    vec![(Edge::TryBody, self.entry_dest(std::slice::from_ref(body.as_ref()), after, frames)?)];
+                // On success the body flows into the `else:` suite (when present), which
+                // then converges at the merge.
+                let body_after = match els {
+                    Some(e) => self.entry_dest(std::slice::from_ref(e.as_ref()), after, frames)?,
+                    None => after,
+                };
+                let mut edges = vec![(
+                    Edge::TryBody,
+                    self.entry_dest(std::slice::from_ref(body.as_ref()), body_after, frames)?,
+                )];
                 for h in handlers {
                     edges.push((
                         Edge::TryHandler,
@@ -1302,7 +1328,10 @@ impl<'a> Analyzer<'a> {
                 if derived.insert(*header, edges).is_some() {
                     return None;
                 }
-                self.simulate(body, after, frames, derived)?;
+                self.simulate(body, body_after, frames, derived)?;
+                if let Some(e) = els {
+                    self.simulate(e, after, frames, derived)?;
+                }
                 for h in handlers {
                     self.simulate(&h.body, after, frames, derived)?;
                 }
@@ -1457,7 +1486,7 @@ impl<'a> Analyzer<'a> {
             Region::InfLoop { body, .. } => {
                 out.push(Stmt::Loop { body: self.lower(body) });
             }
-            Region::Try { header, body, handlers, .. } => {
+            Region::Try { header, body, handlers, els, .. } => {
                 out.extend(self.cfg.block(*header).stmts.iter().cloned());
                 let handlers = handlers
                     .iter()
@@ -1467,7 +1496,8 @@ impl<'a> Analyzer<'a> {
                         body: self.lower(&h.body),
                     })
                     .collect();
-                out.push(Stmt::Try { body: self.lower(body), handlers });
+                let els = els.as_ref().map(|e| self.lower(e)).unwrap_or_default();
+                out.push(Stmt::Try { body: self.lower(body), handlers, els });
             }
         }
     }
@@ -1894,6 +1924,7 @@ mod tests {
                         body: off(1),
                         handlers: vec![HandlerArm { exc_type: Some(exc), name: None, body: off(2) }],
                         end: Some(off(3)),
+                        els: None,
                     },
                 ),
                 (vec![Stmt::Expr(body_v)], Terminator::Fallthrough(off(3))),
@@ -1932,6 +1963,7 @@ mod tests {
                         body: off(1),
                         handlers: vec![HandlerArm { exc_type: Some(exc), name: None, body: off(2) }],
                         end: None,
+                        els: None,
                     },
                 ),
                 (vec![], Terminator::Return(Some(ret_a))),
@@ -1940,7 +1972,7 @@ mod tests {
             arena,
         );
         let body = structure(&mut cfg).expect("merge-less try with returning body should structure");
-        let Some(Stmt::Try { body: tbody, handlers }) =
+        let Some(Stmt::Try { body: tbody, handlers, .. }) =
             body.iter().find(|s| matches!(s, Stmt::Try { .. }))
         else {
             panic!("expected a Try, got: {:?}", body);
