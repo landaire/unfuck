@@ -325,7 +325,7 @@ impl Cfg {
         excluded.extend(chained_excluded);
         // A reordered ternary's else arm is excluded from block formation and fed at
         // the merge instead, so the existing in-block ternary folding applies.
-        let (reordered_marks, reordered_excluded, else_feed_ranges) =
+        let (reordered_marks, reordered_excluded, else_feed_ranges, reordered_then_nops) =
             find_reordered_ternaries(instrs);
         ternaries.extend(reordered_marks);
         excluded.extend(reordered_excluded);
@@ -418,6 +418,7 @@ impl Cfg {
             Unstacker::new()
         };
         unstacker.set_merge_overrides(merge_overrides);
+        unstacker.set_then_nops(reordered_then_nops);
 
         // Build each try's terminator up front: the exception-type expressions are
         // lowered through the shared unstacker so they enter the same arena the
@@ -1629,7 +1630,26 @@ fn block_leaders(
                 // Backward targets are loop back edges; the structurer recovers the
                 // loop, so they are allowed here.
                 leaders.insert(branch_target(item)?);
-                if let Some(next) = next {
+                // An UNCONDITIONAL jump ends its block; the next instruction begins a new
+                // one. When that next is excluded (e.g. a relinearized ternary's else arm
+                // displaced right after the jump), skip to the next non-excluded offset so
+                // the block still ends at the jump rather than swallowing the jump as a
+                // mid-block value op. A conditional branch keeps its real next (the
+                // fall-through, which may be an in-block folded arm), so only do this for
+                // the unconditional forms.
+                let unconditional = matches!(
+                    mnemonic,
+                    Mnemonic::JUMP_FORWARD | Mnemonic::JUMP_ABSOLUTE | Mnemonic::CONTINUE_LOOP
+                );
+                if unconditional {
+                    if let Some(next_leader) = instrs[idx + 1..]
+                        .iter()
+                        .map(|i| i.offset)
+                        .find(|off| !excluded.contains(off))
+                    {
+                        leaders.insert(next_leader);
+                    }
+                } else if let Some(next) = next {
                     leaders.insert(next);
                 }
                 // A FOR_ITER is intrinsically a loop header, so it must begin its own
@@ -2458,7 +2478,7 @@ pub(crate) fn is_statement_or_control(mnemonic: Mnemonic) -> bool {
 /// the stack before resolution.
 fn find_reordered_ternaries(
     instrs: &[OffsetInstr],
-) -> (HashSet<Offset>, HashSet<Offset>, HashMap<Offset, (usize, usize)>) {
+) -> (HashSet<Offset>, HashSet<Offset>, HashMap<Offset, (usize, usize)>, HashMap<Offset, Offset>) {
     let index: HashMap<Offset, usize> = instrs
         .iter()
         .enumerate()
@@ -2467,6 +2487,11 @@ fn find_reordered_ternaries(
     let mut marks = HashSet::new();
     let mut excluded = HashSet::new();
     let mut else_feeds = HashMap::new();
+    // The then arm's terminator, when it is a `NOP` (a rewritten `JUMP_FORWARD 0`),
+    // records no `then` for the pending ternary on its own; this maps that NOP's offset
+    // to the merge so the unstacker completes the ternary there (see
+    // `Unstacker::set_then_nops`).
+    let mut then_nops: HashMap<Offset, Offset> = HashMap::new();
     let is_jump = |idx: usize| instrs[idx].instr.opcode.is_jump();
     for (idx, item) in instrs.iter().enumerate() {
         if !matches!(
@@ -2481,27 +2506,41 @@ fn find_reordered_ternaries(
         let Some(&else_idx) = index.get(&else_off) else {
             continue;
         };
-        // The then arm runs from just after the test to its terminating jump.
+        // The then arm runs to its terminating jump, which targets the merge (the next
+        // instruction). Since the merge is immediately after, the compiler emits
+        // `JUMP_FORWARD 0`, which strip_noop_jumps rewrote to `NOP` -- the then arm now
+        // falls through that NOP into the merge. Stop the scan at either form.
         let then_start = idx + 1;
         let mut then_jump = then_start;
-        while then_jump < instrs.len() && !is_jump(then_jump) {
+        while then_jump < instrs.len()
+            && !is_jump(then_jump)
+            && instrs[then_jump].instr.opcode.mnemonic() != Mnemonic::NOP
+        {
             then_jump += 1;
         }
-        if then_jump >= instrs.len()
-            || then_jump < then_start
-            || instrs[then_jump].instr.opcode.mnemonic() != Mnemonic::JUMP_FORWARD
-        {
+        if then_jump >= instrs.len() || then_jump < then_start {
             continue;
         }
-        let Ok(merge_off) = branch_target(&instrs[then_jump]) else {
+        // The merge is the instruction right after the terminator. A `NOP` keeps the
+        // 3-byte slot of the `JUMP_FORWARD 0` it replaced, so use the next decoded
+        // instruction's offset rather than opcode length.
+        let Some(merge_instr) = instrs.get(then_jump + 1) else {
             continue;
         };
-        // The signature of the reordered diamond: the then arm jumps to a merge that
-        // is the immediately following instruction, and the else arm is laid out
-        // after that merge (a contiguous ternary has its else before the merge).
-        let next_off =
-            Offset(instrs[then_jump].offset.0 + instrs[then_jump].instr.len() as u32);
-        if merge_off != next_off || else_off <= merge_off {
+        let merge_off = merge_instr.offset;
+        let then_is_nop = match instrs[then_jump].instr.opcode.mnemonic() {
+            Mnemonic::JUMP_FORWARD => {
+                if branch_target(&instrs[then_jump]).ok() != Some(merge_off) {
+                    continue;
+                }
+                false
+            }
+            Mnemonic::NOP => true,
+            _ => continue,
+        };
+        // The signature of the reordered diamond: the else arm is laid out after the
+        // merge (a contiguous ternary has its else before the merge).
+        if else_off <= merge_off {
             continue;
         }
         // The else arm runs from the test's target to its terminating jump, which
@@ -2520,13 +2559,18 @@ fn find_reordered_ternaries(
             continue;
         }
         marks.insert(item.offset);
-        marks.insert(instrs[then_jump].offset);
+        if then_is_nop {
+            // The NOP records no `then`; the unstacker completes the ternary at the merge.
+            then_nops.insert(instrs[then_jump].offset, merge_off);
+        } else {
+            marks.insert(instrs[then_jump].offset);
+        }
         for item in &instrs[else_idx..=else_jump] {
             excluded.insert(item.offset);
         }
         else_feeds.insert(merge_off, (else_idx, else_jump));
     }
-    (marks, excluded, else_feeds)
+    (marks, excluded, else_feeds, then_nops)
 }
 
 /// A recovered `try`/`except` region over the raw instruction stream.

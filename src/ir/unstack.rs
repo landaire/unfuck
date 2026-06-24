@@ -84,6 +84,11 @@ pub struct Unstacker {
     /// a chained-comparison test: the value lands after the cleanup, not at the
     /// jump's literal target. Keyed by the jump's offset.
     merge_overrides: HashMap<Offset, Offset>,
+    /// A reordered ternary's then-arm terminator that is a `NOP` (rewritten from
+    /// `JUMP_FORWARD 0`): maps the NOP offset to the ternary's merge. At such a NOP the
+    /// then-arm value is on the stack but no `JUMP_FORWARD` recorded it, so the NOP step
+    /// completes the pending ternary's `then`/`merge` (see [`find_reordered_ternaries`]).
+    then_nops: HashMap<Offset, Offset>,
     /// True when lowering a comprehension code object: its leading `BUILD_SET`/
     /// `BUILD_MAP` is the accumulator (kept off the stack), and `SET_ADD`/`MAP_ADD`
     /// become element statements instead of unsupported opcodes.
@@ -125,6 +130,7 @@ impl Unstacker {
             ternary: Vec::new(),
             from_import: None,
             merge_overrides: HashMap::new(),
+            then_nops: HashMap::new(),
             comp,
             comp_acc_seen: false,
             print_values: Vec::new(),
@@ -145,6 +151,12 @@ impl Unstacker {
     /// Records the chained-comparison merge overrides for this function.
     pub fn set_merge_overrides(&mut self, overrides: HashMap<Offset, Offset>) {
         self.merge_overrides = overrides;
+    }
+
+    /// Records the reordered-ternary then-arm NOPs that complete a pending ternary (see
+    /// the `then_nops` field).
+    pub fn set_then_nops(&mut self, then_nops: HashMap<Offset, Offset>) {
+        self.then_nops = then_nops;
     }
 
     /// Whether this unstacker is lowering a comprehension code object.
@@ -1785,6 +1797,20 @@ impl Unstacker {
         }
 
         match mnemonic {
+            // A reordered ternary's then-arm terminator rewritten to NOP: the then-arm
+            // value is on the stack but no JUMP_FORWARD recorded it, so complete the
+            // pending ternary's `then`/`merge` here (the JUMP_FORWARD handler's job).
+            Mnemonic::NOP if self.then_nops.contains_key(&offset) => {
+                let merge = self.then_nops[&offset];
+                let then = self.pop()?;
+                match self.ternary.last_mut() {
+                    Some(pending) if pending.then.is_none() => {
+                        pending.then = Some(then);
+                        pending.merge = merge;
+                    }
+                    _ => return Err(IrError::Unsupported(mnemonic)),
+                }
+            }
             // SETUP_LOOP / POP_BLOCK manage the runtime block stack; they have no
             // effect on the recovered statement stream. GET_ITER is a no-op for
             // source purposes: the operand it would wrap is the value the `for`

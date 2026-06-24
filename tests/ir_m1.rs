@@ -335,6 +335,32 @@ fn relinearized_chained_comparison_into_store_recovers() {
 }
 
 #[test]
+fn reordered_ternary_with_noop_then_jump_recovers() {
+    // Regression (G:\deob m39612761.resolveSSCollisions): a relinearized ternary
+    // `a if c else b` whose then arm falls through a `NOP` (a rewritten `JUMP_FORWARD 0`)
+    // into the merge, with the else arm laid out after the merge and jumping back. The
+    // then-arm NOP records no `then`, so find_reordered_ternaries maps it for the
+    // unstacker to complete the ternary at the merge.
+    let code = Builder::new("f", 3, &["c", "a", "b", "x"], &[], vec![Obj::None])
+        .arg(Standard::LOAD_FAST, 0) // c
+        .jump(Standard::POP_JUMP_IF_FALSE, "els")
+        .arg(Standard::LOAD_FAST, 1) // a (then)
+        .jump(Standard::JUMP_FORWARD, "merge") // arg 0 -> NOP, falls through to merge
+        .label("merge")
+        .arg(Standard::STORE_FAST, 3) // x
+        .jump(Standard::JUMP_FORWARD, "end")
+        .label("els")
+        .arg(Standard::LOAD_FAST, 2) // b (else, after merge)
+        .jump(Standard::JUMP_ABSOLUTE, "merge")
+        .label("end")
+        .arg(Standard::LOAD_FAST, 3) // x
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(decompile(code), "def f(c, a, b):\n    x = a if c else b\n    return x\n");
+}
+
+#[test]
 fn cross_block_pure_stack_threaded_into_consumer() {
     // Regression (G:\deob mbcfc0ee1.printShipInfo): the obfuscator hoists pure operands
     // (a global + a local) above a branch whose then-arm calls something and returns,
