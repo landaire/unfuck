@@ -494,6 +494,13 @@ impl Unstacker {
         self.print_to = None;
     }
 
+    /// Seeds the symbolic stack with values a predecessor block left on it, for
+    /// cross-block stack threading (see [`Cfg`]'s seeded rebuild). Called right after
+    /// [`Self::start_block`]; the values are pure expressions safe to re-evaluate here.
+    pub fn seed_stack(&mut self, values: &[ValueId]) {
+        self.stack.extend_from_slice(values);
+    }
+
     /// Pops a value left on the stack, e.g. a branch condition or return value.
     pub fn pop_value(&mut self) -> Result<ValueId, IrError> {
         self.pop()
@@ -512,6 +519,27 @@ impl Unstacker {
     /// Consumes the machine, yielding just the expression arena.
     pub fn into_arena(self) -> ExprArena {
         self.arena
+    }
+
+    /// Borrows the expression arena, for purity checks during cross-block threading.
+    pub fn arena(&self) -> &ExprArena {
+        &self.arena
+    }
+
+    /// Emits, as expression statements, any values left on the stack that have a side
+    /// effect (a call etc.), in computation order, then clears the stack. Called at a
+    /// `return`/`raise` after its own operands are popped: values still on the stack
+    /// there are computed and then discarded by the exit, so their side effects must be
+    /// preserved (the obfuscator drops the `POP_TOP` that would normally do this and
+    /// returns past them). Pure leftovers -- including predecessor values threaded in by
+    /// the seeded rebuild -- have no effect and are dropped.
+    pub fn emit_discarded_leftovers(&mut self) {
+        let leftover = std::mem::take(&mut self.stack);
+        for value in leftover {
+            if super::cfg::contains_side_effect(&self.arena, value) {
+                self.emit(Stmt::Expr(value));
+            }
+        }
     }
 
     /// Consumes the machine, yielding the arena and the statement list.

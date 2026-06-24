@@ -335,6 +335,37 @@ fn relinearized_chained_comparison_into_store_recovers() {
 }
 
 #[test]
+fn cross_block_pure_stack_threaded_into_consumer() {
+    // Regression (G:\deob mbcfc0ee1.printShipInfo): the obfuscator hoists pure operands
+    // (a global + a local) above a branch whose then-arm calls something and returns,
+    // while the else-arm completes the call that consumes those operands. The per-block
+    // unstacker underflows the else block; the seeded rebuild threads the predecessor's
+    // pure stack_out into it, and the then-arm's discarded call is emitted so its side
+    // effect survives.
+    let code = Builder::new("f", 2, &["c", "x"], &["log", "g"], vec![Obj::None, pystr("v")])
+        .arg(Standard::LOAD_GLOBAL, 0) // log
+        .arg(Standard::LOAD_FAST, 1) // x
+        .arg(Standard::LOAD_FAST, 0) // c
+        .jump(Standard::POP_JUMP_IF_FALSE, "els")
+        .arg(Standard::LOAD_GLOBAL, 1) // g
+        .arg(Standard::CALL_FUNCTION, 0) // g()
+        .arg(Standard::LOAD_CONST, 0) // None
+        .op(Standard::RETURN_VALUE)
+        .label("els")
+        .arg(Standard::LOAD_CONST, 1) // 'v'
+        .arg(Standard::CALL_FUNCTION, 2) // log(x, 'v')
+        .op(Standard::POP_TOP)
+        .arg(Standard::LOAD_CONST, 0) // None
+        .op(Standard::RETURN_VALUE)
+        .finish();
+
+    assert_eq!(
+        decompile(code),
+        "def f(c, x):\n    if c:\n        g()\n        return None\n\n    log(x, 'v')\n    return None\n"
+    );
+}
+
+#[test]
 fn fractional_float_adjacent_to_zero_in_multiply_renders_exact_value() {
     // Regression (wowsdeob DECOMPILER_ISSUES_FOUND Issue 1/2, Vehicle.calcServerSpeed /
     // calcMaxServerSpeed / fovRemapping): a fractional float used in a BINARY_MULTIPLY

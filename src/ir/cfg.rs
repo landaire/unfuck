@@ -15,7 +15,7 @@ use py27_marshal::{Code, Obj};
 use pydis::opcode::py27::{Mnemonic, Standard};
 use pydis::prelude::*;
 
-use super::expr::{CmpOp, DerefId, ExprArena, LValue, NameId, Offset, Stmt, ValueId, VarId};
+use super::expr::{CmpOp, DerefId, Expr, ExprArena, LValue, NameId, Offset, Stmt, ValueId, VarId};
 use super::unstack::Unstacker;
 use super::IrError;
 
@@ -229,6 +229,9 @@ enum BuildMode {
     /// A post-failure rebuild that keeps value-producing ternary diamonds inside one
     /// block so the feed can fold them (see [`find_value_ternary_regions`]).
     TernaryRegions,
+    /// A post-failure rebuild that re-lowers each underflowing block seeded with its
+    /// predecessor's pure `stack_out` (cross-block stack threading).
+    Seeded,
 }
 
 /// A function lowered to a control-flow graph of statement blocks.
@@ -281,9 +284,18 @@ impl Cfg {
         Cfg::build_with(instrs, BuildMode::TernaryRegions)
     }
 
+    /// Builds the graph re-lowering each underflowing block seeded with its predecessor's
+    /// pure `stack_out` (see the cross-block threading in [`Cfg::build_with`]). Used only
+    /// as a post-failure rebuild, so it cannot change a function the normal build
+    /// structures.
+    pub fn build_seeded(instrs: &[OffsetInstr]) -> Result<Cfg, IrError> {
+        Cfg::build_with(instrs, BuildMode::Seeded)
+    }
+
     fn build_with(instrs: &[OffsetInstr], mode: BuildMode) -> Result<Cfg, IrError> {
         let comp = matches!(mode, BuildMode::Comprehension);
         let use_bool_regions = matches!(mode, BuildMode::BoolRegions);
+        let use_seeded = matches!(mode, BuildMode::Seeded);
         // Inline list comprehensions are folded whole; their interior instructions
         // stay inside one block and never become block leaders or for-loops. A
         // comprehension used as a ternary then-arm also marks its condition as a
@@ -448,6 +460,8 @@ impl Cfg {
                 &bool_regions,
                 &ternary_regions,
                 &return_points,
+                &[],
+                use_seeded,
             )
             // A block that does not lower (an unsupported opcode, a stack error) is
             // kept as a poison dead-end rather than failing the whole function, so
@@ -464,6 +478,73 @@ impl Cfg {
                 }
             });
             blocks.push(block);
+        }
+
+        // Cross-block stack threading (post-failure rebuild only). The obfuscator hoists
+        // pure value loads above a branch, so a successor block pops operands its
+        // predecessor left on the stack and underflows. Re-lower each such block seeded
+        // with its predecessor's `stack_out`, but only when that predecessor is unique,
+        // already lowered cleanly, and left ONLY pure expressions (safe to re-evaluate
+        // here). Empty for the normal build, so it is unaffected.
+        if use_seeded {
+            let mut preds: HashMap<Offset, Vec<Offset>> = HashMap::new();
+            for block in &blocks {
+                for succ in block.successors() {
+                    preds.entry(succ).or_default().push(block.start);
+                }
+            }
+            for idx in 0..blocks.len() {
+                if !matches!(blocks[idx].poison, Some(IrError::StackUnderflow)) {
+                    continue;
+                }
+                let leader = blocks[idx].start;
+                let Some(pred_offs) = preds.get(&leader) else { continue };
+                let [pred_off] = pred_offs.as_slice() else { continue };
+                let Some(&pred_id) = by_offset.get(pred_off) else { continue };
+                let pred = &blocks[pred_id.0 as usize];
+                if pred.poison.is_some() || pred.stack_out.is_empty() {
+                    continue;
+                }
+                if !pred.stack_out.iter().all(|&v| is_pure(unstacker.arena(), v)) {
+                    continue;
+                }
+                let seed = pred.stack_out.clone();
+                let end = blocks.get(idx + 1).map(|b| b.start).unwrap_or(Offset(u32::MAX));
+                let body: Vec<&OffsetInstr> = instrs
+                    .iter()
+                    .filter(|i| i.offset >= leader && i.offset < end && !excluded.contains(&i.offset))
+                    .collect();
+                let for_header = for_body_header
+                    .get(&leader)
+                    .and_then(|header| by_offset.get(header).copied());
+                if let Ok(block) = lower_block(
+                    &mut unstacker,
+                    leader,
+                    end,
+                    &body,
+                    for_header,
+                    &mut for_targets,
+                    &try_terminators,
+                    &with_terminators,
+                    &finally_terminators,
+                    &list_comps,
+                    &breaks,
+                    &while_breaks,
+                    &else_feeds,
+                    &comp_then_merges,
+                    instrs,
+                    &instr_index,
+                    &bool_regions,
+                    &ternary_regions,
+                    &return_points,
+                    &seed,
+                    true,
+                ) {
+                    blocks[idx] = block;
+                } else {
+                    let _ = unstacker.take_stmts();
+                }
+            }
         }
 
         // Redirect any terminator edge that lands on an excluded END_FINALLY to the real
@@ -1221,6 +1302,69 @@ fn opaque_block_end(instrs: &[OffsetInstr], start: usize, code: &Code) -> Option
 /// the stack and constants -- the building blocks of an opaque-predicate block.
 /// Constants and loads pop nothing; unary ops and `DUP_TOP` pop one; binary,
 /// in-place, and comparison ops pop two; `BUILD_*` pops its operand count.
+/// Whether re-evaluating `vid` is side-effect-free, so the same expression may be
+/// emitted again in a different block (used by cross-block stack threading: the
+/// obfuscator hoists pure loads above a branch, leaving a successor block that pops
+/// values its predecessor pushed). Only variants whose evaluation cannot run user code
+/// or mutate state are pure; a `Call`, `Yield`, comprehension, in-place op, etc. is not.
+/// `Attr`/`Subscript` are treated as pure, matching how the rest of the decompiler freely
+/// reorders attribute/subscript loads when folding ternaries and comparisons.
+/// Whether evaluating `vid` runs a call or yield -- an observable side effect that must
+/// be preserved even when the value itself is discarded. Used by leftover emission at a
+/// return/raise: a discarded value is emitted as a statement only when it carries such an
+/// effect, so transients and pure noise are dropped rather than mis-rendered.
+pub(crate) fn contains_side_effect(arena: &ExprArena, vid: ValueId) -> bool {
+    match arena.get(vid) {
+        Expr::Call { .. } | Expr::Yield(_) => true,
+        Expr::Attr(obj, _) => contains_side_effect(arena, *obj),
+        Expr::Subscript(c, k) => contains_side_effect(arena, *c) || contains_side_effect(arena, *k),
+        Expr::Slice { lower, upper, step } => {
+            [lower, upper, step].into_iter().flatten().any(|&v| contains_side_effect(arena, v))
+        }
+        Expr::BinOp(_, l, r) | Expr::Inplace(_, l, r) | Expr::Compare(_, l, r) => {
+            contains_side_effect(arena, *l) || contains_side_effect(arena, *r)
+        }
+        Expr::Unary(_, v) => contains_side_effect(arena, *v),
+        Expr::BoolOp(_, items) | Expr::Tuple(items) | Expr::List(items) | Expr::Set(items) => {
+            items.iter().any(|&v| contains_side_effect(arena, v))
+        }
+        Expr::Ternary { cond, then, otherwise } => {
+            contains_side_effect(arena, *cond)
+                || contains_side_effect(arena, *then)
+                || contains_side_effect(arena, *otherwise)
+        }
+        Expr::Dict(pairs) => {
+            pairs.iter().any(|(k, v)| contains_side_effect(arena, *k) || contains_side_effect(arena, *v))
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn is_pure(arena: &ExprArena, vid: ValueId) -> bool {
+    match arena.get(vid) {
+        Expr::Const(_)
+        | Expr::Local(_)
+        | Expr::Deref(_)
+        | Expr::Global(_)
+        | Expr::Name(_) => true,
+        Expr::Attr(obj, _) => is_pure(arena, *obj),
+        Expr::Subscript(c, k) => is_pure(arena, *c) && is_pure(arena, *k),
+        Expr::Slice { lower, upper, step } => {
+            [lower, upper, step].into_iter().flatten().all(|&v| is_pure(arena, v))
+        }
+        Expr::BinOp(_, l, r) | Expr::Compare(_, l, r) => is_pure(arena, *l) && is_pure(arena, *r),
+        Expr::Unary(_, v) => is_pure(arena, *v),
+        Expr::BoolOp(_, items) | Expr::Tuple(items) | Expr::List(items) | Expr::Set(items) => {
+            items.iter().all(|&v| is_pure(arena, v))
+        }
+        Expr::Ternary { cond, then, otherwise } => {
+            is_pure(arena, *cond) && is_pure(arena, *then) && is_pure(arena, *otherwise)
+        }
+        Expr::Dict(pairs) => pairs.iter().all(|(k, v)| is_pure(arena, *k) && is_pure(arena, *v)),
+        _ => false,
+    }
+}
+
 fn pure_value_pops(instr: &Instruction<Standard>) -> Option<isize> {
     use Mnemonic::*;
     Some(match instr.opcode.mnemonic() {
@@ -1556,8 +1700,13 @@ fn lower_block(
     bool_regions: &HashMap<Offset, Offset>,
     ternary_regions: &HashMap<Offset, Offset>,
     return_points: &HashSet<Offset>,
+    seed: &[ValueId],
+    thread_leftovers: bool,
 ) -> Result<Block, IrError> {
     unstacker.start_block();
+    // Cross-block stack threading: seed the values a predecessor left on the stack (pure
+    // expressions the obfuscator hoisted above a branch), so this block can pop them.
+    unstacker.seed_stack(seed);
 
     let last = body.last().ok_or(IrError::Decode)?;
     let mnemonic = last.instr.opcode.mnemonic();
@@ -1703,6 +1852,13 @@ fn lower_block(
                 Terminator::Return(None)
             } else {
                 let value = unstacker.pop_value()?;
+                // Side-effecting values left below the returned value are computed then
+                // discarded by the return; emit them so their effect is preserved. Only in
+                // the seeded rebuild -- the normal build never leaves such values (a
+                // balanced RETURN), so gating here keeps it untouched.
+                if thread_leftovers {
+                    unstacker.emit_discarded_leftovers();
+                }
                 Terminator::Return(Some(value))
             }
         }
@@ -1716,6 +1872,9 @@ fn lower_block(
                 args.push(unstacker.pop_value()?);
             }
             args.reverse();
+            if thread_leftovers {
+                unstacker.emit_discarded_leftovers();
+            }
             Terminator::Raise(args)
         }
         TerminatorKind::Branch => {

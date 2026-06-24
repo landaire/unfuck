@@ -185,6 +185,14 @@ impl DecodedFunction {
                 {
                     return Ok(StructuredFunction { code: self.code, arena, body });
                 }
+                // Rebuild threading each underflowing block's predecessor pure stack
+                // values into it, so an expression the obfuscator split across a branch
+                // (its operands hoisted above the branch) lowers and structures.
+                if let Ok((arena, body)) =
+                    Cfg::build_seeded(&self.instrs).and_then(|cfg| self.structure_with(cfg))
+                {
+                    return Ok(StructuredFunction { code: self.code, arena, body });
+                }
                 // Last resort: a general structural-analysis structurer (loop-aware,
                 // layout-robust) that self-verifies against the CFG and returns None
                 // unless it can prove the recovery faithful. Runs only here, after every
