@@ -1,6 +1,6 @@
 [package]
 name = "unfuck"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 description = "Python 2.7 bytecode deobfuscator"
 license = "MIT"
@@ -23,7 +23,7 @@ base64 = "0.13"
 anyhow = "1.0"
 thiserror = "1.0"
 flate2 = "1.0"
-pydis = "0.5"
+pydis = "0.6"
 num-bigint = "0.4"
 num-integer = "0.1"
 log = "0.4"
@@ -45,7 +45,7 @@ rayon = "1.5"
 py27-marshal = { version = "0.6" }
 num-bigint = "0.4"
 num-complex = "0.4"
-pydis = "0.5"
+pydis = "0.6"
 insta = "1"
 
 [features]
