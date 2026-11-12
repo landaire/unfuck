@@ -313,7 +313,7 @@ fn create_type(vm: &Vm, kind: Kind) -> PyResult<ObjectRef> {
 }
 
 fn long(value: i64) -> Value {
-    Value::Long(Rc::new(BigInt::from(value)))
+    Value::long(BigInt::from(value))
 }
 
 fn bytes_value(data: Vec<u8>) -> Value {

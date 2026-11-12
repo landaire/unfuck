@@ -183,7 +183,7 @@ struct Trace {
 
 pub struct Vm {
     pub config: VmConfig,
-    next_id: Cell<u64>,
+    next_id: Cell<ObjectId>,
     types: OnceCell<BuiltinTypes>,
     builtins: OnceCell<ObjectRef>,
     modules: OnceCell<ObjectRef>,
@@ -273,7 +273,7 @@ impl Vm {
         let recursion_limit = config.recursion_limit;
         let vm = Self {
             config,
-            next_id: Cell::new(1),
+            next_id: Cell::new(ObjectId::FIRST),
             types: OnceCell::new(),
             builtins: OnceCell::new(),
             modules: OnceCell::new(),
@@ -748,15 +748,24 @@ impl Vm {
     }
 
     pub(crate) fn alloc_unclassed(&self, payload: Payload, dict: Option<ObjectRef>) -> ObjectRef {
-        let id = self.next_id.get();
-        self.next_id.set(id + 1);
+        let id = self.next_object_id();
 
-        Rc::new(Object { id: ObjectId(id), class: RefCell::new(None), dict: RefCell::new(dict), slots: RefCell::default(), payload, lifecycle: Cell::new(Lifecycle::default()), owner: self.finalizers.serial() })
+        Rc::new(Object { id, class: RefCell::new(None), dict: RefCell::new(dict), slots: RefCell::default(), payload, lifecycle: Cell::new(Lifecycle::default()), owner: self.finalizers.serial() })
+    }
+
+    /// Takes the next identity from the counter. Heap objects take one when
+    /// allocated; `str`, `unicode`, `tuple`, `long`, and unknown values,
+    /// which are created without the VM, take one when first observed.
+    pub(crate) fn next_object_id(&self) -> ObjectId {
+        let id = self.next_id.get();
+        self.next_id.set(id.successor());
+
+        id
     }
 
     /// Fake address of an object, used for `id()` and pointer hashes.
     pub fn address_of(&self, object: &Object) -> u64 {
-        object.id.0 << 4
+        object.id.address()
     }
 
     /// `%p` of the C library: MSVC prints

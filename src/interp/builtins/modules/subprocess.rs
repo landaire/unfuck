@@ -3,7 +3,6 @@
 //! process, pipe, and handle results come from the host and are unknown.
 
 use std::cell::Cell;
-use std::rc::Rc;
 
 use num_bigint::BigInt;
 
@@ -163,7 +162,7 @@ fn new_handle(vm: &Vm, value: i64) -> PyResult<Value> {
 
 /// A handle as a Python integer on the 64-bit build: a signed 64-bit value.
 fn handle_number(value: i64) -> Value {
-    Value::Long(Rc::new(BigInt::from(value)))
+    Value::long(BigInt::from(value))
 }
 
 fn handle_detach(vm: &Vm, args: CallArgs) -> PyResult<Value> {
@@ -289,7 +288,7 @@ fn int_as_long(vm: &Vm, value: &Value) -> PyResult<()> {
     if let Some(number) = vm.as_float(value) {
         if vm.user_override(value, "__int__")?.is_none() {
             let truncated = float_int(vm, number)?.to_bigint();
-            c_long(vm, &Value::Long(Rc::new(truncated)))?;
+            c_long(vm, &Value::long(truncated))?;
             return Ok(());
         }
     }

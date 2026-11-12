@@ -1088,7 +1088,7 @@ impl Vm {
                     Payload::Complex(number) => number.repr(),
                     Payload::Str(bytes) => crate::interp::builtins::functions::repr_bytes(bytes.as_bytes()),
                     Payload::Unicode(text) => crate::interp::builtins::functions::repr_unicode(text.units()),
-                    Payload::Tuple(items) => self.builtin_repr(&Value::Tuple(Rc::clone(items).into()))?,
+                    Payload::Tuple(items) => self.builtin_repr(&Value::Tuple(items.clone()))?,
                     Payload::List(items) => {
                         let items = items.borrow().clone();
                         format!("[{}]", repr_items(&items, LIST)?.join(", "))

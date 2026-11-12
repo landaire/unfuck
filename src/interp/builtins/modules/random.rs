@@ -242,7 +242,7 @@ fn random_new(vm: &Vm, args: CallArgs) -> PyResult<Value> {
 /// other object as a C `unsigned long`, split into 32-bit words.
 fn seeded(vm: &Vm, seed: Option<&Value>) -> PyResult<Generator> {
     let Some(seed) = seed.filter(|seed| !seed.is_none()) else {
-        return Ok(Generator::Unknown(Rc::new(Unknown { origin: "_random.Random seeded from the current time".to_owned() })));
+        return Ok(Generator::Unknown(Rc::new(Unknown::new("_random.Random seeded from the current time"))));
     };
     if let Value::Unknown(origin) = seed {
         return Ok(Generator::Unknown(Rc::clone(origin)));
@@ -282,7 +282,7 @@ fn seeded(vm: &Vm, seed: Option<&Value>) -> PyResult<Generator> {
 /// the generic `&` and `>>` operations as `Random.seed` does. `Err` holds
 /// the origin of an unknown operand.
 fn overridden_key(vm: &Vm, mut number: Value) -> PyResult<Result<Vec<u32>, Rc<Unknown>>> {
-    let mask = Value::Long(Rc::new(BigInt::from(u32::MAX)));
+    let mask = Value::long(BigInt::from(u32::MAX));
     let shift = Value::Int(32);
 
     let mut key = Vec::new();
@@ -346,8 +346,8 @@ fn random_getstate(vm: &Vm, args: CallArgs) -> PyResult<Value> {
 
     let state = match &*generator.borrow() {
         Generator::Known(twister) => {
-            let mut items: Vec<Value> = twister.state.iter().map(|word| Value::Long(Rc::new(BigInt::from(*word)))).collect();
-            items.push(Value::Long(Rc::new(BigInt::from(twister.index))));
+            let mut items: Vec<Value> = twister.state.iter().map(|word| Value::long(BigInt::from(*word))).collect();
+            items.push(Value::long(BigInt::from(twister.index)));
             Value::tuple(items)
         }
         Generator::Unknown(origin) => Value::Unknown(Rc::clone(origin)),
@@ -484,7 +484,7 @@ fn random_getrandbits(vm: &Vm, args: CallArgs) -> PyResult<Value> {
     };
 
     let value = match &mut *generator.borrow_mut() {
-        Generator::Known(twister) => Value::Long(Rc::new(BigInt::from_biguint(Sign::Plus, twister.random_bits(bits)))),
+        Generator::Known(twister) => Value::long(BigInt::from_biguint(Sign::Plus, twister.random_bits(bits))),
         Generator::Unknown(origin) => Value::Unknown(Rc::clone(origin)),
     };
 

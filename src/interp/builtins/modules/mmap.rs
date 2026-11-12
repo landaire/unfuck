@@ -657,7 +657,7 @@ fn mmap_flush(vm: &Vm, args: CallArgs) -> PyResult<Value> {
         return Err(vm.raise(ExceptionKind::ValueError, "flush values out of range"));
     }
     if matches!(data.access, Access::Read | Access::Copy) {
-        return Ok(Value::Long(Rc::new(BigInt::from(0))));
+        return Ok(Value::long(BigInt::from(0)));
     }
 
     let view_end = size.div_ceil(PAGE_SIZE) * PAGE_SIZE;
@@ -732,7 +732,7 @@ fn mmap_sizeof(vm: &Vm, args: CallArgs) -> PyResult<Value> {
     let class = vm.class_of(&args.positional[0]);
     let size = instance_size(vm, &class)?;
 
-    Ok(Value::Long(Rc::new(BigInt::from(size))))
+    Ok(Value::long(BigInt::from(size)))
 }
 
 /// The instance size of `class`: the mmap struct, one pointer per slot its

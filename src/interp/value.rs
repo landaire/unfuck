@@ -1,8 +1,10 @@
 use std::any::Any;
 use std::cell::Cell;
+use std::cell::OnceCell;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
+use std::num::NonZeroU64;
 use std::rc::Rc;
 use std::rc::Weak;
 
@@ -22,10 +24,62 @@ use crate::interp::object::SlotIndex;
 use crate::interp::pydict::PyDict;
 use crate::interp::pyset::PySet;
 
-/// Identity of a heap object. It stands in for the object's address: `id()`
-/// and pointer hashes derive from it.
+/// Identity of a value with identity. It stands in for the value's address:
+/// `id()`, pointer hashes, and the fallback ordering derive from it. A VM
+/// assigns identities from its counter, so they depend only on what the
+/// program does, never on the host allocator. Identities are unique within
+/// one VM, so values do not move between VMs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ObjectId(pub u64);
+pub struct ObjectId(NonZeroU64);
+
+impl ObjectId {
+    /// The first identity a VM counter assigns.
+    pub const FIRST: Self = Self(NonZeroU64::MIN);
+
+    /// The identity a VM counter assigns after this one.
+    pub fn successor(self) -> Self {
+        Self(self.0.saturating_add(1))
+    }
+
+    /// The fake address: 16-byte aligned like a heap pointer, and below the
+    /// addresses of inline values.
+    pub fn address(self) -> u64 {
+        self.0.get() << 4
+    }
+}
+
+/// The values every VM on a thread shares. Their identities are fixed, so
+/// they do not depend on which VM observes them first. They lie far above
+/// any identity a VM counter reaches.
+#[derive(Clone, Copy)]
+enum SharedIdentity {
+    EmptyStr,
+    Byte(u8),
+    EmptyUnicode,
+    Latin1(u8),
+    EmptyTuple,
+}
+
+impl SharedIdentity {
+    fn id(self) -> ObjectId {
+        const BASE: u64 = 1 << 56;
+
+        let index = match self {
+            Self::EmptyStr => 0,
+            Self::Byte(byte) => 1 + u64::from(byte),
+            Self::EmptyUnicode => 257,
+            Self::Latin1(unit) => 258 + u64::from(unit),
+            Self::EmptyTuple => 514,
+        };
+
+        ObjectId(NonZeroU64::MIN.saturating_add(BASE + index))
+    }
+}
+
+/// The identity of the empty tuple. Every empty tuple is the same object.
+pub fn empty_tuple_id() -> ObjectId {
+    SharedIdentity::EmptyTuple.id()
+}
 
 /// A Python 2 byte string with its hash cached once computed.
 #[derive(Clone)]
@@ -34,6 +88,8 @@ pub struct PyBytes(Rc<BytesData>);
 pub struct BytesData {
     pub bytes: Box<[u8]>,
     pub hash: Cell<Option<PyHash>>,
+    /// Assigned when first observed.
+    identity: OnceCell<ObjectId>,
     /// Whether the string is interned.
     interned: Cell<bool>,
     /// The `str` subclass instance passed as an attribute name that this is
@@ -44,12 +100,12 @@ pub struct BytesData {
 
 thread_local! {
     /// The shared empty `str`.
-    static NULLSTRING: PyBytes = PyBytes::interned(Box::default());
+    static NULLSTRING: PyBytes = PyBytes::cached(Box::default(), SharedIdentity::EmptyStr);
 
     /// The shared one-byte `str` objects. Each entry is interned when it is
     /// cached, and the Windows 2.7.12 build has created all of them before
     /// user code runs, so they exist from the start.
-    static CHARACTERS: Box<[PyBytes]> = (0..=u8::MAX).map(|byte| PyBytes::interned(Box::new([byte]))).collect();
+    static CHARACTERS: Box<[PyBytes]> = (0..=u8::MAX).map(|byte| PyBytes::cached(Box::new([byte]), SharedIdentity::Byte(byte))).collect();
 }
 
 impl PyBytes {
@@ -86,7 +142,7 @@ impl PyBytes {
     /// The bytes of `object`, a `str` subclass instance used as an attribute
     /// name.
     pub fn subclass_name_copy(object: &ObjectRef, bytes: impl Into<Box<[u8]>>) -> Self {
-        Self(Rc::new(BytesData { bytes: bytes.into(), hash: Cell::new(None), interned: Cell::new(false), subclass_name: Some(Rc::clone(object)) }))
+        Self(Rc::new(BytesData { bytes: bytes.into(), hash: Cell::new(None), identity: OnceCell::new(), interned: Cell::new(false), subclass_name: Some(Rc::clone(object)) }))
     }
 
     /// The shared empty or one-byte string equal to `bytes`.
@@ -99,11 +155,12 @@ impl PyBytes {
     }
 
     fn fresh(bytes: Box<[u8]>) -> Self {
-        Self(Rc::new(BytesData { bytes, hash: Cell::new(None), interned: Cell::new(false), subclass_name: None }))
+        Self(Rc::new(BytesData { bytes, hash: Cell::new(None), identity: OnceCell::new(), interned: Cell::new(false), subclass_name: None }))
     }
 
-    fn interned(bytes: Box<[u8]>) -> Self {
-        Self(Rc::new(BytesData { bytes, hash: Cell::new(None), interned: Cell::new(true), subclass_name: None }))
+    /// An interned string every VM on the thread shares.
+    fn cached(bytes: Box<[u8]>, shared: SharedIdentity) -> Self {
+        Self(Rc::new(BytesData { bytes, hash: Cell::new(None), identity: OnceCell::from(shared.id()), interned: Cell::new(true), subclass_name: None }))
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -135,9 +192,9 @@ impl PyBytes {
         Rc::ptr_eq(&self.0, &other.0)
     }
 
-    /// Identity of the object, standing in for its address.
-    pub fn address(&self) -> u64 {
-        Rc::as_ptr(&self.0) as u64
+    /// Identity of the object, which `assign` provides when first asked.
+    pub fn identity(&self, assign: impl FnOnce() -> ObjectId) -> ObjectId {
+        *self.0.identity.get_or_init(assign)
     }
 
     /// The reference count of the string object.
@@ -210,15 +267,17 @@ pub struct PyText(Rc<TextData>);
 pub struct TextData {
     pub units: Box<[u16]>,
     pub hash: Cell<Option<PyHash>>,
+    /// Assigned when first observed.
+    identity: OnceCell<ObjectId>,
 }
 
 thread_local! {
     /// The shared empty `unicode`.
-    static UNICODE_EMPTY: PyText = PyText::fresh(Box::default());
+    static UNICODE_EMPTY: PyText = PyText::cached(Box::default(), SharedIdentity::EmptyUnicode);
 
     /// The shared one-unit Latin-1 `unicode` objects. Entries are created on first
     /// use and kept, so creating them all up front is indistinguishable.
-    static UNICODE_LATIN1: Box<[PyText]> = (0..256u16).map(|unit| PyText::fresh(Box::new([unit]))).collect();
+    static UNICODE_LATIN1: Box<[PyText]> = (0..=u8::MAX).map(|unit| PyText::cached(Box::new([u16::from(unit)]), SharedIdentity::Latin1(unit))).collect();
 }
 
 impl PyText {
@@ -251,12 +310,17 @@ impl PyText {
     }
 
     fn fresh(units: Box<[u16]>) -> Self {
-        Self(Rc::new(TextData { units, hash: Cell::new(None) }))
+        Self(Rc::new(TextData { units, hash: Cell::new(None), identity: OnceCell::new() }))
     }
 
-    /// Identity of the object, standing in for its address.
-    pub fn address(&self) -> u64 {
-        Rc::as_ptr(&self.0) as u64
+    /// A string every VM on the thread shares.
+    fn cached(units: Box<[u16]>, shared: SharedIdentity) -> Self {
+        Self(Rc::new(TextData { units, hash: Cell::new(None), identity: OnceCell::from(shared.id()) }))
+    }
+
+    /// Identity of the object, which `assign` provides when first asked.
+    pub fn identity(&self, assign: impl FnOnce() -> ObjectId) -> ObjectId {
+        *self.0.identity.get_or_init(assign)
     }
 
     pub fn from_str(text: &str) -> Self {
@@ -301,6 +365,69 @@ impl fmt::Debug for PyText {
 #[derive(Debug)]
 pub struct Unknown {
     pub origin: String,
+    /// Assigned when first observed.
+    identity: OnceCell<ObjectId>,
+}
+
+impl Unknown {
+    pub fn new(origin: impl Into<String>) -> Self {
+        Self { origin: origin.into(), identity: OnceCell::new() }
+    }
+
+    /// Identity of the value, which `assign` provides when first asked.
+    pub fn identity(&self, assign: impl FnOnce() -> ObjectId) -> ObjectId {
+        *self.identity.get_or_init(assign)
+    }
+}
+
+/// A `long`.
+#[derive(Clone)]
+pub struct PyLong(Rc<LongData>);
+
+pub struct LongData {
+    value: BigInt,
+    /// Assigned when first observed.
+    identity: OnceCell<ObjectId>,
+}
+
+impl PyLong {
+    pub fn new(value: BigInt) -> Self {
+        Self(Rc::new(LongData { value, identity: OnceCell::new() }))
+    }
+
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// Identity of the object, which `assign` provides when first asked.
+    pub fn identity(&self, assign: impl FnOnce() -> ObjectId) -> ObjectId {
+        *self.0.identity.get_or_init(assign)
+    }
+
+    /// The reference count of the long object.
+    pub fn strong_count(&self) -> usize {
+        Rc::strong_count(&self.0)
+    }
+}
+
+impl std::ops::Deref for PyLong {
+    type Target = BigInt;
+
+    fn deref(&self) -> &BigInt {
+        &self.0.value
+    }
+}
+
+impl fmt::Debug for PyLong {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0.value)
+    }
+}
+
+impl fmt::Display for PyLong {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0.value)
+    }
 }
 
 /// A Python value. Immutable builtin values are stored inline; everything
@@ -312,7 +439,7 @@ pub enum Value {
     Ellipsis,
     Bool(bool),
     Int(i64),
-    Long(Rc<BigInt>),
+    Long(PyLong),
     Float(f64),
     Str(PyBytes),
     Unicode(PyText),
@@ -330,8 +457,12 @@ impl Value {
         Self::Tuple(items.into())
     }
 
+    pub fn long(value: BigInt) -> Self {
+        Self::Long(PyLong::new(value))
+    }
+
     pub fn unknown(origin: impl Into<String>) -> Self {
-        Self::Unknown(Rc::new(Unknown { origin: origin.into() }))
+        Self::Unknown(Rc::new(Unknown::new(origin)))
     }
 
     pub fn is_none(&self) -> bool {
@@ -371,7 +502,7 @@ impl fmt::Debug for Value {
             Self::Ellipsis => write!(f, "Ellipsis"),
             Self::Bool(value) => write!(f, "{}", if *value { "True" } else { "False" }),
             Self::Int(value) => write!(f, "{value}"),
-            Self::Long(value) => write!(f, "{value}L"),
+            Self::Long(value) => write!(f, "{value:?}L"),
             Self::Float(value) => write!(f, "{value:?}"),
             Self::Str(bytes) => write!(f, "{bytes:?}"),
             Self::Unicode(text) => write!(f, "{text:?}"),
@@ -385,15 +516,37 @@ impl fmt::Debug for Value {
 /// The items of a tuple. The last owner frees them from the end, as
 /// tuple deallocation does, so finalizers run in CPython's order.
 #[derive(Clone)]
-pub struct TupleItems(Rc<[Value]>);
+pub struct TupleItems(Rc<TupleData>);
+
+struct TupleData {
+    items: Box<[Value]>,
+    /// Assigned when first observed.
+    identity: OnceCell<ObjectId>,
+}
 
 impl TupleItems {
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }
 
-    pub fn as_rc(&self) -> &Rc<[Value]> {
-        &self.0
+    /// Identity of the tuple, which `assign` provides when first asked.
+    /// Every empty tuple is the same object.
+    pub fn identity(&self, assign: impl FnOnce() -> ObjectId) -> ObjectId {
+        if self.0.items.is_empty() {
+            return empty_tuple_id();
+        }
+
+        *self.0.identity.get_or_init(assign)
+    }
+
+    /// The reference count of the tuple object.
+    pub fn strong_count(&self) -> usize {
+        Rc::strong_count(&self.0)
+    }
+
+    /// The items, when this is the only owner.
+    pub fn unique_items_mut(&mut self) -> Option<&mut [Value]> {
+        Rc::get_mut(&mut self.0).map(|data| &mut *data.items)
     }
 }
 
@@ -401,31 +554,25 @@ impl std::ops::Deref for TupleItems {
     type Target = [Value];
 
     fn deref(&self) -> &[Value] {
-        &self.0
+        &self.0.items
+    }
+}
+
+impl fmt::Debug for TupleItems {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&*self.0.items, f)
     }
 }
 
 impl From<Vec<Value>> for TupleItems {
     fn from(items: Vec<Value>) -> Self {
-        Self(items.into())
-    }
-}
-
-impl From<Rc<[Value]>> for TupleItems {
-    fn from(items: Rc<[Value]>) -> Self {
-        Self(items)
-    }
-}
-
-impl From<&[Value]> for TupleItems {
-    fn from(items: &[Value]) -> Self {
-        Self(items.into())
+        Self(Rc::new(TupleData { items: items.into_boxed_slice(), identity: OnceCell::new() }))
     }
 }
 
 impl Drop for TupleItems {
     fn drop(&mut self) {
-        let Some(items) = Rc::get_mut(&mut self.0) else {
+        let Some(items) = self.unique_items_mut() else {
             return;
         };
 
@@ -623,12 +770,12 @@ pub struct ExceptionFields {
 pub enum Payload {
     Instance,
     Int(i64),
-    Long(Rc<BigInt>),
+    Long(PyLong),
     Float(f64),
     Complex(crate::interp::complex::Complex),
     Str(PyBytes),
     Unicode(PyText),
-    Tuple(Rc<[Value]>),
+    Tuple(TupleItems),
     List(RefCell<Vec<Value>>),
     ByteArray(RefCell<ByteArrayData>),
     Dict(RefCell<PyDict>),

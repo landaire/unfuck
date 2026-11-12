@@ -286,7 +286,7 @@ fn conversion_errors_match_cpython() {
 #[test]
 fn lineno_follows_c_long_width() {
     fn wide_lineno(vm: &Vm, module: &Value) -> PyResult<()> {
-        set(vm, module, &["body", "2"], "lineno", Value::Long(Rc::new(BigInt::from((1_i64 << 33) + 7))))
+        set(vm, module, &["body", "2"], "lineno", Value::long(BigInt::from((1_i64 << 33) + 7)))
     }
 
     assert_eq!(convert_altered(LongWidth::Bits32, Mode::Exec, wide_lineno), "OverflowError: Python int too large to convert to C long");

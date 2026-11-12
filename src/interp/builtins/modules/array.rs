@@ -486,7 +486,7 @@ fn decode_item(vm: &Vm, typecode: Typecode, bytes: &[u8]) -> Value {
         Typecode::Unicode => Value::Unicode(PyText::new(vec![unsigned(bytes) as u16])),
         Typecode::SignedByte | Typecode::Short | Typecode::Int | Typecode::Long => vm.new_int_from_i64(signed(bytes)),
         Typecode::UnsignedByte | Typecode::UnsignedShort => Value::Int(unsigned(bytes) as i64),
-        Typecode::UnsignedInt | Typecode::UnsignedLong => Value::Long(Rc::new(BigInt::from(unsigned(bytes)))),
+        Typecode::UnsignedInt | Typecode::UnsignedLong => Value::long(BigInt::from(unsigned(bytes))),
         Typecode::Float => Value::Float(f64::from(f32::from_bits(unsigned(bytes) as u32))),
         Typecode::Double => Value::Float(f64::from_bits(unsigned(bytes))),
     }
@@ -1326,7 +1326,7 @@ fn array_sizeof(vm: &Vm, args: CallArgs) -> PyResult<Value> {
     let header = if has_dict { OBJECT_SIZE + POINTER_SIZE } else { OBJECT_SIZE };
     let size = header + data.allocated.get().unwrap_or(0) * data.itemsize;
 
-    Ok(Value::Long(Rc::new(BigInt::from(size))))
+    Ok(Value::long(BigInt::from(size)))
 }
 
 /// The array a getset descriptor reads.

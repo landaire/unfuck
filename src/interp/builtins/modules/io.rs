@@ -270,7 +270,7 @@ fn int_argument(vm: &Vm, value: &Value, context: &str) -> PyResult<i32> {
 
 /// A `ssize_t` result, which is a `long` in Python 2.
 fn long_value(value: usize) -> Value {
-    Value::Long(Rc::new(value.into()))
+    Value::long(value.into())
 }
 
 /// The `w*` conversion of a `readinto` argument: a `bytearray` or a view

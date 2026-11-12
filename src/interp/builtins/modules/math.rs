@@ -7,7 +7,6 @@
 use std::f64::consts::E;
 use std::f64::consts::LN_2;
 use std::f64::consts::PI;
-use std::rc::Rc;
 
 use num_bigint::BigInt;
 use num_traits::FromPrimitive;
@@ -603,7 +602,7 @@ fn math_trunc(vm: &Vm, args: CallArgs) -> PyResult<Value> {
     match vm.as_integral(&argument) {
         Some(Integral::Int(number)) => Ok(Value::Int(number)),
         Some(Integral::Long(_)) if matches!(argument, Value::Long(_)) => Ok(argument),
-        Some(Integral::Long(number)) => Ok(Value::Long(Rc::new(number))),
+        Some(Integral::Long(number)) => Ok(Value::long(number)),
         None => vm.call_method(&argument, "__trunc__", Vec::new()),
     }
 }

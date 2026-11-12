@@ -63,7 +63,7 @@ pub fn init(vm: &Vm, module: &ObjectRef) -> PyResult<()> {
     set_attribute(vm, module, "MAGIC", Value::Int(20_031_017))?;
     set_attribute(vm, module, "CODESIZE", Value::Int(4))?;
     // Built as a long whatever the platform's long width.
-    set_attribute(vm, module, "MAXREPEAT", Value::Long(Rc::new(BigInt::from(MAXREPEAT))))?;
+    set_attribute(vm, module, "MAXREPEAT", Value::long(BigInt::from(MAXREPEAT)))?;
     set_attribute(vm, module, "copyright", Value::unknown("_sre.copyright text"))?;
 
     Ok(())

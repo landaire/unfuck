@@ -207,7 +207,7 @@ fn builtin_abs(vm: &Vm, args: CallArgs) -> PyResult<Value> {
 
     match vm.as_integral(value) {
         Some(Integral::Int(number)) => Ok(vm.new_int(num_bigint::BigInt::from(number).magnitude().clone().into())),
-        Some(Integral::Long(number)) => Ok(Value::Long(Rc::new(number.magnitude().clone().into()))),
+        Some(Integral::Long(number)) => Ok(Value::long(number.magnitude().clone().into())),
         None => Err(vm.type_error(&format!("bad operand type for abs(): '{}'", vm.type_name(value)))),
     }
 }
@@ -950,7 +950,7 @@ fn builtin_pow(vm: &Vm, args: CallArgs) -> PyResult<Value> {
     }
 
     if long_result {
-        return Ok(Value::Long(Rc::new(result)));
+        return Ok(Value::long(result));
     }
 
     Ok(vm.new_int(result))

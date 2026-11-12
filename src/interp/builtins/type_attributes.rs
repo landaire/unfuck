@@ -15,28 +15,27 @@ use crate::interp::exceptions::ExceptionKind;
 use crate::interp::object::ClassData;
 use crate::interp::object::ClassStyle;
 use crate::interp::type_flags;
+use crate::interp::value::ObjectId;
 use crate::interp::value::ObjectRef;
 use crate::interp::value::PyBytes;
 use crate::interp::value::Value;
 use crate::interp::vm::Vm;
 
 /// The module part of the dotted name of builtin types whose name has one.
-/// Builtin types live as long as the interpreter, so their addresses stay
-/// unique.
 #[derive(Default)]
 struct StaticModules {
-    modules: RefCell<HashMap<usize, &'static str>>,
+    modules: RefCell<HashMap<ObjectId, &'static str>>,
 }
 
 impl Vm {
     /// Records the module of a builtin type's dotted name.
     pub fn set_static_module(&self, class: &ObjectRef, module: &'static str) {
-        self.native_state::<StaticModules>().modules.borrow_mut().insert(Rc::as_ptr(class) as usize, module);
+        self.native_state::<StaticModules>().modules.borrow_mut().insert(class.id, module);
     }
 
     /// The module of a builtin type's dotted name, if it has one.
     pub fn static_module(&self, class: &ObjectRef) -> Option<&'static str> {
-        self.native_state::<StaticModules>().modules.borrow().get(&(Rc::as_ptr(class) as usize)).copied()
+        self.native_state::<StaticModules>().modules.borrow().get(&class.id).copied()
     }
 
     /// A heap type's `__module__` entry; for builtin types the dotted name's

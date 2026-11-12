@@ -316,7 +316,7 @@ pub fn init(vm: &Vm, module: &ObjectRef) -> PyResult<()> {
     }
     // Converted as an unsigned C `long`, so `long` whatever the value.
     for (name, value) in [("SIO_RCVALL", SIO_RCVALL), ("SIO_KEEPALIVE_VALS", SIO_KEEPALIVE_VALS)] {
-        set_attribute(vm, module, name, Value::Long(Rc::new(value.into())))?;
+        set_attribute(vm, module, name, Value::long(value.into()))?;
     }
 
     Ok(())
@@ -623,7 +623,7 @@ fn long_swap(vm: &Vm, args: CallArgs, name: &str) -> PyResult<Value> {
         return Err(vm.raise(ExceptionKind::OverflowError, "long int too large to convert"));
     };
 
-    Ok(Value::Long(Rc::new(number.swap_bytes().into())))
+    Ok(Value::long(number.swap_bytes().into()))
 }
 
 fn socket_ntohl(vm: &Vm, args: CallArgs) -> PyResult<Value> {
@@ -1084,7 +1084,7 @@ fn sock_fileno(vm: &Vm, args: CallArgs) -> PyResult<Value> {
     method_no_arguments(vm, &args, "fileno")?;
 
     match socket.descriptor.get() {
-        Descriptor::Invalid => Ok(Value::Long(Rc::new((-1).into()))),
+        Descriptor::Invalid => Ok(Value::long((-1).into())),
         Descriptor::Unknown => Ok(Value::unknown("_socket.socket.fileno() (host operating system)")),
     }
 }

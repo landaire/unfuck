@@ -39,6 +39,7 @@ use crate::interp::numbers;
 use crate::interp::object::CallArgs;
 use crate::interp::ops::BinaryOp;
 use crate::interp::value::Payload;
+use crate::interp::value::PyLong;
 use crate::interp::value::Value;
 use crate::interp::vm::Vm;
 
@@ -71,7 +72,7 @@ impl Kind {
         match (self, vm.as_integral(value)?) {
             (Self::Int, Integral::Int(number)) => Some(Value::Int(number)),
             (Self::Int, Integral::Long(_)) => None,
-            (Self::Long, integral) => Some(Value::Long(Rc::new(integral.to_bigint()))),
+            (Self::Long, integral) => Some(Value::long(integral.to_bigint())),
         }
     }
 
@@ -79,7 +80,7 @@ impl Kind {
     fn plain(self, integral: &Integral) -> Value {
         match (self, integral) {
             (Self::Int, Integral::Int(number)) => Value::Int(*number),
-            _ => Value::Long(Rc::new(integral.to_bigint())),
+            _ => Value::long(integral.to_bigint()),
         }
     }
 }
@@ -274,7 +275,7 @@ fn power(vm: &Vm, args: CallArgs, kind: Kind, method: &str, reflected: bool) -> 
 
     Ok(match kind {
         Kind::Int => vm.new_int(result),
-        Kind::Long => Value::Long(Rc::new(result)),
+        Kind::Long => Value::long(result),
     })
 }
 
@@ -308,12 +309,12 @@ fn unary(vm: &Vm, args: CallArgs, kind: Kind, method: &str, operation: Unary) ->
         Unary::Positive | Unary::Plain => plain,
         Unary::Absolute => match kind {
             Kind::Int => vm.new_int(number.abs()),
-            Kind::Long => Value::Long(Rc::new(number.abs())),
+            Kind::Long => Value::long(number.abs()),
         },
         Unary::Invert => vm.invert(&plain)?,
         Unary::Truth => Value::Bool(!number.is_zero()),
         Unary::ToInt => vm.new_int(number),
-        Unary::ToLong => Value::Long(Rc::new(number)),
+        Unary::ToLong => Value::long(number),
         Unary::ToFloat => match numbers::bigint_to_f64(&number) {
             Some(float) => Value::Float(float),
             None => return Err(vm.raise(ExceptionKind::OverflowError, "long int too large to convert to float")),
@@ -497,7 +498,7 @@ fn long_new(vm: &Vm, args: CallArgs) -> PyResult<Value> {
         return Err(vm.type_error("long() result is not an integer"));
     };
 
-    Ok(new_instance(vm, &class, Payload::Long(Rc::new(number.to_bigint()))))
+    Ok(new_instance(vm, &class, Payload::Long(PyLong::new(number.to_bigint()))))
 }
 
 /// The `i` format for the `base` argument.
@@ -574,7 +575,7 @@ fn string_to_integer(vm: &Vm, kind: Kind, text: &[u8], base: i64) -> PyResult<Va
             Ok(vm.new_int(number))
         }
         Kind::Long => match parse::long_from_bytes(text, radix) {
-            Ok(number) => Ok(Value::Long(Rc::new(number))),
+            Ok(number) => Ok(Value::long(number)),
             Err(reported) => Err(vm.raise(ExceptionKind::ValueError, &format!("invalid literal for long() with base {reported}: {}", quoted(text)))),
         },
     }
@@ -637,24 +638,24 @@ fn number_to_int(vm: &Vm, value: &Value) -> PyResult<Value> {
 fn number_to_long(vm: &Vm, value: &Value) -> PyResult<Value> {
     if let Some(result) = conversion_hook(vm, value, "__long__")? {
         return match vm.as_integral(&result) {
-            Some(integral) => Ok(Value::Long(Rc::new(integral.to_bigint()))),
+            Some(integral) => Ok(Value::long(integral.to_bigint())),
             None if result.is_unknown() => Ok(result),
             None => Err(vm.type_error(&format!("__long__ returned non-long (type {})", vm.type_name(&result)))),
         };
     }
 
     if let Some(integral) = vm.as_integral(value) {
-        return Ok(Value::Long(Rc::new(integral.to_bigint())));
+        return Ok(Value::long(integral.to_bigint()));
     }
     if let Some(float) = vm.as_float(value) {
-        return float_to_integer(vm, float).map(|number| Value::Long(Rc::new(number)));
+        return float_to_integer(vm, float).map(Value::long);
     }
     if vm.as_complex(value).is_some() {
         return Err(vm.type_error("can't convert complex to long"));
     }
     if let Some(result) = truncate(vm, value)? {
         return match vm.as_integral(&result) {
-            Some(integral) => Ok(Value::Long(Rc::new(integral.to_bigint()))),
+            Some(integral) => Ok(Value::long(integral.to_bigint())),
             None => Ok(result),
         };
     }

@@ -299,7 +299,7 @@ fn constant_value(vm: &Vm, constant: &Constant) -> Value {
         Constant::None => Value::None,
         Constant::Ellipsis => Value::Ellipsis,
         Constant::Int(value) => Value::Int(*value),
-        Constant::Long(value) => Value::Long(Rc::new(value.clone())),
+        Constant::Long(value) => Value::long(value.clone()),
         Constant::Float(value) => Value::Float(*value),
         Constant::Complex { real, imag } => vm.new_complex(Complex::new(*real, *imag)),
         Constant::Str { value, interned } => {

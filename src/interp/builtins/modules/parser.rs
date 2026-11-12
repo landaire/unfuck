@@ -533,7 +533,7 @@ fn st_sizeof(vm: &Vm, args: CallArgs) -> PyResult<Value> {
         pending.extend(children.iter().map(|&child| NodeRef::Node(child)));
     }
 
-    Ok(Value::Long(Rc::new(BigInt::from(size))))
+    Ok(Value::long(BigInt::from(size)))
 }
 
 /// `__cmp__`. Comparison operators

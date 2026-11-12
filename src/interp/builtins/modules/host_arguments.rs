@@ -234,5 +234,5 @@ pub(super) fn from_void_pointer(pointer: u64) -> Value {
         return Value::Int(0);
     }
 
-    Value::Long(Rc::new(BigInt::from(pointer)))
+    Value::long(BigInt::from(pointer))
 }

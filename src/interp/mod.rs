@@ -15,6 +15,11 @@
 //! raises `NotImplementedError`, so `random` seeds from the clock instead,
 //! which fails in turn when `Clock` is denied.
 //!
+//! Evaluation is reproducible. Identities behind `id()`, default reprs,
+//! identity hashes, and the fallback ordering come from a per-VM counter,
+//! never from host addresses, and no Rust hash table's iteration order
+//! reaches Python code or the embedder.
+//!
 //! Python recursion recurses on the native stack, so the embedder runs the
 //! VM on a thread whose stack covers the recursion limit with a margin.
 //! Measured on x86-64, each level of the limit uses about 4.5 KiB of stack

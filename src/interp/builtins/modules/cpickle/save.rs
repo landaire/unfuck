@@ -1045,8 +1045,8 @@ fn reference_count(value: &Value) -> Option<usize> {
     match value {
         Value::Str(bytes) => Some(bytes.strong_count()),
         Value::Unicode(text) => Some(text.strong_count()),
-        Value::Tuple(items) => Some(Rc::strong_count(items.as_rc())),
-        Value::Long(number) => Some(Rc::strong_count(number)),
+        Value::Tuple(items) => Some(items.strong_count()),
+        Value::Long(number) => Some(number.strong_count()),
         Value::Object(object) => Some(Rc::strong_count(object)),
         _ => None,
     }

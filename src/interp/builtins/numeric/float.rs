@@ -113,7 +113,7 @@ fn operand(vm: &Vm, value: &Value) -> Option<Value> {
 
     match vm.as_integral(value)? {
         Integral::Int(number) => Some(Value::Int(number)),
-        Integral::Long(number) => Some(Value::Long(Rc::new(number))),
+        Integral::Long(number) => Some(Value::long(number)),
     }
 }
 
@@ -225,7 +225,7 @@ fn unary(vm: &Vm, args: CallArgs, method: &str, operation: Unary) -> PyResult<Va
         Unary::Absolute => Value::Float(value.abs()),
         Unary::Truth => Value::Bool(value != 0.0),
         Unary::ToInt => vm.new_int(float_to_integer(vm, value)?),
-        Unary::ToLong => Value::Long(Rc::new(float_to_integer(vm, value)?)),
+        Unary::ToLong => Value::long(float_to_integer(vm, value)?),
         Unary::Hash => Value::Int(vm.hash(&Value::Float(value))?.value()),
         Unary::Repr => Value::str(&numbers::float_repr(value)),
         Unary::Str => Value::str(&numbers::float_str(value)),

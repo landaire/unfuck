@@ -3,8 +3,6 @@
 //! object is allocated, then each field is converted and set in `_fields`
 //! order, then the location, and the finished object goes to its parent.
 
-use std::rc::Rc;
-
 use crate::interp::builtins::modules::ast::AstTypes;
 use crate::interp::builtins::modules::ast::NodeClass;
 use crate::interp::builtins::modules::ast::ast_types;
@@ -206,7 +204,7 @@ impl<'a> Writer<'a, '_> {
     fn number(&self, number: &ast::Number) -> PyResult<Value> {
         match number {
             ast::Number::Int(value) => Ok(self.vm.new_int_from_i64(*value)),
-            ast::Number::Long(value) => Ok(Value::Long(Rc::new(value.clone()))),
+            ast::Number::Long(value) => Ok(Value::long(value.clone())),
             ast::Number::Float(value) => Ok(Value::Float(*value)),
             ast::Number::Complex { real, imag } => Ok(self.vm.new_complex(Complex::new(*real, *imag))),
         }

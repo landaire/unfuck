@@ -112,7 +112,7 @@ fn unsigned_value(vm: &Vm, number: u64) -> Value {
 
     match i64::try_from(number) {
         Ok(number) if number <= high => Value::Int(number),
-        _ => Value::Long(Rc::new(BigInt::from(number))),
+        _ => Value::long(BigInt::from(number)),
     }
 }
 

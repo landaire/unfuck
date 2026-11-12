@@ -278,7 +278,7 @@ fn int_value(value: i32) -> Value {
 fn unsigned_value(value: u32) -> Value {
     match i32::try_from(value) {
         Ok(value) => int_value(value),
-        Err(_) => Value::Long(Rc::new(BigInt::from(value))),
+        Err(_) => Value::long(BigInt::from(value)),
     }
 }
 

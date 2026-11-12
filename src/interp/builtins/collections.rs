@@ -2,7 +2,7 @@
 
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -121,10 +121,12 @@ struct DequeIterator {
 impl_native_data!(DequeIterator, "deque_iterator");
 
 /// `default_factory` of each defaultdict, keyed by the dict. The dict's own
-/// storage is a builtin dict table, which has no room for it.
+/// storage is a builtin dict table, which has no room for it. Pruning drops
+/// factories in identity order, which fixes the order finalizers they
+/// release are queued in.
 #[derive(Default)]
 struct DefaultFactories {
-    factories: RefCell<HashMap<ObjectId, (Weak<Object>, Value)>>,
+    factories: RefCell<BTreeMap<ObjectId, (Weak<Object>, Value)>>,
     collected_at: Cell<usize>,
 }
 

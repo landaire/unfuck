@@ -309,7 +309,7 @@ fn release_slots(class: Option<&ObjectRef>, slots: &mut Box<[Option<Value>]>) {
 fn release_items(payload: &mut Payload) {
     let items = match payload {
         Payload::List(items) => std::mem::take(items.get_mut()),
-        Payload::Tuple(items) => match Rc::get_mut(items) {
+        Payload::Tuple(items) => match items.unique_items_mut() {
             Some(items) => items.iter_mut().map(|item| std::mem::replace(item, Value::None)).collect(),
             None => return,
         },

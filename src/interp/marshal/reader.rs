@@ -368,7 +368,7 @@ impl Reader<'_> {
 
         match self.vm.config.long_width {
             LongWidth::Bits64 => Value::Int(value),
-            LongWidth::Bits32 => Value::Long(Rc::new(BigInt::from(value))),
+            LongWidth::Bits32 => Value::long(BigInt::from(value)),
         }
     }
 
@@ -394,7 +394,7 @@ impl Reader<'_> {
 
         let value = if count < 0 { -magnitude } else { magnitude };
 
-        Some(Value::Long(Rc::new(value)))
+        Some(Value::long(value))
     }
 
     /// A float written as a length byte and text, parsed by

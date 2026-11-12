@@ -294,7 +294,7 @@ pub fn register(vm: &Vm) -> PyResult<()> {
 }
 
 fn long(value: usize) -> Value {
-    Value::Long(Rc::new(value.into()))
+    Value::long(value.into())
 }
 
 fn receiver_view<'a>(vm: &Vm, getset: &GetSet, instance: &'a Value) -> PyResult<&'a MemoryView> {

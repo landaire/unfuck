@@ -511,7 +511,7 @@ fn reader_attribute(vm: &Vm, getset: &GetSet, instance: &Value) -> PyResult<Valu
         return Ok(data.dialect.clone());
     }
 
-    Ok(Value::Long(Rc::new(BigInt::from(data.line_num.get()))))
+    Ok(Value::long(BigInt::from(data.line_num.get())))
 }
 
 fn reader_iter(vm: &Vm, args: CallArgs) -> PyResult<Value> {

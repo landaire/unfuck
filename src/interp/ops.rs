@@ -24,6 +24,7 @@ use crate::interp::type_flags;
 use crate::interp::value::Payload;
 use crate::interp::value::PyBytes;
 use crate::interp::value::PyText;
+use crate::interp::value::TupleItems;
 use crate::interp::value::Value;
 use crate::interp::vm::Vm;
 
@@ -151,7 +152,7 @@ impl Vm {
     pub fn new_int(&self, value: BigInt) -> Value {
         match value.to_i64() {
             Some(small) if numbers::fits_int(self.config.long_width, small) => Value::Int(small),
-            _ => Value::Long(Rc::new(value)),
+            _ => Value::long(value),
         }
     }
 
@@ -160,7 +161,7 @@ impl Vm {
             return Value::Int(value);
         }
 
-        Value::Long(Rc::new(BigInt::from(value)))
+        Value::long(BigInt::from(value))
     }
 
     /// Integer content of `int`, `long`, `bool`, and their subclasses.
@@ -260,11 +261,11 @@ impl Vm {
     }
 
     /// Items of a `tuple` or tuple subclass.
-    pub fn as_tuple(&self, value: &Value) -> Option<Rc<[Value]>> {
+    pub fn as_tuple(&self, value: &Value) -> Option<TupleItems> {
         match value {
-            Value::Tuple(items) => Some(Rc::clone(items.as_rc())),
+            Value::Tuple(items) => Some(items.clone()),
             Value::Object(object) => match &object.payload {
-                Payload::Tuple(items) => Some(Rc::clone(items)),
+                Payload::Tuple(items) => Some(items.clone()),
                 _ => None,
             },
             _ => None,
@@ -352,7 +353,7 @@ impl Vm {
             (Value::None, Value::None) | (Value::NotImplemented, Value::NotImplemented) | (Value::Ellipsis, Value::Ellipsis) => true,
             (Value::Bool(left), Value::Bool(right)) => left == right,
             (Value::Int(left), Value::Int(right)) => left == right,
-            (Value::Long(left), Value::Long(right)) => Rc::ptr_eq(left, right),
+            (Value::Long(left), Value::Long(right)) => left.ptr_eq(right),
             (Value::Float(left), Value::Float(right)) => left.to_bits() == right.to_bits(),
             (Value::Str(left), Value::Str(right)) => left.ptr_eq(right),
             (Value::Unicode(left), Value::Unicode(right)) => left.ptr_eq(right),
@@ -428,7 +429,7 @@ impl Vm {
                     Payload::Complex(number) => Ok(number.hash(width)),
                     Payload::Str(bytes) => self.hash(&Value::Str(bytes.clone())),
                     Payload::Unicode(text) => self.hash(&Value::Unicode(text.clone())),
-                    Payload::Tuple(items) => self.hash(&Value::Tuple(Rc::clone(items).into())),
+                    Payload::Tuple(items) => self.hash(&Value::Tuple(items.clone())),
                     Payload::FrozenSet(table) => Ok(self.frozenset_hash(table)),
                     Payload::List(_) | Payload::Dict(_) | Payload::Set(_) | Payload::DictProxy(_) => {
                         Err(self.type_error(&format!("unhashable type: '{}'", self.class_name(&class))))
@@ -576,9 +577,9 @@ impl Vm {
                 }
             }
             (Value::Long(a), Value::Long(b)) => {
-                if Rc::ptr_eq(a, b) {
+                if a.ptr_eq(b) {
                     true
-                } else if a == b {
+                } else if **a == **b {
                     return indeterminate();
                 } else {
                     false
@@ -893,19 +894,21 @@ impl Vm {
     }
 
     pub fn value_address(&self, value: &Value) -> u64 {
+        let assign = || self.next_object_id();
+
         match value {
             Value::Object(object) => self.address_of(object),
-            Value::Tuple(items) => items.as_ptr() as u64,
-            Value::Str(bytes) => bytes.address(),
-            Value::Unicode(text) => text.address(),
-            Value::Long(number) => Rc::as_ptr(number) as u64,
+            Value::Tuple(items) => items.identity(assign).address(),
+            Value::Str(bytes) => bytes.identity(assign).address(),
+            Value::Unicode(text) => text.identity(assign).address(),
+            Value::Long(number) => number.identity(assign).address(),
             Value::None => inline_address(0, 0),
             Value::NotImplemented => inline_address(1, 0),
             Value::Ellipsis => inline_address(2, 0),
             Value::Bool(flag) => inline_address(3, u64::from(*flag)),
             Value::Int(number) => inline_address(4, *number as u64),
             Value::Float(number) => inline_address(5, number.to_bits()),
-            Value::Unknown(unknown) => Rc::as_ptr(unknown) as u64,
+            Value::Unknown(unknown) => unknown.identity(assign).address(),
         }
     }
 
@@ -1440,7 +1443,7 @@ impl Vm {
     /// otherwise `int` unless it overflows C `long`.
     fn integer_result(&self, value: BigInt, long_result: bool) -> Value {
         if long_result {
-            return Value::Long(Rc::new(value));
+            return Value::long(value);
         }
 
         self.new_int(value)
@@ -1552,7 +1555,7 @@ impl Vm {
             Some(Number::Complex(value)) => Ok(self.new_complex(value)),
             Some(Number::Float(value)) => Ok(Value::Float(value)),
             Some(Number::Integral(Integral::Int(value), _)) => Ok(Value::Int(value)),
-            Some(Number::Integral(Integral::Long(value), _)) => Ok(Value::Long(Rc::new(value))),
+            Some(Number::Integral(Integral::Long(value), _)) => Ok(Value::long(value)),
             None => Err(self.type_error(&format!("bad operand type for unary +: '{}'", self.type_name(operand)))),
         }
     }
@@ -1569,7 +1572,7 @@ impl Vm {
             Some(Number::Complex(value)) => Ok(self.new_complex(-value)),
             Some(Number::Float(value)) => Ok(Value::Float(-value)),
             Some(Number::Integral(Integral::Int(value), _)) => Ok(self.new_int(-BigInt::from(value))),
-            Some(Number::Integral(Integral::Long(value), _)) => Ok(Value::Long(Rc::new(-value))),
+            Some(Number::Integral(Integral::Long(value), _)) => Ok(Value::long(-value)),
             None => Err(self.type_error(&format!("bad operand type for unary -: '{}'", self.type_name(operand)))),
         }
     }
@@ -1584,7 +1587,7 @@ impl Vm {
 
         match self.as_integral(operand) {
             Some(Integral::Int(value)) => Ok(Value::Int(!value)),
-            Some(Integral::Long(value)) => Ok(Value::Long(Rc::new(-value - 1))),
+            Some(Integral::Long(value)) => Ok(Value::long(-value - 1)),
             None => Err(self.type_error(&format!("bad operand type for unary ~: '{}'", self.type_name(operand)))),
         }
     }
@@ -1666,7 +1669,7 @@ impl Vm {
 
 /// An address for a value the interpreter stores inline. Equal values share
 /// it, as CPython's cached small ints and singletons do. The range lies
-/// above heap pointers and object addresses.
+/// above the addresses of values with an `ObjectId`.
 fn inline_address(tag: u64, bits: u64) -> u64 {
     let mut mixed = bits.wrapping_add(tag.wrapping_mul(0x9E37_79B9_7F4A_7C15));
     mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);

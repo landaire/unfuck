@@ -112,7 +112,7 @@ fn create_semlock_type(vm: &Vm) -> PyResult<ObjectRef> {
 
     // `SEM_VALUE_MAX` is `LONG_MAX` on Windows, stored as an `int`.
     let (_, long_max) = int_bounds(vm.config.long_width);
-    vm.dict_set_str(&data.dict, "SEM_VALUE_MAX", Value::Long(Rc::new(BigInt::from(long_max))))?;
+    vm.dict_set_str(&data.dict, "SEM_VALUE_MAX", Value::long(BigInt::from(long_max)))?;
 
     add_member(vm, &class, GetSet { name: "handle", owner: TYPE_NAME, get: semlock_handle, set: None })?;
     add_member(vm, &class, GetSet { name: "kind", owner: TYPE_NAME, get: semlock_kind, set: None })?;
@@ -319,7 +319,7 @@ fn semlock_handle(vm: &Vm, getset: &GetSet, instance: &Value) -> PyResult<Value>
         return Ok(instance.clone());
     };
 
-    Ok(Value::Long(Rc::new(BigInt::from(semlock.handle))))
+    Ok(Value::long(BigInt::from(semlock.handle)))
 }
 
 fn semlock_kind(vm: &Vm, getset: &GetSet, instance: &Value) -> PyResult<Value> {

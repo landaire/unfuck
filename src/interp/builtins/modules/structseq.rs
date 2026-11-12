@@ -182,7 +182,7 @@ fn structseq_reduce(vm: &Vm, args: CallArgs) -> PyResult<Value> {
     };
 
     let class = Value::Object(vm.class_of(&target));
-    let state = Value::tuple(vec![Value::Tuple(items.into()), Value::Object(vm.new_dict())]);
+    let state = Value::tuple(vec![Value::Tuple(items), Value::Object(vm.new_dict())]);
 
     Ok(Value::tuple(vec![class, state]))
 }

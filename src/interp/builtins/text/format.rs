@@ -1,8 +1,6 @@
 //! `format()`, the `__format__` methods of strings and numbers, and
 //! `str.format` with its replacement field syntax.
 
-use std::rc::Rc;
-
 use num_bigint::BigInt;
 use num_traits::Signed;
 use num_traits::ToPrimitive;
@@ -587,7 +585,7 @@ pub(crate) fn field_index<T: CodeUnit>(vm: &Vm, text: &[T]) -> PyResult<Option<i
 
 /// An index into a field's object, which `str.format` passes as a `long`.
 pub(crate) fn index_key(index: i64) -> Value {
-    Value::Long(Rc::new(BigInt::from(index)))
+    Value::long(BigInt::from(index))
 }
 
 /// How fields without a name get their argument position.

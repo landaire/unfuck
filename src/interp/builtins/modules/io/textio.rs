@@ -238,7 +238,7 @@ impl Cookie {
         bytes.extend_from_slice(&self.chars_to_skip.to_le_bytes());
         bytes.push(self.need_eof);
 
-        Value::Long(Rc::new(BigInt::from_bytes_le(Sign::Plus, &bytes)))
+        Value::long(BigInt::from_bytes_le(Sign::Plus, &bytes))
     }
 
     /// Reads a cookie through `long(value)`.
@@ -353,7 +353,7 @@ fn check_closed(vm: &Vm, target: &Value) -> PyResult<()> {
 }
 
 fn is_zero(vm: &Vm, value: &Value) -> PyResult<bool> {
-    let equal = vm.compare(value, &Value::Long(Rc::new(BigInt::from(0))), CompareOp::Equal)?;
+    let equal = vm.compare(value, &Value::long(BigInt::from(0)), CompareOp::Equal)?;
 
     vm.truthy(&equal, "TextIOWrapper zero comparison")
 }
@@ -724,7 +724,7 @@ fn text_io_init(vm: &Vm, args: CallArgs) -> PyResult<Value> {
     if let (true, Some(encoder)) = (seekable, &encoder) {
         let position = vm.call_method(&buffer, "tell", Vec::new())?;
         if !is_zero(vm, &position)? {
-            vm.call_method(encoder, "setstate", vec![Value::Long(Rc::new(BigInt::from(0)))])?;
+            vm.call_method(encoder, "setstate", vec![Value::long(BigInt::from(0))])?;
         }
     }
 
@@ -1026,7 +1026,7 @@ fn text_io_seek(vm: &Vm, args: CallArgs) -> PyResult<Value> {
         _ => return Err(vm.raise(ExceptionKind::ValueError, &format!("invalid whence ({whence}, should be 0, 1 or 2)"))),
     }
 
-    let negative = vm.compare(&position, &Value::Long(Rc::new(BigInt::from(0))), CompareOp::Less)?;
+    let negative = vm.compare(&position, &Value::long(BigInt::from(0)), CompareOp::Less)?;
     if vm.truthy(&negative, "TextIOWrapper seek position")? {
         let shown = vm.repr_text(&position)?;
         return Err(vm.raise(ExceptionKind::ValueError, &format!("negative seek position {shown}")));
@@ -1034,7 +1034,7 @@ fn text_io_seek(vm: &Vm, args: CallArgs) -> PyResult<Value> {
 
     vm.call_method(target, "flush", Vec::new())?;
     let cookie = Cookie::from_value(vm, &position)?;
-    vm.call_method(&buffer, "seek", vec![Value::Long(Rc::new(BigInt::from(cookie.start)))])?;
+    vm.call_method(&buffer, "seek", vec![Value::long(BigInt::from(cookie.start))])?;
 
     let (decoder, encoder) = io.with(vm, |stream| {
         stream.forget_decoded();
@@ -1073,7 +1073,7 @@ fn text_io_seek(vm: &Vm, args: CallArgs) -> PyResult<Value> {
         if cookie.is_origin() {
             vm.call_method(&encoder, "reset", Vec::new())?;
         } else {
-            vm.call_method(&encoder, "setstate", vec![Value::Long(Rc::new(BigInt::from(0)))])?;
+            vm.call_method(&encoder, "setstate", vec![Value::long(BigInt::from(0))])?;
         }
     }
 

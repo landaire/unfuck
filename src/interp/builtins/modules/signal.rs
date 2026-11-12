@@ -95,7 +95,7 @@ pub fn init(vm: &Vm, module: &ObjectRef) -> PyResult<()> {
 
     // The null `SIG_DFL` is the int 0, `SIG_IGN` a long.
     let default_handler = Value::Int(0);
-    let ignore_handler = Value::Long(Rc::new(BigInt::from(1)));
+    let ignore_handler = Value::long(BigInt::from(1));
     set_attribute(vm, module, "SIG_DFL", default_handler.clone())?;
     set_attribute(vm, module, "SIG_IGN", ignore_handler.clone())?;
     set_attribute(vm, module, "NSIG", Value::Int(i64::from(NSIG)))?;
@@ -238,7 +238,7 @@ fn signal_set_wakeup_fd(vm: &Vm, args: CallArgs) -> PyResult<Value> {
     state.wakeup_fd.set(Some(descriptor));
 
     match previous {
-        Some(previous) => Ok(Value::Long(Rc::new(BigInt::from(previous)))),
+        Some(previous) => Ok(Value::long(BigInt::from(previous))),
         None => Ok(Value::unknown("signal.set_wakeup_fd() (host file descriptor table)")),
     }
 }

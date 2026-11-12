@@ -643,7 +643,7 @@ fn int_argument(vm: &Vm, value: &Value) -> PyResult<i32> {
     let result = integer_result(vm, vm.call0(&method)?)?;
     let number = match result {
         Integral::Int(number) => Value::Int(number),
-        Integral::Long(number) => Value::Long(Rc::new(number)),
+        Integral::Long(number) => Value::long(number),
     };
 
     args::c_int(vm, &number)

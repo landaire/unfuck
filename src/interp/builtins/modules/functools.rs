@@ -22,6 +22,7 @@ use crate::interp::error::PyResult;
 use crate::interp::object::CallArgs;
 use crate::interp::object::Layout;
 use crate::interp::value::ObjectRef;
+use crate::interp::value::TupleItems;
 use crate::interp::value::Value;
 use crate::interp::vm::Vm;
 
@@ -30,7 +31,7 @@ const PARTIAL: &str = "functools.partial";
 /// A `functools.partial`. `__setstate__` can replace every field.
 struct Partial {
     function: RefCell<Value>,
-    arguments: RefCell<Rc<[Value]>>,
+    arguments: RefCell<TupleItems>,
     keywords: RefCell<ObjectRef>,
 }
 
@@ -122,7 +123,7 @@ fn partial_reduce(vm: &Vm, args: CallArgs) -> PyResult<Value> {
         Value::Object(object) => object.dict().map(Value::Object).unwrap_or(Value::None),
         _ => Value::None,
     };
-    let state = Value::tuple(vec![function.clone(), Value::Tuple(Rc::clone(&partial.arguments.borrow()).into()), Value::Object(Rc::clone(&partial.keywords.borrow())), dict]);
+    let state = Value::tuple(vec![function.clone(), Value::Tuple(partial.arguments.borrow().clone()), Value::Object(Rc::clone(&partial.keywords.borrow())), dict]);
 
     Ok(Value::tuple(vec![Value::Object(vm.class_of(target)), Value::tuple(vec![function]), state]))
 }
@@ -167,7 +168,7 @@ fn partial_func(vm: &Vm, getset: &GetSet, instance: &Value) -> PyResult<Value> {
 }
 
 fn partial_args(vm: &Vm, getset: &GetSet, instance: &Value) -> PyResult<Value> {
-    Ok(Value::Tuple(Rc::clone(&partial_of(vm, instance, getset.name)?.arguments.borrow()).into()))
+    Ok(Value::Tuple(partial_of(vm, instance, getset.name)?.arguments.borrow().clone()))
 }
 
 fn partial_keywords(vm: &Vm, getset: &GetSet, instance: &Value) -> PyResult<Value> {

@@ -2,7 +2,6 @@
 //! layer.
 
 use std::cell::RefCell;
-use std::rc::Rc;
 
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
@@ -325,7 +324,7 @@ fn decoder_getstate(vm: &Vm, args: CallArgs) -> PyResult<Value> {
 
     let flag = (flag << 1) | u64::from(decoder.state.borrow().pending_cr);
 
-    Ok(Value::tuple(vec![buffer, Value::Long(Rc::new(BigInt::from(flag)))]))
+    Ok(Value::tuple(vec![buffer, Value::long(BigInt::from(flag))]))
 }
 
 fn decoder_setstate(vm: &Vm, args: CallArgs) -> PyResult<Value> {
@@ -340,7 +339,7 @@ fn decoder_setstate(vm: &Vm, args: CallArgs) -> PyResult<Value> {
         return Ok(Value::None);
     }
 
-    let inner_state = Value::tuple(vec![buffer, Value::Long(Rc::new(BigInt::from(flag >> 1)))]);
+    let inner_state = Value::tuple(vec![buffer, Value::long(BigInt::from(flag >> 1))]);
 
     vm.call_method(&inner, "setstate", vec![inner_state])
 }

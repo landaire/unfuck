@@ -26,6 +26,7 @@ use crate::interp::object::NativeIterator;
 use crate::interp::ops::CompareOp;
 use crate::interp::value::Payload;
 use crate::interp::value::PyBytes;
+use crate::interp::value::TupleItems;
 use crate::interp::value::Value;
 use crate::interp::vm::Vm;
 
@@ -61,7 +62,7 @@ pub fn register(vm: &Vm) -> PyResult<()> {
 }
 
 /// Items of the receiver of a `tuple` method; tuple subclasses included.
-fn bind_tuple(vm: &Vm, args: CallArgs, method: &str) -> PyResult<(Rc<[Value]>, CallArgs)> {
+fn bind_tuple(vm: &Vm, args: CallArgs, method: &str) -> PyResult<(TupleItems, CallArgs)> {
     let (target, rest) = bind(vm, args, method, "tuple")?;
     let Some(items) = vm.as_tuple(&target) else {
         return Err(wrong_receiver(vm, method, "tuple", &target));
@@ -77,14 +78,14 @@ fn tuple_new(vm: &Vm, args: CallArgs) -> PyResult<Value> {
     let slots = parse(vm, rest, "tuple", &["sequence"], 0)?;
     let exact = Rc::ptr_eq(&class, &base);
 
-    let items: Rc<[Value]> = match &slots[0] {
-        None => Rc::from(Vec::new()),
+    let items: TupleItems = match &slots[0] {
+        None => Vec::new().into(),
         Some(sequence @ Value::Tuple(_)) if exact => return Ok(sequence.clone()),
         Some(sequence) => vm.collect(sequence)?.into(),
     };
 
     if exact {
-        return Ok(Value::Tuple(items.into()));
+        return Ok(Value::Tuple(items));
     }
 
     Ok(new_instance(vm, &class, Payload::Tuple(items)))
@@ -94,7 +95,7 @@ fn tuple_getitem(vm: &Vm, args: CallArgs) -> PyResult<Value> {
     let (items, rest) = bind_tuple(vm, args, "__getitem__")?;
     let index = wrapper_operand(vm, rest)?;
 
-    vm.getitem(&Value::Tuple(items.into()), &index)
+    vm.getitem(&Value::Tuple(items), &index)
 }
 
 /// `tuple.__getslice__`: bounds clamp to the tuple without wrapping negatives.
@@ -164,7 +165,7 @@ fn tuple_hash(vm: &Vm, args: CallArgs) -> PyResult<Value> {
     let (items, rest) = bind_tuple(vm, args, "__hash__")?;
     wrapper_arguments(vm, rest, 0)?;
 
-    Ok(Value::Int(vm.hash(&Value::Tuple(items.into()))?.value()))
+    Ok(Value::Int(vm.hash(&Value::Tuple(items))?.value()))
 }
 
 /// Tuple comparison: `NotImplemented` unless both operands are tuples.
@@ -186,21 +187,21 @@ fn tuple_iter(vm: &Vm, args: CallArgs) -> PyResult<Value> {
     let (items, rest) = bind_tuple(vm, args, "__iter__")?;
     wrapper_arguments(vm, rest, 0)?;
 
-    Ok(vm.new_iterator(NativeIterator::Sequence { sequence: Value::Tuple(items.into()), index: 0 }))
+    Ok(vm.new_iterator(NativeIterator::Sequence { sequence: Value::Tuple(items), index: 0 }))
 }
 
 fn tuple_getnewargs(vm: &Vm, args: CallArgs) -> PyResult<Value> {
     let (items, rest) = bind_tuple(vm, args, "__getnewargs__")?;
     no_arguments(vm, rest, "__getnewargs__")?;
 
-    Ok(Value::tuple(vec![Value::Tuple(items.into())]))
+    Ok(Value::tuple(vec![Value::Tuple(items)]))
 }
 
 fn tuple_repr(vm: &Vm, args: CallArgs) -> PyResult<Value> {
     let (items, rest) = bind_tuple(vm, args, "__repr__")?;
     wrapper_arguments(vm, rest, 0)?;
 
-    Ok(Value::Str(PyBytes::new(vm.builtin_repr(&Value::Tuple(items.into()))?.into_bytes())))
+    Ok(Value::Str(PyBytes::new(vm.builtin_repr(&Value::Tuple(items))?.into_bytes())))
 }
 
 fn tuple_count(vm: &Vm, args: CallArgs) -> PyResult<Value> {

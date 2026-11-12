@@ -429,7 +429,7 @@ impl Machine<'_> {
 
     fn load_long_bytes(&mut self, length: usize) -> LoadResult<()> {
         let number = if length == 0 { BigInt::default() } else { BigInt::from_signed_bytes_le(&self.unpickler.read(self.vm, length)?) };
-        self.stack.push(Value::Long(Rc::new(number)));
+        self.stack.push(Value::long(number));
 
         Ok(())
     }
@@ -450,7 +450,7 @@ impl Machine<'_> {
         }
 
         match parse::long_from_bytes(text, 0) {
-            Ok(number) => Ok(Value::Long(Rc::new(number))),
+            Ok(number) => Ok(Value::long(number)),
             Err(_) => Err(self.vm.raise(ExceptionKind::ValueError, "could not convert string to int").into()),
         }
     }
@@ -459,7 +459,7 @@ impl Machine<'_> {
         let text = c_string(line);
 
         match parse::long_from_bytes(text, 0) {
-            Ok(number) => Ok(Value::Long(Rc::new(number))),
+            Ok(number) => Ok(Value::long(number)),
             Err(base) => {
                 let shown = repr_bytes(&text[..text.len().min(200)]);
                 Err(self.vm.raise(ExceptionKind::ValueError, &format!("invalid literal for long() with base {base}: {shown}")).into())

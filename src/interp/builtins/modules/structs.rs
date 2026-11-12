@@ -884,7 +884,7 @@ fn unpack_item(vm: &Vm, layout: &Layout, kind: Kind, source: &[u8]) -> PyResult<
             let bits = load(source, big_endian);
             match vm.config.long_width {
                 // A pointer wider than `long` always comes back as a long.
-                LongWidth::Bits32 => Value::Long(Rc::new(BigInt::from(bits))),
+                LongWidth::Bits32 => Value::long(BigInt::from(bits)),
                 LongWidth::Bits64 => vm.new_int(BigInt::from(bits)),
             }
         }
@@ -1287,7 +1287,7 @@ fn struct_sizeof(vm: &Vm, args: CallArgs) -> PyResult<Value> {
 
     let instance = instance_size(vm, &vm.class_of(&args.positional[0]))?;
 
-    Ok(Value::Long(Rc::new(BigInt::from(instance + UNIT_BYTES * (layout.size_units + 1)))))
+    Ok(Value::long(BigInt::from(instance + UNIT_BYTES * (layout.size_units + 1))))
 }
 
 /// The instance size `__sizeof__` starts from: 56 bytes for `Struct`, plus 8

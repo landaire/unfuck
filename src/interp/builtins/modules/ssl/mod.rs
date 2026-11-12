@@ -277,7 +277,7 @@ fn install_versions(vm: &Vm, module: &ObjectRef) -> PyResult<()> {
     };
 
     let info = || Value::tuple(version_info(openssl.number).into_iter().map(|part| Value::Int(i64::from(part))).collect());
-    set_attribute(vm, module, "OPENSSL_VERSION_NUMBER", Value::Long(Rc::new(BigInt::from(openssl.number))))?;
+    set_attribute(vm, module, "OPENSSL_VERSION_NUMBER", Value::long(BigInt::from(openssl.number)))?;
     set_attribute(vm, module, "OPENSSL_VERSION_INFO", info())?;
     set_attribute(vm, module, "OPENSSL_VERSION", Value::str(&openssl.text))?;
     set_attribute(vm, module, "_OPENSSL_API_VERSION", info())
@@ -851,7 +851,7 @@ fn context_session_stats(vm: &Vm, args: CallArgs) -> PyResult<Value> {
     let stats = vm.new_dict();
     let names = ["number", "connect", "connect_good", "connect_renegotiate", "accept", "accept_good", "accept_renegotiate", "accept", "hits", "misses", "timeouts", "cache_full"];
     for name in names {
-        vm.dict_set_str(&stats, name, Value::Long(Rc::new(BigInt::default())))?;
+        vm.dict_set_str(&stats, name, Value::long(BigInt::default()))?;
     }
 
     Ok(Value::Object(stats))
@@ -932,7 +932,7 @@ fn parse(vm: &Vm, args: CallArgs, function: &str, names: &[&str]) -> PyResult<Ve
 fn get_options(vm: &Vm, getset: &GetSet, instance: &Value) -> PyResult<Value> {
     let context = context_of(vm, getset, instance)?;
 
-    Ok(Value::Long(Rc::new(BigInt::from(c_long(vm, context.options.get())))))
+    Ok(Value::long(BigInt::from(c_long(vm, context.options.get()))))
 }
 
 fn set_options(vm: &Vm, getset: &GetSet, instance: &Value, value: Option<Value>) -> PyResult<()> {
@@ -949,7 +949,7 @@ fn set_options(vm: &Vm, getset: &GetSet, instance: &Value, value: Option<Value>)
 fn get_verify_flags(vm: &Vm, getset: &GetSet, instance: &Value) -> PyResult<Value> {
     let context = context_of(vm, getset, instance)?;
 
-    Ok(Value::Long(Rc::new(BigInt::from(context.verify_flags.get()))))
+    Ok(Value::long(BigInt::from(context.verify_flags.get())))
 }
 
 fn set_verify_flags(vm: &Vm, getset: &GetSet, instance: &Value, value: Option<Value>) -> PyResult<()> {
@@ -984,7 +984,7 @@ fn set_verify_flags(vm: &Vm, getset: &GetSet, instance: &Value, value: Option<Va
 fn get_verify_mode(vm: &Vm, getset: &GetSet, instance: &Value) -> PyResult<Value> {
     let context = context_of(vm, getset, instance)?;
 
-    Ok(Value::Long(Rc::new(BigInt::from(context.verify_mode.get().number()))))
+    Ok(Value::long(BigInt::from(context.verify_mode.get().number())))
 }
 
 fn set_verify_mode(vm: &Vm, getset: &GetSet, instance: &Value, value: Option<Value>) -> PyResult<()> {

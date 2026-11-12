@@ -3,7 +3,6 @@
 //! return unknown values.
 
 use std::cell::RefCell;
-use std::rc::Rc;
 
 use num_bigint::BigInt;
 use num_traits::FromPrimitive;
@@ -280,14 +279,14 @@ fn hash_name(vm: &Vm, getset: &GetSet, instance: &Value) -> PyResult<Value> {
 fn hash_digest_size(vm: &Vm, getset: &GetSet, instance: &Value) -> PyResult<Value> {
     let size = hash_of(vm, instance, getset.name)?.algorithm.digest_size();
 
-    Ok(Value::Long(Rc::new(BigInt::from(size))))
+    Ok(Value::long(BigInt::from(size)))
 }
 
 /// `HASH.block_size`, a `long`.
 fn hash_block_size(vm: &Vm, getset: &GetSet, instance: &Value) -> PyResult<Value> {
     let size = hash_of(vm, instance, getset.name)?.algorithm.block_size();
 
-    Ok(Value::Long(Rc::new(BigInt::from(size))))
+    Ok(Value::long(BigInt::from(size)))
 }
 
 /// C `long` conversion, through `__int__` for other types. `None` when

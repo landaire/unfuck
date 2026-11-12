@@ -192,7 +192,7 @@ impl Vm {
 
         // A reversed list iterator's hint is a long.
         if is_kind(IteratorKind::ListReverse) {
-            return Ok(Some(Value::Long(Rc::new(BigInt::from(hint)))));
+            return Ok(Some(Value::long(BigInt::from(hint))));
         }
 
         Ok(Some(Value::Int(hint)))
@@ -643,7 +643,7 @@ impl Vm {
     /// value, whose slicing ignores the subclass's `__getitem__`.
     fn plain_sequence(&self, container: &Value) -> Option<Value> {
         match container.as_object().map(|object| &object.payload)? {
-            Payload::Tuple(items) => Some(Value::Tuple(Rc::clone(items).into())),
+            Payload::Tuple(items) => Some(Value::Tuple(items.clone())),
             Payload::Str(bytes) => Some(Value::Str(bytes.clone())),
             Payload::Unicode(text) => Some(Value::Unicode(text.clone())),
             _ => None,
