@@ -1,0 +1,1 @@
+[('char_cache', True), ('fresh_char', False), ('fresh_char_index', True), ('empty', True), ('fresh_equal', False), ('two_fresh', False), ('concat_distinct', False), ('intern_fresh', True), ('id_equal', True), ('id_distinct', True), ('dict_key', False), ('list_index', 0), ('str_new', True)]

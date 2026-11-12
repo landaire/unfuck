@@ -1,0 +1,1 @@
+((True, ['a', 'b', 'c'], ['a', 'b', 'c', 'd', 'first', 'first_keys'], 4, 4), (False, ['snapshot']), 1, ([('v', 1), ('w', 1)], ['inner', 'v']), (['inner'], ['inner', 'late', 'names'], 1), ('value', True), {}, [['item'], ['item', 'other']], (True, ['argument', 'local']), ['__module__', 'a'], True, True, 'locals() takes no arguments (1 given)')

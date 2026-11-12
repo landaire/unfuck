@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "location", 
+  "filename": "error_parse_assign_literal.py", 
+  "lineno": 2, 
+  "msg": "can't assign to literal", 
+  "offset": null, 
+  "text": null, 
+  "type": "SyntaxError"
+ }, 
+ "filename": "error_parse_assign_literal.py", 
+ "mode": "exec", 
+ "warnings": []
+}

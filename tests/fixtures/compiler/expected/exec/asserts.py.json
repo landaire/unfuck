@@ -1,0 +1,13 @@
+{
+ "error": null, 
+ "filename": "asserts.py", 
+ "mode": "exec", 
+ "warnings": [
+  {
+   "category": "SyntaxWarning", 
+   "filename": "asserts.py", 
+   "lineno": 5, 
+   "message": "assertion is always true, perhaps remove parentheses?"
+  }
+ ]
+}

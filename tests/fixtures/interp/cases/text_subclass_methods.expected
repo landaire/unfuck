@@ -1,0 +1,1 @@
+('HELLO', ['He', '', 'o'], ['a', 'b'], 'str', 'S-str', 'a,b', 'S-str', 'S-str', u'S-str', u'V-uni', u'V-uni', u'XY', 2, True, 2, 'HELLO', 'a,ba,b', 'str', 'a,ba,b', '  Hello', 'S-str', "'Hello'", "u'xy'", True, True, True, True, 'q', 'T', u'w', ('TypeError', 'unicode.__new__(T): T is not a subtype of unicode'))

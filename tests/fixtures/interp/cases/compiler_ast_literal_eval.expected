@@ -1,0 +1,1 @@
+([42, 'text', u'uni', (1, 'a'), [1.5, 2L], {'k': 1, 3: []}, None, True, 7, [False]], ['ValueError: malformed string', 'ValueError: malformed string', 'ValueError: malformed string', 'ValueError: malformed string'])

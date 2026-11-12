@@ -1,0 +1,1 @@
+['get', 'after descriptor', 'generator finally', 'del generator local', 'after generator', 'after fresh generator', 'del dict', 'del item', 'after list subclass', 20, 'end']

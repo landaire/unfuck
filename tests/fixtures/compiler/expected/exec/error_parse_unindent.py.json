@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "location", 
+  "filename": "error_parse_unindent.py", 
+  "lineno": 3, 
+  "msg": "unindent does not match any outer indentation level", 
+  "offset": 10, 
+  "text": "    y = 2\n", 
+  "type": "IndentationError"
+ }, 
+ "filename": "error_parse_unindent.py", 
+ "mode": "exec", 
+ "warnings": []
+}

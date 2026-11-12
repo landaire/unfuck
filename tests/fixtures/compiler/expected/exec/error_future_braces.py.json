@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "message", 
+  "filename": "error_future_braces.py", 
+  "lineno": 1, 
+  "msg": "not a chance", 
+  "offset": null, 
+  "text": null, 
+  "type": "SyntaxError"
+ }, 
+ "filename": "error_future_braces.py", 
+ "mode": "exec", 
+ "warnings": []
+}

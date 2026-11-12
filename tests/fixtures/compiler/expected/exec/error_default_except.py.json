@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "location", 
+  "filename": "error_default_except.py", 
+  "lineno": 2, 
+  "msg": "default 'except:' must be last", 
+  "offset": null, 
+  "text": null, 
+  "type": "SyntaxError"
+ }, 
+ "filename": "error_default_except.py", 
+ "mode": "exec", 
+ "warnings": []
+}

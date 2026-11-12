@@ -1,0 +1,1 @@
+(True, (-32682612, 593349751, 316570333, 1512224607), 'found', (True, True), ('FS', False, 'FS', 'FS', True, True), (True, True, True), 2, 1, ('frozenset([])', 'frozenset([5])', 'FS([1, 2])', 'set([])'), [32, 0, 16, 8])

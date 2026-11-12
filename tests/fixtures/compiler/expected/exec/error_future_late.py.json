@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "location", 
+  "filename": "error_future_late.py", 
+  "lineno": 2, 
+  "msg": "from __future__ imports must occur at the beginning of the file", 
+  "offset": null, 
+  "text": null, 
+  "type": "SyntaxError"
+ }, 
+ "filename": "error_future_late.py", 
+ "mode": "exec", 
+ "warnings": []
+}

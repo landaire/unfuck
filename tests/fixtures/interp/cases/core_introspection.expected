@@ -1,0 +1,1 @@
+(('frame', 'inner', 'outer', '<module>', True, True), True, 'tagged', 'type.__init__() takes 1 or 3 arguments', ['Left', 'Right'], ('getset_descriptor', 'member_descriptor', "<attribute 'func_code' of 'function' objects>", "<member 'func_globals' of 'function' objects>", 'outer', 'member_descriptor', "<member 'value' of 'Slotted' objects>", 'class variable'), True, True)

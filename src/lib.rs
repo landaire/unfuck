@@ -23,6 +23,8 @@ pub mod deob;
 pub mod ir;
 /// Errors
 pub mod error;
+/// Concrete Python 2.7 interpreter for evaluating module bodies
+pub mod interp;
 /// Provides code for partially executing a code object and identifying const conditions
 pub mod partial_execution;
 /// Python VM

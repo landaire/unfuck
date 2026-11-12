@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "location", 
+  "filename": "error_break_outside.py", 
+  "lineno": 2, 
+  "msg": "'break' outside loop", 
+  "offset": null, 
+  "text": null, 
+  "type": "SyntaxError"
+ }, 
+ "filename": "error_break_outside.py", 
+ "mode": "exec", 
+ "warnings": []
+}

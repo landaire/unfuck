@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "message", 
+  "filename": "error_local_global.py", 
+  "lineno": 1, 
+  "msg": "name 'a' is local and global", 
+  "offset": null, 
+  "text": null, 
+  "type": "SyntaxError"
+ }, 
+ "filename": "error_local_global.py", 
+ "mode": "exec", 
+ "warnings": []
+}

@@ -1,0 +1,1 @@
+["Module(body=[Assign(targets=[Name(id='x', ctx=Store())], value=Tuple(elts=[Num(n=1j), Num(n=-2.5j), Num(n=777j), Num(n=1000j)], ctx=Load()))])", ['1j', '-2.5j', '777j', '1000j'], (1+2j), (-1-2j), (1j, [2j]), ('ValueError', ('malformed string',)), 'Expression(body=Num(n=(1+2j)))', (3-4j)]

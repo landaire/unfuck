@@ -1,0 +1,1 @@
+[(20, 17, 'maximum recursion depth exceeded'), (100, 97, 'maximum recursion depth exceeded'), (1000, 997, 'maximum recursion depth exceeded'), ('comprehension', 997, 'maximum recursion depth exceeded'), ('getattr', 332, 'maximum recursion depth exceeded'), ('call', 499, 'maximum recursion depth exceeded')]

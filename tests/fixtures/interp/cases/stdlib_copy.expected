@@ -1,0 +1,1 @@
+(True, True, False, True, (1, False), ['a', 'b'], {'items': [1, [2, 3]], 'copied': True}, ('Listed', [1, 2], 'list'), ('Mapped', {'a': 1}), (True, True, {'y': [2], 'x': 1}, None, None), (True, (<class 'stdlib_copy.Point'>, <type 'object'>, None), {'y': [2], 'x': 1}), (<type 'set'>, ([1, 2],), None), 'function', 'getset_descriptor', 'member_descriptor')

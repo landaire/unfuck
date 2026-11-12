@@ -1,0 +1,1 @@
+('ascii', (True, u'xcaf\xe9', '\xc3\xa9', None, u'caf\xe9/\u20ac', 'utf-8'), ("'ascii' codec can't decode byte 0xc3 in position 0: ordinal not in range(128)", 0, 1, 'ordinal not in range(128)'))

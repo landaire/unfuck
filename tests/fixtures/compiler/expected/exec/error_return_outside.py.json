@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "location", 
+  "filename": "error_return_outside.py", 
+  "lineno": 2, 
+  "msg": "'return' outside function", 
+  "offset": null, 
+  "text": null, 
+  "type": "SyntaxError"
+ }, 
+ "filename": "error_return_outside.py", 
+ "mode": "exec", 
+ "warnings": []
+}

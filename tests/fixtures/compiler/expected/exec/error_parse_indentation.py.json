@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "location", 
+  "filename": "error_parse_indentation.py", 
+  "lineno": 2, 
+  "msg": "expected an indented block", 
+  "offset": 6, 
+  "text": "return 1\n", 
+  "type": "IndentationError"
+ }, 
+ "filename": "error_parse_indentation.py", 
+ "mode": "exec", 
+ "warnings": []
+}

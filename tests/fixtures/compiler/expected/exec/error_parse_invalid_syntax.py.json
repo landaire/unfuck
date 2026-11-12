@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "location", 
+  "filename": "error_parse_invalid_syntax.py", 
+  "lineno": 2, 
+  "msg": "invalid syntax", 
+  "offset": 5, 
+  "text": "if x\n", 
+  "type": "SyntaxError"
+ }, 
+ "filename": "error_parse_invalid_syntax.py", 
+ "mode": "exec", 
+ "warnings": []
+}

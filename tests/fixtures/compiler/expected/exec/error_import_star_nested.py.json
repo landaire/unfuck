@@ -1,0 +1,21 @@
+{
+ "error": {
+  "args": "message", 
+  "filename": "error_import_star_nested.py", 
+  "lineno": 2, 
+  "msg": "import * is not allowed in function 'outer' because it contains a nested function with free variables", 
+  "offset": null, 
+  "text": null, 
+  "type": "SyntaxError"
+ }, 
+ "filename": "error_import_star_nested.py", 
+ "mode": "exec", 
+ "warnings": [
+  {
+   "category": "SyntaxWarning", 
+   "filename": "error_import_star_nested.py", 
+   "lineno": 1, 
+   "message": "import * only allowed at module level"
+  }
+ ]
+}

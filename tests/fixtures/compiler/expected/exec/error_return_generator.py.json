@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "message", 
+  "filename": "error_return_generator.py", 
+  "lineno": 3, 
+  "msg": "'return' with argument inside generator", 
+  "offset": null, 
+  "text": null, 
+  "type": "SyntaxError"
+ }, 
+ "filename": "error_return_generator.py", 
+ "mode": "exec", 
+ "warnings": []
+}

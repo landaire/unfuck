@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "message", 
+  "filename": "error_future_undefined.py", 
+  "lineno": 2, 
+  "msg": "future feature nonexistent is not defined", 
+  "offset": null, 
+  "text": null, 
+  "type": "SyntaxError"
+ }, 
+ "filename": "error_future_undefined.py", 
+ "mode": "exec", 
+ "warnings": []
+}

@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "location", 
+  "filename": "error_continue_finally.py", 
+  "lineno": 5, 
+  "msg": "'continue' not supported inside 'finally' clause", 
+  "offset": null, 
+  "text": null, 
+  "type": "SyntaxError"
+ }, 
+ "filename": "error_continue_finally.py", 
+ "mode": "exec", 
+ "warnings": []
+}

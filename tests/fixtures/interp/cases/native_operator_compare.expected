@@ -1,0 +1,1 @@
+(True, True, True, True, True, False, True, True, True, False, True, False, 'eq-result', 'lt-result', 'lt-result', True, False, False, True, True, False, True, False, ('TypeError', ('op_lt expected 2 arguments, got 1',)), ('TypeError', ('is_ expected 2 arguments, got 1',)), ('TypeError', ('isCallable() takes exactly one argument (0 given)',)))

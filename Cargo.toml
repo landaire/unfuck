@@ -40,6 +40,10 @@ stfu8 = "0.2"
 num_cpus = "1.13.0"
 crossbeam = "0.8"
 rayon = "1.5"
+md-5 = "0.10"
+sha1 = "0.10"
+sha2 = "0.10"
+stacker = "0.1"
 
 [dev-dependencies]
 py27-marshal = { version = "0.6" }
@@ -47,6 +51,7 @@ num-bigint = "0.4"
 num-complex = "0.4"
 pydis = "0.6"
 insta = "1"
+serde_json = "1"
 
 [features]
 reduced_functionality = []

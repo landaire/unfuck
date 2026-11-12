@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "location", 
+  "filename": "error_parse_assign_none.py", 
+  "lineno": 1, 
+  "msg": "cannot assign to None", 
+  "offset": null, 
+  "text": null, 
+  "type": "SyntaxError"
+ }, 
+ "filename": "error_parse_assign_none.py", 
+ "mode": "exec", 
+ "warnings": []
+}

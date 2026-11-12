@@ -1,0 +1,1 @@
+('try', 2, ('inner',), 'first', 'Suppress', (7, ('code 7',), "Custom('code 7',)"), 406, ['finally', 1, 2, 'inner finally', 'enter', 'IndexError'])

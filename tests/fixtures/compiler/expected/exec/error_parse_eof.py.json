@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "location", 
+  "filename": "error_parse_eof.py", 
+  "lineno": 1, 
+  "msg": "unexpected EOF while parsing", 
+  "offset": 8, 
+  "text": "x = (1,\n", 
+  "type": "SyntaxError"
+ }, 
+ "filename": "error_parse_eof.py", 
+ "mode": "exec", 
+ "warnings": []
+}

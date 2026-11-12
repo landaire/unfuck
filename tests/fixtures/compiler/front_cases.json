@@ -1,0 +1,1539 @@
+[
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign", 
+  "result": {
+   "dump": "Module(body=[Assign(targets=[Name(id='x', ctx=Store(), lineno=1, col_offset=0)], value=Num(n=1, lineno=1, col_offset=4), lineno=1, col_offset=0), Assign(targets=[Name(id='a', ctx=Store(), lineno=2, col_offset=0), Name(id='b', ctx=Store(), lineno=2, col_offset=4)], value=Name(id='c', ctx=Load(), lineno=2, col_offset=8), lineno=2, col_offset=0), Assign(targets=[Tuple(elts=[Name(id='a', ctx=Store(), lineno=3, col_offset=0), Name(id='b', ctx=Store(), lineno=3, col_offset=3)], ctx=Store(), lineno=3, col_offset=0)], value=Name(id='c', ctx=Load(), lineno=3, col_offset=7), lineno=3, col_offset=0), Assign(targets=[List(elts=[Name(id='a', ctx=Store(), lineno=4, col_offset=1), Tuple(elts=[Name(id='b', ctx=Store(), lineno=4, col_offset=5), Name(id='c', ctx=Store(), lineno=4, col_offset=8)], ctx=Store(), lineno=4, col_offset=5)], ctx=Store(), lineno=4, col_offset=0)], value=Name(id='d', ctx=Load(), lineno=4, col_offset=14), lineno=4, col_offset=0), Assign(targets=[Attribute(value=Name(id='x', ctx=Load(), lineno=5, col_offset=0), attr='y', ctx=Store(), lineno=5, col_offset=0)], value=Name(id='z', ctx=Load(), lineno=5, col_offset=6), lineno=5, col_offset=0), Assign(targets=[Subscript(value=Name(id='x', ctx=Load(), lineno=6, col_offset=0), slice=Index(value=Num(n=1, lineno=6, col_offset=2)), ctx=Store(), lineno=6, col_offset=0)], value=Num(n=2, lineno=6, col_offset=7), lineno=6, col_offset=0)])"
+  }, 
+  "source": "x = 1\na = b = c\na, b = c\n[a, (b, c)] = d\nx.y = z\nx[1] = 2\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "augassign", 
+  "result": {
+   "dump": "Module(body=[AugAssign(target=Name(id='x', ctx=Store(), lineno=1, col_offset=0), op=Add(), value=Num(n=1, lineno=1, col_offset=5), lineno=1, col_offset=0), AugAssign(target=Name(id='x', ctx=Store(), lineno=2, col_offset=0), op=Sub(), value=Num(n=1, lineno=2, col_offset=5), lineno=2, col_offset=0), AugAssign(target=Name(id='x', ctx=Store(), lineno=3, col_offset=0), op=Mult(), value=Num(n=1, lineno=3, col_offset=5), lineno=3, col_offset=0), AugAssign(target=Name(id='x', ctx=Store(), lineno=4, col_offset=0), op=Div(), value=Num(n=1, lineno=4, col_offset=5), lineno=4, col_offset=0), AugAssign(target=Name(id='x', ctx=Store(), lineno=5, col_offset=0), op=FloorDiv(), value=Num(n=1, lineno=5, col_offset=6), lineno=5, col_offset=0), AugAssign(target=Name(id='x', ctx=Store(), lineno=6, col_offset=0), op=Mod(), value=Num(n=1, lineno=6, col_offset=5), lineno=6, col_offset=0), AugAssign(target=Name(id='x', ctx=Store(), lineno=7, col_offset=0), op=Pow(), value=Num(n=1, lineno=7, col_offset=6), lineno=7, col_offset=0), AugAssign(target=Name(id='x', ctx=Store(), lineno=8, col_offset=0), op=RShift(), value=Num(n=1, lineno=8, col_offset=6), lineno=8, col_offset=0), AugAssign(target=Name(id='x', ctx=Store(), lineno=9, col_offset=0), op=LShift(), value=Num(n=1, lineno=9, col_offset=6), lineno=9, col_offset=0), AugAssign(target=Name(id='x', ctx=Store(), lineno=10, col_offset=0), op=BitAnd(), value=Num(n=1, lineno=10, col_offset=5), lineno=10, col_offset=0), AugAssign(target=Name(id='x', ctx=Store(), lineno=11, col_offset=0), op=BitXor(), value=Num(n=1, lineno=11, col_offset=5), lineno=11, col_offset=0), AugAssign(target=Name(id='x', ctx=Store(), lineno=12, col_offset=0), op=BitOr(), value=Num(n=1, lineno=12, col_offset=5), lineno=12, col_offset=0), AugAssign(target=Attribute(value=Name(id='x', ctx=Load(), lineno=13, col_offset=0), attr='y', ctx=Store(), lineno=13, col_offset=0), op=Add(), value=Num(n=1, lineno=13, col_offset=7), lineno=13, col_offset=0), AugAssign(target=Subscript(value=Name(id='x', ctx=Load(), lineno=14, col_offset=0), slice=Index(value=Num(n=1, lineno=14, col_offset=2)), ctx=Store(), lineno=14, col_offset=0), op=Add(), value=Num(n=1, lineno=14, col_offset=8), lineno=14, col_offset=0)])"
+  }, 
+  "source": "x += 1\nx -= 1\nx *= 1\nx /= 1\nx //= 1\nx %= 1\nx **= 1\nx >>= 1\nx <<= 1\nx &= 1\nx ^= 1\nx |= 1\nx.y += 1\nx[1] += 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "print", 
+  "result": {
+   "dump": "Module(body=[Print(dest=None, values=[], nl=True, lineno=1, col_offset=0), Print(dest=None, values=[Num(n=1, lineno=2, col_offset=6)], nl=True, lineno=2, col_offset=0), Print(dest=None, values=[Num(n=1, lineno=3, col_offset=6)], nl=False, lineno=3, col_offset=0), Print(dest=None, values=[Num(n=1, lineno=4, col_offset=6), Num(n=2, lineno=4, col_offset=9)], nl=True, lineno=4, col_offset=0), Print(dest=Name(id='f', ctx=Load(), lineno=5, col_offset=8), values=[], nl=True, lineno=5, col_offset=0), Print(dest=Name(id='f', ctx=Load(), lineno=6, col_offset=8), values=[Num(n=1, lineno=6, col_offset=11)], nl=True, lineno=6, col_offset=0), Print(dest=Name(id='f', ctx=Load(), lineno=7, col_offset=8), values=[Num(n=1, lineno=7, col_offset=11)], nl=False, lineno=7, col_offset=0), Print(dest=None, values=[Num(n=1, lineno=8, col_offset=6)], nl=True, lineno=8, col_offset=0), Print(dest=None, values=[Tuple(elts=[Num(n=1, lineno=9, col_offset=6), Num(n=2, lineno=9, col_offset=9)], ctx=Load(), lineno=9, col_offset=6)], nl=True, lineno=9, col_offset=0)])"
+  }, 
+  "source": "print\nprint 1\nprint 1,\nprint 1, 2\nprint >>f\nprint >>f, 1\nprint >>f, 1,\nprint(1)\nprint(1, 2)\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "print_function", 
+  "result": {
+   "dump": "Module(body=[ImportFrom(module='__future__', names=[alias(name='print_function', asname=None)], level=0, lineno=1, col_offset=0), Expr(value=Call(func=Name(id='print', ctx=Load(), lineno=2, col_offset=0), args=[Num(n=1, lineno=2, col_offset=6)], keywords=[keyword(arg='end', value=Str(s='', lineno=2, col_offset=13))], starargs=None, kwargs=None, lineno=2, col_offset=0), lineno=2, col_offset=0), Expr(value=Name(id='print', ctx=Load(), lineno=3, col_offset=0), lineno=3, col_offset=0)])"
+  }, 
+  "source": "from __future__ import print_function\nprint(1, end='')\nprint\n"
+ }, 
+ {
+  "flags": 65536, 
+  "mode": "exec", 
+  "name": "print_function_flag", 
+  "result": {
+   "dump": "Module(body=[Expr(value=Call(func=Name(id='print', ctx=Load(), lineno=1, col_offset=0), args=[Num(n=1, lineno=1, col_offset=6)], keywords=[keyword(arg='sep', value=Str(s='', lineno=1, col_offset=13))], starargs=None, kwargs=None, lineno=1, col_offset=0), lineno=1, col_offset=0)])"
+  }, 
+  "source": "print(1, sep='')\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "exec", 
+  "result": {
+   "dump": "Module(body=[Exec(body=Name(id='a', ctx=Load(), lineno=1, col_offset=5), globals=None, locals=None, lineno=1, col_offset=0), Exec(body=Name(id='a', ctx=Load(), lineno=2, col_offset=5), globals=Name(id='b', ctx=Load(), lineno=2, col_offset=10), locals=None, lineno=2, col_offset=0), Exec(body=Name(id='a', ctx=Load(), lineno=3, col_offset=5), globals=Name(id='b', ctx=Load(), lineno=3, col_offset=10), locals=Name(id='c', ctx=Load(), lineno=3, col_offset=13), lineno=3, col_offset=0), Exec(body=Name(id='a', ctx=Load(), lineno=4, col_offset=5), globals=Name(id='b', ctx=Load(), lineno=4, col_offset=8), locals=None, lineno=4, col_offset=0), Exec(body=Name(id='a', ctx=Load(), lineno=5, col_offset=5), globals=Name(id='b', ctx=Load(), lineno=5, col_offset=8), locals=Name(id='c', ctx=Load(), lineno=5, col_offset=11), lineno=5, col_offset=0), Exec(body=Name(id='a', ctx=Load(), lineno=6, col_offset=5), globals=None, locals=None, lineno=6, col_offset=0), Exec(body=Tuple(elts=[Name(id='a', ctx=Load(), lineno=7, col_offset=6), Name(id='b', ctx=Load(), lineno=7, col_offset=9), Name(id='c', ctx=Load(), lineno=7, col_offset=12), Name(id='d', ctx=Load(), lineno=7, col_offset=15)], ctx=Load(), lineno=7, col_offset=6), globals=None, locals=None, lineno=7, col_offset=0)])"
+  }, 
+  "source": "exec a\nexec a in b\nexec a in b, c\nexec(a, b)\nexec(a, b, c)\nexec(a)\nexec (a, b, c, d)\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "decorators", 
+  "result": {
+   "dump": "Module(body=[FunctionDef(name='f', args=arguments(args=[], vararg=None, kwarg=None, defaults=[]), body=[Pass( lineno=5, col_offset=4)], decorator_list=[Name(id='a', ctx=Load(), lineno=1, col_offset=1), Attribute(value=Name(id='b', ctx=Load(), lineno=2, col_offset=1), attr='c', ctx=Load(), lineno=2, col_offset=1), Call(func=Name(id='e', ctx=Load(), lineno=3, col_offset=1), args=[Num(n=1, lineno=3, col_offset=3)], keywords=[keyword(arg='x', value=Num(n=2, lineno=3, col_offset=8))], starargs=None, kwargs=None, lineno=3, col_offset=1)], lineno=1, col_offset=0), ClassDef(name='C', bases=[], body=[Pass( lineno=9, col_offset=4)], decorator_list=[Name(id='g', ctx=Load(), lineno=7, col_offset=1)], lineno=7, col_offset=0)])"
+  }, 
+  "source": "@a\n@b.c\n@e(1, x=2)\ndef f():\n    pass\n\n@g\nclass C:\n    pass\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "with", 
+  "result": {
+   "dump": "Module(body=[With(context_expr=Name(id='a', ctx=Load(), lineno=1, col_offset=5), optional_vars=None, body=[Pass( lineno=2, col_offset=4)], lineno=1, col_offset=5), With(context_expr=Name(id='a', ctx=Load(), lineno=3, col_offset=5), optional_vars=Name(id='b', ctx=Store(), lineno=3, col_offset=10), body=[Pass( lineno=4, col_offset=4)], lineno=3, col_offset=5), With(context_expr=Name(id='a', ctx=Load(), lineno=5, col_offset=5), optional_vars=Tuple(elts=[Name(id='b', ctx=Store(), lineno=5, col_offset=11), Name(id='c', ctx=Store(), lineno=5, col_offset=14)], ctx=Store(), lineno=5, col_offset=11), body=[With(context_expr=Name(id='d', ctx=Load(), lineno=5, col_offset=18), optional_vars=None, body=[With(context_expr=Name(id='e', ctx=Load(), lineno=5, col_offset=21), optional_vars=Attribute(value=Name(id='f', ctx=Load(), lineno=5, col_offset=26), attr='g', ctx=Store(), lineno=5, col_offset=26), body=[Pass( lineno=6, col_offset=4)], lineno=5, col_offset=21)], lineno=5, col_offset=18)], lineno=5, col_offset=5)])"
+  }, 
+  "source": "with a:\n    pass\nwith a as b:\n    pass\nwith a as (b, c), d, e as f.g:\n    pass\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "try", 
+  "result": {
+   "dump": "Module(body=[TryExcept(body=[Expr(value=Name(id='a', ctx=Load(), lineno=2, col_offset=4), lineno=2, col_offset=4)], handlers=[ExceptHandler(type=None, name=None, body=[Expr(value=Name(id='b', ctx=Load(), lineno=4, col_offset=4), lineno=4, col_offset=4)], lineno=3, col_offset=0)], orelse=[], lineno=1, col_offset=0), TryFinally(body=[TryExcept(body=[Expr(value=Name(id='a', ctx=Load(), lineno=6, col_offset=4), lineno=6, col_offset=4)], handlers=[ExceptHandler(type=Name(id='E', ctx=Load(), lineno=7, col_offset=7), name=None, body=[Expr(value=Name(id='b', ctx=Load(), lineno=8, col_offset=4), lineno=8, col_offset=4)], lineno=7, col_offset=0), ExceptHandler(type=Tuple(elts=[Name(id='E', ctx=Load(), lineno=9, col_offset=8), Name(id='F', ctx=Load(), lineno=9, col_offset=11)], ctx=Load(), lineno=9, col_offset=8), name=Name(id='e', ctx=Store(), lineno=9, col_offset=15), body=[Expr(value=Name(id='c', ctx=Load(), lineno=10, col_offset=4), lineno=10, col_offset=4)], lineno=9, col_offset=0), ExceptHandler(type=Name(id='G', ctx=Load(), lineno=11, col_offset=7), name=Name(id='g', ctx=Store(), lineno=11, col_offset=12), body=[Expr(value=Name(id='d', ctx=Load(), lineno=12, col_offset=4), lineno=12, col_offset=4)], lineno=11, col_offset=0)], orelse=[Expr(value=Name(id='e', ctx=Load(), lineno=14, col_offset=4), lineno=14, col_offset=4)], lineno=5, col_offset=0)], finalbody=[Expr(value=Name(id='f', ctx=Load(), lineno=16, col_offset=4), lineno=16, col_offset=4)], lineno=5, col_offset=0), TryFinally(body=[Expr(value=Name(id='a', ctx=Load(), lineno=18, col_offset=4), lineno=18, col_offset=4)], finalbody=[Expr(value=Name(id='b', ctx=Load(), lineno=20, col_offset=4), lineno=20, col_offset=4)], lineno=17, col_offset=0), TryFinally(body=[TryExcept(body=[Expr(value=Name(id='a', ctx=Load(), lineno=22, col_offset=4), lineno=22, col_offset=4)], handlers=[ExceptHandler(type=Name(id='E', ctx=Load(), lineno=23, col_offset=7), name=None, body=[Expr(value=Name(id='b', ctx=Load(), lineno=24, col_offset=4), lineno=24, col_offset=4)], lineno=23, col_offset=0)], orelse=[], lineno=21, col_offset=0)], finalbody=[Expr(value=Name(id='c', ctx=Load(), lineno=26, col_offset=4), lineno=26, col_offset=4)], lineno=21, col_offset=0)])"
+  }, 
+  "source": "try:\n    a\nexcept:\n    b\ntry:\n    a\nexcept E:\n    b\nexcept (E, F), e:\n    c\nexcept G as g:\n    d\nelse:\n    e\nfinally:\n    f\ntry:\n    a\nfinally:\n    b\ntry:\n    a\nexcept E:\n    b\nfinally:\n    c\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "comprehensions", 
+  "result": {
+   "dump": "Module(body=[Expr(value=ListComp(elt=Name(id='x', ctx=Load(), lineno=1, col_offset=1), generators=[comprehension(target=Name(id='x', ctx=Store(), lineno=1, col_offset=7), iter=Name(id='y', ctx=Load(), lineno=1, col_offset=12), ifs=[])], lineno=1, col_offset=1), lineno=1, col_offset=0), Expr(value=ListComp(elt=Name(id='x', ctx=Load(), lineno=2, col_offset=1), generators=[comprehension(target=Tuple(elts=[Name(id='x', ctx=Store(), lineno=2, col_offset=7)], ctx=Store(), lineno=2, col_offset=7), iter=Name(id='y', ctx=Load(), lineno=2, col_offset=13), ifs=[Name(id='a', ctx=Load(), lineno=2, col_offset=18), Name(id='b', ctx=Load(), lineno=2, col_offset=23)]), comprehension(target=Name(id='z', ctx=Store(), lineno=2, col_offset=29), iter=Name(id='w', ctx=Load(), lineno=2, col_offset=34), ifs=[Name(id='c', ctx=Load(), lineno=2, col_offset=39)])], lineno=2, col_offset=1), lineno=2, col_offset=0), Expr(value=GeneratorExp(elt=Name(id='x', ctx=Load(), lineno=3, col_offset=1), generators=[comprehension(target=Name(id='x', ctx=Store(), lineno=3, col_offset=7), iter=Name(id='y', ctx=Load(), lineno=3, col_offset=12), ifs=[Name(id='z', ctx=Load(), lineno=3, col_offset=17)])], lineno=3, col_offset=1), lineno=3, col_offset=0), Expr(value=SetComp(elt=Name(id='x', ctx=Load(), lineno=4, col_offset=1), generators=[comprehension(target=Name(id='x', ctx=Store(), lineno=4, col_offset=7), iter=Name(id='y', ctx=Load(), lineno=4, col_offset=12), ifs=[])], lineno=4, col_offset=1), lineno=4, col_offset=0), Expr(value=DictComp(key=Name(id='x', ctx=Load(), lineno=5, col_offset=1), value=Name(id='y', ctx=Load(), lineno=5, col_offset=4), generators=[comprehension(target=Tuple(elts=[Name(id='x', ctx=Store(), lineno=5, col_offset=10), Name(id='y', ctx=Store(), lineno=5, col_offset=13)], ctx=Store(), lineno=5, col_offset=10), iter=Name(id='z', ctx=Load(), lineno=5, col_offset=18), ifs=[])], lineno=5, col_offset=1), lineno=5, col_offset=0), Expr(value=Call(func=Name(id='f', ctx=Load(), lineno=6, col_offset=0), args=[GeneratorExp(elt=Name(id='x', ctx=Load(), lineno=6, col_offset=2), generators=[comprehension(target=Name(id='x', ctx=Store(), lineno=6, col_offset=8), iter=Name(id='y', ctx=Load(), lineno=6, col_offset=13), ifs=[])], lineno=6, col_offset=2)], keywords=[], starargs=None, kwargs=None, lineno=6, col_offset=0), lineno=6, col_offset=0), Expr(value=ListComp(elt=Name(id='x', ctx=Load(), lineno=7, col_offset=1), generators=[comprehension(target=Name(id='x', ctx=Store(), lineno=7, col_offset=7), iter=Tuple(elts=[Lambda(args=arguments(args=[], vararg=None, kwarg=None, defaults=[]), body=Num(n=1, lineno=7, col_offset=20), lineno=7, col_offset=12), Lambda(args=arguments(args=[], vararg=None, kwarg=None, defaults=[]), body=Num(n=2, lineno=7, col_offset=31), lineno=7, col_offset=23)], ctx=Load(), lineno=7, col_offset=12), ifs=[])], lineno=7, col_offset=1), lineno=7, col_offset=0)])"
+  }, 
+  "source": "[x for x in y]\n[x for x, in y if a if b for z in w if c]\n(x for x in y if z)\n{x for x in y}\n{x: y for x, y in z}\nf(x for x in y)\n[x for x in lambda: 1, lambda: 2]\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "ifexp_lambda", 
+  "result": {
+   "dump": "Module(body=[Expr(value=IfExp(test=Name(id='b', ctx=Load(), lineno=1, col_offset=5), body=Name(id='a', ctx=Load(), lineno=1, col_offset=0), orelse=Name(id='c', ctx=Load(), lineno=1, col_offset=12), lineno=1, col_offset=0), lineno=1, col_offset=0), Expr(value=Lambda(args=arguments(args=[], vararg=None, kwarg=None, defaults=[]), body=Num(n=1, lineno=2, col_offset=8), lineno=2, col_offset=0), lineno=2, col_offset=0), Expr(value=Lambda(args=arguments(args=[Name(id='x', ctx=Param(), lineno=3, col_offset=7), Tuple(elts=[Name(id='y', ctx=Store(), lineno=3, col_offset=11), Name(id='z', ctx=Store(), lineno=3, col_offset=14)], ctx=Store(), lineno=3, col_offset=11), Name(id='w', ctx=Param(), lineno=3, col_offset=18)], vararg='a', kwarg='k', defaults=[Num(n=1, lineno=3, col_offset=20)]), body=Name(id='x', ctx=Load(), lineno=3, col_offset=32), lineno=3, col_offset=0), lineno=3, col_offset=0), Expr(value=Lambda(args=arguments(args=[Name(id='x', ctx=Param(), lineno=4, col_offset=8)], vararg=None, kwarg=None, defaults=[]), body=Name(id='x', ctx=Load(), lineno=4, col_offset=12), lineno=4, col_offset=0), lineno=4, col_offset=0), Expr(value=Lambda(args=arguments(args=[], vararg='a', kwarg=None, defaults=[]), body=Name(id='a', ctx=Load(), lineno=5, col_offset=11), lineno=5, col_offset=0), lineno=5, col_offset=0), Expr(value=Lambda(args=arguments(args=[], vararg=None, kwarg='k', defaults=[]), body=Name(id='k', ctx=Load(), lineno=6, col_offset=12), lineno=6, col_offset=0), lineno=6, col_offset=0)])"
+  }, 
+  "source": "a if b else c\nlambda: 1\nlambda x, (y, z), w=1, *a, **k: x\nlambda (x): x\nlambda *a: a\nlambda **k: k\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "functions", 
+  "result": {
+   "dump": "Module(body=[FunctionDef(name='f', args=arguments(args=[Name(id='a', ctx=Param(), lineno=1, col_offset=6), Tuple(elts=[Name(id='b', ctx=Store(), lineno=1, col_offset=10), Tuple(elts=[Name(id='c', ctx=Store(), lineno=1, col_offset=14), Name(id='d', ctx=Store(), lineno=1, col_offset=17)], ctx=Store(), lineno=1, col_offset=14)], ctx=Store(), lineno=1, col_offset=10), Name(id='e', ctx=Param(), lineno=1, col_offset=22), Name(id='f', ctx=Param(), lineno=1, col_offset=27)], vararg='args', kwarg='kwargs', defaults=[Num(n=1, lineno=1, col_offset=24), Tuple(elts=[Num(n=2, lineno=1, col_offset=30), Num(n=3, lineno=1, col_offset=33)], ctx=Load(), lineno=1, col_offset=30)]), body=[Return(value=None, lineno=2, col_offset=4)], decorator_list=[], lineno=1, col_offset=0), FunctionDef(name='g', args=arguments(args=[], vararg=None, kwarg=None, defaults=[]), body=[Expr(value=Yield(value=None, lineno=4, col_offset=9), lineno=4, col_offset=9)], decorator_list=[], lineno=4, col_offset=0), FunctionDef(name='h', args=arguments(args=[Name(id='a', ctx=Param(), lineno=5, col_offset=7)], vararg=None, kwarg=None, defaults=[]), body=[Pass( lineno=5, col_offset=12)], decorator_list=[], lineno=5, col_offset=0), FunctionDef(name='i', args=arguments(args=[Name(id='a', ctx=Param(), lineno=6, col_offset=6)], vararg=None, kwarg=None, defaults=[]), body=[Assign(targets=[Name(id='x', ctx=Store(), lineno=6, col_offset=11)], value=Yield(value=Num(n=1, lineno=6, col_offset=21), lineno=6, col_offset=15), lineno=6, col_offset=11)], decorator_list=[], lineno=6, col_offset=0)])"
+  }, 
+  "source": "def f(a, (b, (c, d)), e=1, f=(2, 3), *args, **kwargs):\n    return\n\ndef g(): yield\ndef h((a)): pass\ndef i(a,): x = yield 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "slices", 
+  "result": {
+   "dump": "Module(body=[Expr(value=Subscript(value=Name(id='x', ctx=Load(), lineno=1, col_offset=0), slice=Index(value=Num(n=1, lineno=1, col_offset=2)), ctx=Load(), lineno=1, col_offset=0), lineno=1, col_offset=0), Expr(value=Subscript(value=Name(id='x', ctx=Load(), lineno=2, col_offset=0), slice=Slice(lower=Num(n=1, lineno=2, col_offset=2), upper=Num(n=2, lineno=2, col_offset=4), step=None), ctx=Load(), lineno=2, col_offset=0), lineno=2, col_offset=0), Expr(value=Subscript(value=Name(id='x', ctx=Load(), lineno=3, col_offset=0), slice=Slice(lower=None, upper=None, step=None), ctx=Load(), lineno=3, col_offset=0), lineno=3, col_offset=0), Expr(value=Subscript(value=Name(id='x', ctx=Load(), lineno=4, col_offset=0), slice=Slice(lower=None, upper=None, step=Name(id='None', ctx=Load(), lineno=4, col_offset=3)), ctx=Load(), lineno=4, col_offset=0), lineno=4, col_offset=0), Expr(value=Subscript(value=Name(id='x', ctx=Load(), lineno=5, col_offset=0), slice=Slice(lower=Num(n=1, lineno=5, col_offset=2), upper=Num(n=2, lineno=5, col_offset=4), step=Num(n=3, lineno=5, col_offset=6)), ctx=Load(), lineno=5, col_offset=0), lineno=5, col_offset=0), Expr(value=Subscript(value=Name(id='x', ctx=Load(), lineno=6, col_offset=0), slice=Slice(lower=None, upper=None, step=Num(n=3, lineno=6, col_offset=4)), ctx=Load(), lineno=6, col_offset=0), lineno=6, col_offset=0), Expr(value=Subscript(value=Name(id='x', ctx=Load(), lineno=7, col_offset=0), slice=Ellipsis(), ctx=Load(), lineno=7, col_offset=0), lineno=7, col_offset=0), Expr(value=Subscript(value=Name(id='x', ctx=Load(), lineno=8, col_offset=0), slice=ExtSlice(dims=[Slice(lower=Num(n=1, lineno=8, col_offset=2), upper=Num(n=2, lineno=8, col_offset=4), step=None), Index(value=Num(n=3, lineno=8, col_offset=7))]), ctx=Load(), lineno=8, col_offset=0), lineno=8, col_offset=0), Expr(value=Subscript(value=Name(id='x', ctx=Load(), lineno=9, col_offset=0), slice=Index(value=Tuple(elts=[Num(n=1, lineno=9, col_offset=2), Num(n=2, lineno=9, col_offset=5)], ctx=Load(), lineno=9, col_offset=2)), ctx=Load(), lineno=9, col_offset=0), lineno=9, col_offset=0), Expr(value=Subscript(value=Name(id='x', ctx=Load(), lineno=10, col_offset=0), slice=ExtSlice(dims=[Slice(lower=None, upper=None, step=None), Ellipsis()]), ctx=Load(), lineno=10, col_offset=0), lineno=10, col_offset=0), Expr(value=Subscript(value=Name(id='x', ctx=Load(), lineno=11, col_offset=0), slice=ExtSlice(dims=[Slice(lower=Name(id='a', ctx=Load(), lineno=11, col_offset=2), upper=Name(id='b', ctx=Load(), lineno=11, col_offset=4), step=None), Index(value=Name(id='c', ctx=Load(), lineno=11, col_offset=7))]), ctx=Load(), lineno=11, col_offset=0), lineno=11, col_offset=0), Expr(value=Subscript(value=Name(id='x', ctx=Load(), lineno=12, col_offset=0), slice=Index(value=Tuple(elts=[Num(n=1, lineno=12, col_offset=2)], ctx=Load(), lineno=12, col_offset=2)), ctx=Load(), lineno=12, col_offset=0), lineno=12, col_offset=0)])"
+  }, 
+  "source": "x[1]\nx[1:2]\nx[:]\nx[::]\nx[1:2:3]\nx[::3]\nx[...]\nx[1:2, 3]\nx[1, 2]\nx[:, ...]\nx[a:b, c]\nx[1,]\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "operators", 
+  "result": {
+   "dump": "Module(body=[Expr(value=BoolOp(op=Or(), values=[Name(id='a', ctx=Load(), lineno=1, col_offset=0), Name(id='b', ctx=Load(), lineno=1, col_offset=5), Name(id='c', ctx=Load(), lineno=1, col_offset=10)], lineno=1, col_offset=0), lineno=1, col_offset=0), Expr(value=BoolOp(op=And(), values=[Name(id='a', ctx=Load(), lineno=2, col_offset=0), Name(id='b', ctx=Load(), lineno=2, col_offset=6)], lineno=2, col_offset=0), lineno=2, col_offset=0), Expr(value=UnaryOp(op=Not(), operand=Name(id='a', ctx=Load(), lineno=3, col_offset=4), lineno=3, col_offset=0), lineno=3, col_offset=0), Expr(value=Compare(left=Name(id='a', ctx=Load(), lineno=4, col_offset=0), ops=[Lt(), LtE(), Gt(), GtE(), Eq(), NotEq(), NotEq()], comparators=[Name(id='b', ctx=Load(), lineno=4, col_offset=4), Name(id='c', ctx=Load(), lineno=4, col_offset=9), Name(id='d', ctx=Load(), lineno=4, col_offset=13), Name(id='e', ctx=Load(), lineno=4, col_offset=18), Name(id='f', ctx=Load(), lineno=4, col_offset=23), Name(id='g', ctx=Load(), lineno=4, col_offset=28), Name(id='h', ctx=Load(), lineno=4, col_offset=33)], lineno=4, col_offset=0), lineno=4, col_offset=0), Expr(value=Compare(left=Name(id='a', ctx=Load(), lineno=5, col_offset=0), ops=[In(), NotIn(), Is(), IsNot()], comparators=[Name(id='b', ctx=Load(), lineno=5, col_offset=5), Name(id='c', ctx=Load(), lineno=5, col_offset=14), Name(id='d', ctx=Load(), lineno=5, col_offset=19), Name(id='e', ctx=Load(), lineno=5, col_offset=28)], lineno=5, col_offset=0), lineno=5, col_offset=0), Expr(value=BinOp(left=Name(id='a', ctx=Load(), lineno=6, col_offset=0), op=BitOr(), right=BinOp(left=Name(id='b', ctx=Load(), lineno=6, col_offset=4), op=BitXor(), right=BinOp(left=Name(id='c', ctx=Load(), lineno=6, col_offset=8), op=BitAnd(), right=BinOp(left=BinOp(left=Name(id='d', ctx=Load(), lineno=6, col_offset=12), op=LShift(), right=Name(id='e', ctx=Load(), lineno=6, col_offset=17), lineno=6, col_offset=12), op=RShift(), right=BinOp(left=BinOp(left=Name(id='f', ctx=Load(), lineno=6, col_offset=22), op=Add(), right=Name(id='g', ctx=Load(), lineno=6, col_offset=26), lineno=6, col_offset=22), op=Sub(), right=BinOp(left=BinOp(left=BinOp(left=BinOp(left=Name(id='h', ctx=Load(), lineno=6, col_offset=30), op=Mult(), right=Name(id='i', ctx=Load(), lineno=6, col_offset=34), lineno=6, col_offset=30), op=Div(), right=Name(id='j', ctx=Load(), lineno=6, col_offset=38), lineno=6, col_offset=36), op=Mod(), right=Name(id='k', ctx=Load(), lineno=6, col_offset=42), lineno=6, col_offset=40), op=FloorDiv(), right=Name(id='l', ctx=Load(), lineno=6, col_offset=47), lineno=6, col_offset=44), lineno=6, col_offset=28), lineno=6, col_offset=19), lineno=6, col_offset=8), lineno=6, col_offset=4), lineno=6, col_offset=0), lineno=6, col_offset=0), Expr(value=UnaryOp(op=USub(), operand=Name(id='a', ctx=Load(), lineno=7, col_offset=1), lineno=7, col_offset=0), lineno=7, col_offset=0), Expr(value=UnaryOp(op=UAdd(), operand=Name(id='a', ctx=Load(), lineno=8, col_offset=1), lineno=8, col_offset=0), lineno=8, col_offset=0), Expr(value=UnaryOp(op=Invert(), operand=Name(id='a', ctx=Load(), lineno=9, col_offset=1), lineno=9, col_offset=0), lineno=9, col_offset=0), Expr(value=BinOp(left=Name(id='a', ctx=Load(), lineno=10, col_offset=0), op=Pow(), right=BinOp(left=Name(id='b', ctx=Load(), lineno=10, col_offset=5), op=Pow(), right=Name(id='c', ctx=Load(), lineno=10, col_offset=10), lineno=10, col_offset=5), lineno=10, col_offset=0), lineno=10, col_offset=0), Expr(value=UnaryOp(op=USub(), operand=BinOp(left=Name(id='a', ctx=Load(), lineno=11, col_offset=1), op=Pow(), right=Name(id='b', ctx=Load(), lineno=11, col_offset=6), lineno=11, col_offset=1), lineno=11, col_offset=0), lineno=11, col_offset=0), Expr(value=Repr(value=Tuple(elts=[Name(id='a', ctx=Load(), lineno=12, col_offset=1), Name(id='b', ctx=Load(), lineno=12, col_offset=4)], ctx=Load(), lineno=12, col_offset=1), lineno=12, col_offset=0), lineno=12, col_offset=0)])"
+  }, 
+  "source": "a or b or c\na and b\nnot a\na < b <= c > d >= e == f != g <> h\na in b not in c is d is not e\na | b ^ c & d << e >> f + g - h * i / j % k // l\n-a\n+a\n~a\na ** b ** c\n-a ** b\n`a, b`\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "numbers", 
+  "result": {
+   "dump": "Module(body=[Expr(value=Num(n=0, lineno=1, col_offset=0), lineno=1, col_offset=0), Expr(value=Num(n=0, lineno=2, col_offset=0), lineno=2, col_offset=0), Expr(value=Num(n=511, lineno=3, col_offset=0), lineno=3, col_offset=0), Expr(value=Num(n=15, lineno=4, col_offset=0), lineno=4, col_offset=0), Expr(value=Num(n=15, lineno=5, col_offset=0), lineno=5, col_offset=0), Expr(value=Num(n=31, lineno=6, col_offset=0), lineno=6, col_offset=0), Expr(value=Num(n=171, lineno=7, col_offset=0), lineno=7, col_offset=0), Expr(value=Num(n=5, lineno=8, col_offset=0), lineno=8, col_offset=0), Expr(value=Num(n=3, lineno=9, col_offset=0), lineno=9, col_offset=0), Expr(value=Num(n=1L, lineno=10, col_offset=0), lineno=10, col_offset=0), Expr(value=Num(n=0L, lineno=11, col_offset=0), lineno=11, col_offset=0), Expr(value=Num(n=511L, lineno=12, col_offset=0), lineno=12, col_offset=0), Expr(value=Num(n=31L, lineno=13, col_offset=0), lineno=13, col_offset=0), Expr(value=Num(n=2147483647, lineno=14, col_offset=0), lineno=14, col_offset=0), Expr(value=Num(n=2147483648, lineno=15, col_offset=0), lineno=15, col_offset=0), Expr(value=Num(n=9223372036854775807, lineno=16, col_offset=0), lineno=16, col_offset=0), Expr(value=Num(n=9223372036854775808L, lineno=17, col_offset=0), lineno=17, col_offset=0), Expr(value=Num(n=-9223372036854775808, lineno=18, col_offset=0), lineno=18, col_offset=0), Expr(value=Num(n=-9223372036854775809L, lineno=19, col_offset=0), lineno=19, col_offset=0), Expr(value=Num(n=1.5, lineno=20, col_offset=0), lineno=20, col_offset=0), Expr(value=Num(n=1.0, lineno=21, col_offset=0), lineno=21, col_offset=0), Expr(value=Num(n=0.5, lineno=22, col_offset=0), lineno=22, col_offset=0), Expr(value=Num(n=100000.0, lineno=23, col_offset=0), lineno=23, col_offset=0), Expr(value=Num(n=1e-05, lineno=24, col_offset=0), lineno=24, col_offset=0), Expr(value=Num(n=100000.0, lineno=25, col_offset=0), lineno=25, col_offset=0), Expr(value=Num(n=9.5, lineno=26, col_offset=0), lineno=26, col_offset=0), Expr(value=Num(n=90.0, lineno=27, col_offset=0), lineno=27, col_offset=0), Expr(value=Num(n=0.0, lineno=28, col_offset=0), lineno=28, col_offset=0), Expr(value=Num(n=1j, lineno=29, col_offset=0), lineno=29, col_offset=0), Expr(value=Num(n=1.5j, lineno=30, col_offset=0), lineno=30, col_offset=0), Expr(value=Num(n=9j, lineno=31, col_offset=0), lineno=31, col_offset=0), Expr(value=Num(n=777j, lineno=32, col_offset=0), lineno=32, col_offset=0), Expr(value=Num(n=100000j, lineno=33, col_offset=0), lineno=33, col_offset=0), Expr(value=Num(n=-1, lineno=34, col_offset=0), lineno=34, col_offset=0), Expr(value=Num(n=-0.0, lineno=35, col_offset=0), lineno=35, col_offset=0), Expr(value=Num(n=-1j, lineno=36, col_offset=0), lineno=36, col_offset=0), Expr(value=Num(n=-16, lineno=37, col_offset=0), lineno=37, col_offset=0), Expr(value=Num(n=-1L, lineno=38, col_offset=0), lineno=38, col_offset=0), Expr(value=Num(n=-1, lineno=39, col_offset=0), lineno=39, col_offset=0), Expr(value=UnaryOp(op=USub(), operand=Num(n=1, lineno=40, col_offset=2), lineno=40, col_offset=0), lineno=40, col_offset=0), Expr(value=Num(n=inf, lineno=41, col_offset=0), lineno=41, col_offset=0), Expr(value=Num(n=0.1, lineno=42, col_offset=0), lineno=42, col_offset=0), Expr(value=Num(n=123456789012345678901234567890L, lineno=43, col_offset=0), lineno=43, col_offset=0), Expr(value=IfExp(test=Num(n=1, lineno=44, col_offset=4), body=Num(n=1, lineno=44, col_offset=0), orelse=Num(n=2, lineno=44, col_offset=10), lineno=44, col_offset=0), lineno=44, col_offset=0)])"
+  }, 
+  "source": "0\n00\n0777\n0o17\n0O17\n0x1F\n0XaB\n0b101\n0B11\n1L\n0L\n0777L\n0x1fL\n2147483647\n2147483648\n9223372036854775807\n9223372036854775808\n-9223372036854775808\n-9223372036854775809\n1.5\n1.\n.5\n1e5\n1E-5\n1.e5\n09.5\n09e1\n0e0\n1j\n1.5J\n09j\n0777j\n1e5j\n-1\n-0.0\n-1j\n-0x10\n-1L\n- 1\n-(1)\n1e400\n0.1\n123456789012345678901234567890\n1if 1else 2\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "strings", 
+  "result": {
+   "dump": "Module(body=[Expr(value=Str(s='a', lineno=1, col_offset=0), lineno=1, col_offset=0), Expr(value=Str(s='b', lineno=2, col_offset=0), lineno=2, col_offset=0), Expr(value=Str(s='c', lineno=3, col_offset=0), lineno=3, col_offset=0), Expr(value=Str(s='d', lineno=4, col_offset=0), lineno=4, col_offset=0), Expr(value=Str(s=u'e', lineno=5, col_offset=0), lineno=5, col_offset=0), Expr(value=Str(s=u'f', lineno=6, col_offset=0), lineno=6, col_offset=0), Expr(value=Str(s='\\\\g', lineno=7, col_offset=0), lineno=7, col_offset=0), Expr(value=Str(s='\\\\h', lineno=8, col_offset=0), lineno=8, col_offset=0), Expr(value=Str(s='i', lineno=9, col_offset=0), lineno=9, col_offset=0), Expr(value=Str(s='j', lineno=10, col_offset=0), lineno=10, col_offset=0), Expr(value=Str(s='\\\\k', lineno=11, col_offset=0), lineno=11, col_offset=0), Expr(value=Str(s=u'A\\\\\\\\u0041', lineno=12, col_offset=0), lineno=12, col_offset=0), Expr(value=Str(s=u'm', lineno=13, col_offset=0), lineno=13, col_offset=0), Expr(value=Str(s='abc', lineno=14, col_offset=0), lineno=14, col_offset=0), Expr(value=Str(s=u'ab', lineno=15, col_offset=0), lineno=15, col_offset=0), Expr(value=Str(s=u'ab', lineno=16, col_offset=0), lineno=16, col_offset=0), Expr(value=Str(s='', lineno=17, col_offset=0), lineno=17, col_offset=0), Expr(value=Str(s=\"AA\\n\\t\\\\q'\", lineno=18, col_offset=0), lineno=18, col_offset=0), Expr(value=Str(s=u'AA\\U00010000aA', lineno=19, col_offset=0), lineno=19, col_offset=0), Expr(value=Str(s='multi\\nline', lineno=21, col_offset=-1), lineno=21, col_offset=-1), Assign(targets=[Name(id='x', ctx=Store(), lineno=22, col_offset=0)], value=Tuple(elts=[Num(n=1, lineno=22, col_offset=5), Str(s='a\\nb', lineno=23, col_offset=-1), Num(n=2, lineno=23, col_offset=6)], ctx=Load(), lineno=22, col_offset=5), lineno=22, col_offset=0), Expr(value=Str(s='x', lineno=25, col_offset=-1), lineno=25, col_offset=-1)])"
+  }, 
+  "source": "'a'\n\"b\"\n'''c'''\n\"\"\"d\"\"\"\nu'e'\nU'f'\nr'\\g'\nR'\\h'\nb'i'\nB'j'\nbr'\\k'\nur'\\u0041\\\\u0041'\nUR'm'\n'a' 'b' \"c\"\nu'a' 'b'\n'a' u'b'\n''\n'\\x41\\101\\n\\t\\q\\''\nu'\\x41\\u0041\\U00010000\\N{LATIN SMALL LETTER A}\\101'\n'''multi\nline'''\nx = (1, '''a\nb''', 2)\n'\\\nx'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "docstring_unicode_literals", 
+  "result": {
+   "dump": "Module(body=[Expr(value=Str(s=u'doc', lineno=1, col_offset=0), lineno=1, col_offset=0), ImportFrom(module='__future__', names=[alias(name='unicode_literals', asname=None)], level=0, lineno=2, col_offset=0), Assign(targets=[Name(id='x', ctx=Store(), lineno=3, col_offset=0)], value=Str(s=u'a', lineno=3, col_offset=4), lineno=3, col_offset=0), Assign(targets=[Name(id='y', ctx=Store(), lineno=4, col_offset=0)], value=Str(s='b', lineno=4, col_offset=4), lineno=4, col_offset=0), Assign(targets=[Name(id='z', ctx=Store(), lineno=5, col_offset=0)], value=Str(s=u'A', lineno=5, col_offset=4), lineno=5, col_offset=0)])"
+  }, 
+  "source": "'doc'\nfrom __future__ import unicode_literals\nx = 'a'\ny = b'b'\nz = r'\\u0041'\n"
+ }, 
+ {
+  "flags": 131072, 
+  "mode": "exec", 
+  "name": "unicode_literals_flag", 
+  "result": {
+   "dump": "Module(body=[Expr(value=Str(s=u'a', lineno=1, col_offset=0), lineno=1, col_offset=0)])"
+  }, 
+  "source": "'a'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "imports", 
+  "result": {
+   "dump": "Module(body=[Import(names=[alias(name='a', asname=None)], lineno=1, col_offset=0), Import(names=[alias(name='a.b.c', asname=None)], lineno=2, col_offset=0), Import(names=[alias(name='a', asname='b'), alias(name='c.d', asname='e')], lineno=3, col_offset=0), ImportFrom(module='a', names=[alias(name='b', asname=None)], level=0, lineno=4, col_offset=0), ImportFrom(module='a', names=[alias(name='b', asname=None), alias(name='c', asname=None)], level=0, lineno=5, col_offset=0), ImportFrom(module='a', names=[alias(name='b', asname='c')], level=0, lineno=6, col_offset=0), ImportFrom(module=None, names=[alias(name='a', asname=None)], level=1, lineno=7, col_offset=0), ImportFrom(module=None, names=[alias(name='a', asname=None)], level=2, lineno=8, col_offset=0), ImportFrom(module='a', names=[alias(name='b', asname=None)], level=1, lineno=9, col_offset=0), ImportFrom(module='a.b', names=[alias(name='*', asname=None)], level=3, lineno=10, col_offset=0), ImportFrom(module='a', names=[alias(name='*', asname=None)], level=0, lineno=11, col_offset=0)])"
+  }, 
+  "source": "import a\nimport a.b.c\nimport a as b, c.d as e\nfrom a import b\nfrom a import (b, c,)\nfrom a import b as c\nfrom . import a\nfrom .. import a\nfrom .a import b\nfrom ...a.b import *\nfrom a import *\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "simple_statements", 
+  "result": {
+   "dump": "Module(body=[Pass( lineno=1, col_offset=0), Break( lineno=2, col_offset=0), Continue( lineno=3, col_offset=0), Return(value=None, lineno=4, col_offset=0), Return(value=Num(n=1, lineno=5, col_offset=7), lineno=5, col_offset=0), Return(value=Tuple(elts=[Num(n=1, lineno=6, col_offset=7), Num(n=2, lineno=6, col_offset=10)], ctx=Load(), lineno=6, col_offset=7), lineno=6, col_offset=0), Raise(type=None, inst=None, tback=None, lineno=7, col_offset=0), Raise(type=Name(id='E', ctx=Load(), lineno=8, col_offset=6), inst=None, tback=None, lineno=8, col_offset=0), Raise(type=Name(id='E', ctx=Load(), lineno=9, col_offset=6), inst=Name(id='v', ctx=Load(), lineno=9, col_offset=9), tback=None, lineno=9, col_offset=0), Raise(type=Name(id='E', ctx=Load(), lineno=10, col_offset=6), inst=Name(id='v', ctx=Load(), lineno=10, col_offset=9), tback=Name(id='t', ctx=Load(), lineno=10, col_offset=12), lineno=10, col_offset=0), Global(names=['a'], lineno=11, col_offset=0), Global(names=['a', 'b'], lineno=12, col_offset=0), Assert(test=Name(id='a', ctx=Load(), lineno=13, col_offset=7), msg=None, lineno=13, col_offset=0), Assert(test=Name(id='a', ctx=Load(), lineno=14, col_offset=7), msg=Name(id='b', ctx=Load(), lineno=14, col_offset=10), lineno=14, col_offset=0), Delete(targets=[Name(id='a', ctx=Del(), lineno=15, col_offset=4)], lineno=15, col_offset=0), Delete(targets=[Name(id='a', ctx=Del(), lineno=16, col_offset=4), Subscript(value=Name(id='b', ctx=Load(), lineno=16, col_offset=7), slice=Index(value=Num(n=1, lineno=16, col_offset=9)), ctx=Del(), lineno=16, col_offset=7), Attribute(value=Name(id='c', ctx=Load(), lineno=16, col_offset=13), attr='d', ctx=Del(), lineno=16, col_offset=13)], lineno=16, col_offset=0), Delete(targets=[Tuple(elts=[Name(id='a', ctx=Del(), lineno=17, col_offset=5), Name(id='b', ctx=Del(), lineno=17, col_offset=8)], ctx=Del(), lineno=17, col_offset=5), List(elts=[Name(id='c', ctx=Del(), lineno=17, col_offset=13)], ctx=Del(), lineno=17, col_offset=12)], lineno=17, col_offset=0), Expr(value=Yield(value=None, lineno=18, col_offset=0), lineno=18, col_offset=0), Expr(value=Yield(value=Num(n=1, lineno=19, col_offset=6), lineno=19, col_offset=0), lineno=19, col_offset=0), Assign(targets=[Name(id='x', ctx=Store(), lineno=20, col_offset=0)], value=Yield(value=None, lineno=20, col_offset=4), lineno=20, col_offset=0), Expr(value=Name(id='a', ctx=Load(), lineno=21, col_offset=0), lineno=21, col_offset=0), Expr(value=Name(id='b', ctx=Load(), lineno=21, col_offset=3), lineno=21, col_offset=3), Expr(value=Name(id='c', ctx=Load(), lineno=21, col_offset=6), lineno=21, col_offset=6)])"
+  }, 
+  "source": "pass\nbreak\ncontinue\nreturn\nreturn 1\nreturn 1, 2\nraise\nraise E\nraise E, v\nraise E, v, t\nglobal a\nglobal a, b\nassert a\nassert a, b\ndel a\ndel a, b[1], c.d\ndel (a, b), [c]\nyield\nyield 1\nx = yield\na; b; c;\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "compound", 
+  "result": {
+   "dump": "Module(body=[If(test=Name(id='a', ctx=Load(), lineno=1, col_offset=3), body=[Expr(value=Name(id='b', ctx=Load(), lineno=2, col_offset=4), lineno=2, col_offset=4)], orelse=[If(test=Name(id='c', ctx=Load(), lineno=3, col_offset=5), body=[Expr(value=Name(id='d', ctx=Load(), lineno=4, col_offset=4), lineno=4, col_offset=4)], orelse=[If(test=Name(id='e', ctx=Load(), lineno=5, col_offset=5), body=[Expr(value=Name(id='f', ctx=Load(), lineno=6, col_offset=4), lineno=6, col_offset=4)], orelse=[Expr(value=Name(id='g', ctx=Load(), lineno=8, col_offset=4), lineno=8, col_offset=4)], lineno=5, col_offset=5)], lineno=3, col_offset=5)], lineno=1, col_offset=0), If(test=Name(id='a', ctx=Load(), lineno=9, col_offset=3), body=[Expr(value=Name(id='b', ctx=Load(), lineno=9, col_offset=6), lineno=9, col_offset=6)], orelse=[Expr(value=Name(id='c', ctx=Load(), lineno=10, col_offset=6), lineno=10, col_offset=6)], lineno=9, col_offset=0), If(test=Name(id='a', ctx=Load(), lineno=11, col_offset=3), body=[Expr(value=Name(id='b', ctx=Load(), lineno=12, col_offset=4), lineno=12, col_offset=4)], orelse=[If(test=Name(id='c', ctx=Load(), lineno=13, col_offset=5), body=[Expr(value=Name(id='d', ctx=Load(), lineno=14, col_offset=4), lineno=14, col_offset=4)], orelse=[], lineno=13, col_offset=5)], lineno=11, col_offset=0), While(test=Name(id='a', ctx=Load(), lineno=15, col_offset=6), body=[Expr(value=Name(id='b', ctx=Load(), lineno=16, col_offset=4), lineno=16, col_offset=4)], orelse=[Expr(value=Name(id='c', ctx=Load(), lineno=18, col_offset=4), lineno=18, col_offset=4)], lineno=15, col_offset=0), For(target=Name(id='a', ctx=Store(), lineno=19, col_offset=4), iter=Name(id='b', ctx=Load(), lineno=19, col_offset=9), body=[Expr(value=Name(id='c', ctx=Load(), lineno=20, col_offset=4), lineno=20, col_offset=4)], orelse=[Expr(value=Name(id='d', ctx=Load(), lineno=22, col_offset=4), lineno=22, col_offset=4)], lineno=19, col_offset=0), For(target=Tuple(elts=[Name(id='a', ctx=Store(), lineno=23, col_offset=4), Name(id='b', ctx=Store(), lineno=23, col_offset=7)], ctx=Store(), lineno=23, col_offset=4), iter=Name(id='c', ctx=Load(), lineno=23, col_offset=12), body=[Pass( lineno=23, col_offset=15)], orelse=[], lineno=23, col_offset=0), For(target=Tuple(elts=[Name(id='a', ctx=Store(), lineno=24, col_offset=4)], ctx=Store(), lineno=24, col_offset=4), iter=Name(id='b', ctx=Load(), lineno=24, col_offset=10), body=[Pass( lineno=24, col_offset=13)], orelse=[], lineno=24, col_offset=0), ClassDef(name='A', bases=[], body=[Pass( lineno=25, col_offset=11)], decorator_list=[], lineno=25, col_offset=0), ClassDef(name='B', bases=[Name(id='C', ctx=Load(), lineno=26, col_offset=8), Name(id='D', ctx=Load(), lineno=26, col_offset=11)], body=[Assign(targets=[Name(id='x', ctx=Store(), lineno=27, col_offset=4)], value=Num(n=1, lineno=27, col_offset=8), lineno=27, col_offset=4)], decorator_list=[], lineno=26, col_offset=0), ClassDef(name='E', bases=[Name(id='F', ctx=Load(), lineno=28, col_offset=8)], body=[Pass( lineno=28, col_offset=13)], decorator_list=[], lineno=28, col_offset=0)])"
+  }, 
+  "source": "if a:\n    b\nelif c:\n    d\nelif e:\n    f\nelse:\n    g\nif a: b\nelse: c\nif a:\n    b\nelif c:\n    d\nwhile a:\n    b\nelse:\n    c\nfor a in b:\n    c\nelse:\n    d\nfor a, b in c: pass\nfor a, in b: pass\nclass A(): pass\nclass B(C, D):\n    x = 1\nclass E(F,): pass\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "calls", 
+  "result": {
+   "dump": "Module(body=[Expr(value=Call(func=Name(id='f', ctx=Load(), lineno=1, col_offset=0), args=[], keywords=[], starargs=None, kwargs=None, lineno=1, col_offset=0), lineno=1, col_offset=0), Expr(value=Call(func=Name(id='f', ctx=Load(), lineno=2, col_offset=0), args=[Name(id='a', ctx=Load(), lineno=2, col_offset=2)], keywords=[], starargs=None, kwargs=None, lineno=2, col_offset=0), lineno=2, col_offset=0), Expr(value=Call(func=Name(id='f', ctx=Load(), lineno=3, col_offset=0), args=[Name(id='a', ctx=Load(), lineno=3, col_offset=2)], keywords=[keyword(arg='b', value=Num(n=1, lineno=3, col_offset=7))], starargs=None, kwargs=None, lineno=3, col_offset=0), lineno=3, col_offset=0), Expr(value=Call(func=Name(id='f', ctx=Load(), lineno=4, col_offset=0), args=[], keywords=[], starargs=Name(id='a', ctx=Load(), lineno=4, col_offset=3), kwargs=None, lineno=4, col_offset=0), lineno=4, col_offset=0), Expr(value=Call(func=Name(id='f', ctx=Load(), lineno=5, col_offset=0), args=[], keywords=[], starargs=None, kwargs=Name(id='k', ctx=Load(), lineno=5, col_offset=4), lineno=5, col_offset=0), lineno=5, col_offset=0), Expr(value=Call(func=Name(id='f', ctx=Load(), lineno=6, col_offset=0), args=[Name(id='a', ctx=Load(), lineno=6, col_offset=2)], keywords=[], starargs=Name(id='b', ctx=Load(), lineno=6, col_offset=6), kwargs=Name(id='c', ctx=Load(), lineno=6, col_offset=11), lineno=6, col_offset=0), lineno=6, col_offset=0), Expr(value=Call(func=Name(id='f', ctx=Load(), lineno=7, col_offset=0), args=[Name(id='a', ctx=Load(), lineno=7, col_offset=2)], keywords=[keyword(arg='b', value=Num(n=1, lineno=7, col_offset=7))], starargs=Name(id='c', ctx=Load(), lineno=7, col_offset=11), kwargs=Name(id='d', ctx=Load(), lineno=7, col_offset=16), lineno=7, col_offset=0), lineno=7, col_offset=0), Expr(value=Call(func=Name(id='f', ctx=Load(), lineno=8, col_offset=0), args=[], keywords=[keyword(arg='b', value=Num(n=1, lineno=8, col_offset=8))], starargs=Name(id='a', ctx=Load(), lineno=8, col_offset=3), kwargs=None, lineno=8, col_offset=0), lineno=8, col_offset=0), Expr(value=Call(func=Subscript(value=Call(func=Attribute(value=Attribute(value=Name(id='a', ctx=Load(), lineno=9, col_offset=0), attr='b', ctx=Load(), lineno=9, col_offset=0), attr='c', ctx=Load(), lineno=9, col_offset=0), args=[Name(id='d', ctx=Load(), lineno=9, col_offset=6)], keywords=[], starargs=None, kwargs=None, lineno=9, col_offset=0), slice=Index(value=Name(id='e', ctx=Load(), lineno=9, col_offset=9)), ctx=Load(), lineno=9, col_offset=0), args=[Name(id='f', ctx=Load(), lineno=9, col_offset=12)], keywords=[], starargs=None, kwargs=None, lineno=9, col_offset=0), lineno=9, col_offset=0)])"
+  }, 
+  "source": "f()\nf(a)\nf(a, b=1)\nf(*a)\nf(**k)\nf(a, *b, **c)\nf(a, b=1, *c, **d)\nf(*a, b=1)\na.b.c(d)[e](f)\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "literals", 
+  "result": {
+   "dump": "Module(body=[Expr(value=Tuple(elts=[], ctx=Load(), lineno=1, col_offset=0), lineno=1, col_offset=0), Expr(value=Tuple(elts=[Num(n=1, lineno=2, col_offset=1)], ctx=Load(), lineno=2, col_offset=1), lineno=2, col_offset=0), Expr(value=Tuple(elts=[Num(n=1, lineno=3, col_offset=1), Num(n=2, lineno=3, col_offset=4)], ctx=Load(), lineno=3, col_offset=1), lineno=3, col_offset=0), Expr(value=List(elts=[], ctx=Load(), lineno=4, col_offset=0), lineno=4, col_offset=0), Expr(value=List(elts=[Num(n=1, lineno=5, col_offset=1)], ctx=Load(), lineno=5, col_offset=0), lineno=5, col_offset=0), Expr(value=List(elts=[Num(n=1, lineno=6, col_offset=1), Num(n=2, lineno=6, col_offset=4)], ctx=Load(), lineno=6, col_offset=0), lineno=6, col_offset=0), Expr(value=Dict(keys=[], values=[], lineno=7, col_offset=0), lineno=7, col_offset=0), Expr(value=Dict(keys=[Num(n=1, lineno=8, col_offset=1)], values=[Num(n=2, lineno=8, col_offset=4)], lineno=8, col_offset=0), lineno=8, col_offset=0), Expr(value=Dict(keys=[Num(n=1, lineno=9, col_offset=1), Num(n=3, lineno=9, col_offset=7)], values=[Num(n=2, lineno=9, col_offset=4), Num(n=4, lineno=9, col_offset=10)], lineno=9, col_offset=0), lineno=9, col_offset=0), Expr(value=Set(elts=[Num(n=1, lineno=10, col_offset=1)], lineno=10, col_offset=0), lineno=10, col_offset=0), Expr(value=Set(elts=[Num(n=1, lineno=11, col_offset=1), Num(n=2, lineno=11, col_offset=4)], lineno=11, col_offset=0), lineno=11, col_offset=0), Expr(value=Yield(value=None, lineno=12, col_offset=1), lineno=12, col_offset=0), Expr(value=Name(id='a', ctx=Load(), lineno=13, col_offset=1), lineno=13, col_offset=0), Expr(value=Tuple(elts=[Name(id='a', ctx=Load(), lineno=14, col_offset=2), Name(id='b', ctx=Load(), lineno=14, col_offset=5)], ctx=Load(), lineno=14, col_offset=2), lineno=14, col_offset=0)])"
+  }, 
+  "source": "()\n(1,)\n(1, 2)\n[]\n[1]\n[1, 2,]\n{}\n{1: 2}\n{1: 2, 3: 4,}\n{1}\n{1, 2,}\n(yield)\n(a)\n((a, b))\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "continuation_and_comments", 
+  "result": {
+   "dump": "Module(body=[Assign(targets=[Name(id='x', ctx=Store(), lineno=1, col_offset=0)], value=BinOp(left=Num(n=1, lineno=1, col_offset=4), op=Add(), right=Num(n=2, lineno=2, col_offset=4), lineno=1, col_offset=4), lineno=1, col_offset=0), If(test=Name(id='x', ctx=Load(), lineno=4, col_offset=3), body=[Assign(targets=[Name(id='y', ctx=Store(), lineno=6, col_offset=4)], value=Tuple(elts=[Num(n=1, lineno=6, col_offset=9), Num(n=2, lineno=7, col_offset=9)], ctx=Load(), lineno=6, col_offset=9), lineno=6, col_offset=4), Assign(targets=[Name(id='z', ctx=Store(), lineno=9, col_offset=4)], value=List(elts=[Num(n=1, lineno=10, col_offset=0)], ctx=Load(), lineno=9, col_offset=8), lineno=9, col_offset=4)], orelse=[], lineno=4, col_offset=0)])"
+  }, 
+  "source": "x = 1 + \\\n    2\n# comment\nif x: # trailing\n    # inner\n    y = (1,\n         2)\n\n    z = [\n1]\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "tabs", 
+  "result": {
+   "dump": "Module(body=[If(test=Name(id='a', ctx=Load(), lineno=1, col_offset=3), body=[Expr(value=Name(id='b', ctx=Load(), lineno=2, col_offset=1), lineno=2, col_offset=1), If(test=Name(id='c', ctx=Load(), lineno=3, col_offset=4), body=[Expr(value=Name(id='d', ctx=Load(), lineno=4, col_offset=2), lineno=4, col_offset=2)], orelse=[], lineno=3, col_offset=1), Expr(value=Name(id='e', ctx=Load(), lineno=5, col_offset=8), lineno=5, col_offset=8)], orelse=[], lineno=1, col_offset=0)])"
+  }, 
+  "source": "if a:\n\tb\n\tif c:\n\t\td\n        e\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "tab_size_comment", 
+  "result": {
+   "dump": "Module(body=[If(test=Name(id='a', ctx=Load(), lineno=2, col_offset=3), body=[Expr(value=Name(id='b', ctx=Load(), lineno=3, col_offset=1), lineno=3, col_offset=1), Expr(value=Name(id='c', ctx=Load(), lineno=4, col_offset=4), lineno=4, col_offset=4)], orelse=[], lineno=2, col_offset=0)])"
+  }, 
+  "source": "# vim:ts=4\nif a:\n\tb\n    c\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "tab_size_unrecognized", 
+  "result": {
+   "error": "IndentationError", 
+   "lineno": 4, 
+   "message": "unindent does not match any outer indentation level", 
+   "offset": 6, 
+   "text": "    c\n"
+  }, 
+  "source": "# vim: set ts=4:\nif a:\n\tb\n    c\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "form_feed", 
+  "result": {
+   "dump": "Module(body=[If(test=Name(id='a', ctx=Load(), lineno=1, col_offset=3), body=[Expr(value=Name(id='b', ctx=Load(), lineno=2, col_offset=5), lineno=2, col_offset=5)], orelse=[], lineno=1, col_offset=0), Expr(value=Name(id='c', ctx=Load(), lineno=3, col_offset=1), lineno=3, col_offset=1)])"
+  }, 
+  "source": "if a:\n\f    b\n\fc\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "crlf", 
+  "result": {
+   "dump": "Module(body=[If(test=Name(id='a', ctx=Load(), lineno=1, col_offset=3), body=[Expr(value=Name(id='b', ctx=Load(), lineno=2, col_offset=4), lineno=2, col_offset=4)], orelse=[], lineno=1, col_offset=0), Expr(value=Name(id='c', ctx=Load(), lineno=3, col_offset=0), lineno=3, col_offset=0)])"
+  }, 
+  "source": "if a:\r\n    b\r\nc\r\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "cr", 
+  "result": {
+   "dump": "Module(body=[If(test=Name(id='a', ctx=Load(), lineno=1, col_offset=3), body=[Expr(value=Name(id='b', ctx=Load(), lineno=2, col_offset=4), lineno=2, col_offset=4)], orelse=[], lineno=1, col_offset=0), Expr(value=Name(id='c', ctx=Load(), lineno=3, col_offset=0), lineno=3, col_offset=0)])"
+  }, 
+  "source": "if a:\r    b\rc\r"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "no_trailing_newline", 
+  "result": {
+   "dump": "Module(body=[If(test=Name(id='a', ctx=Load(), lineno=1, col_offset=3), body=[Expr(value=Name(id='b', ctx=Load(), lineno=2, col_offset=4), lineno=2, col_offset=4)], orelse=[], lineno=1, col_offset=0)])"
+  }, 
+  "source": "if a:\n    b"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "empty", 
+  "result": {
+   "dump": "Module(body=[])"
+  }, 
+  "source": ""
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "only_comments", 
+  "result": {
+   "dump": "Module(body=[])"
+  }, 
+  "source": "# a\n\n   # b\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "coding_utf8", 
+  "result": {
+   "dump": "Module(body=[Assign(targets=[Name(id='x', ctx=Store(), lineno=2, col_offset=0)], value=Str(s='\\xc3\\xa9', lineno=2, col_offset=4), lineno=2, col_offset=0), Assign(targets=[Name(id='y', ctx=Store(), lineno=3, col_offset=0)], value=Str(s=u'\\xe9\\\\\\xe9\\U0001f600', lineno=3, col_offset=4), lineno=3, col_offset=0), Assign(targets=[Name(id='z', ctx=Store(), lineno=4, col_offset=0)], value=Str(s=u'\\xe9\\xe9', lineno=4, col_offset=4), lineno=4, col_offset=0)])"
+  }, 
+  "source": "# -*- coding: utf-8 -*-\nx = '\u00c3\u00a9'\ny = u'\u00c3\u00a9\\\u00c3\u00a9\u00f0\u009f\u0098\u0080'\nz = ur'\u00c3\u00a9\\u00e9'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "coding_utf8_alias", 
+  "result": {
+   "dump": "Module(body=[Assign(targets=[Name(id='x', ctx=Store(), lineno=2, col_offset=0)], value=Str(s='\\xc3\\xa9\\n', lineno=2, col_offset=4), lineno=2, col_offset=0), Assign(targets=[Name(id='y', ctx=Store(), lineno=3, col_offset=0)], value=Str(s=u'\\xe9', lineno=3, col_offset=4), lineno=3, col_offset=0)])"
+  }, 
+  "source": "# coding=utf8\nx = '\u00c3\u00a9\\n'\ny = u'\u00c3\u00a9'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "coding_latin1", 
+  "result": {
+   "dump": "Module(body=[Assign(targets=[Name(id='x', ctx=Store(), lineno=3, col_offset=0)], value=Str(s='\\xe9', lineno=3, col_offset=4), lineno=3, col_offset=0), Assign(targets=[Name(id='y', ctx=Store(), lineno=4, col_offset=0)], value=Str(s=u'\\xe9', lineno=4, col_offset=4), lineno=4, col_offset=0)])"
+  }, 
+  "source": "#!/usr/bin/env python\n# vim: set fileencoding=latin-1 :\nx = '\u00e9'\ny = u'\u00e9'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "coding_latin1_alias", 
+  "result": {
+   "dump": "Module(body=[Assign(targets=[Name(id='x', ctx=Store(), lineno=2, col_offset=0)], value=Str(s='\\xe9\\n', lineno=2, col_offset=4), lineno=2, col_offset=0), Assign(targets=[Name(id='y', ctx=Store(), lineno=3, col_offset=0)], value=Str(s=u'\\xe9', lineno=3, col_offset=4), lineno=3, col_offset=0), Assign(targets=[Name(id='z', ctx=Store(), lineno=4, col_offset=0)], value=Str(s='\\xe9', lineno=4, col_offset=4), lineno=4, col_offset=0)])"
+  }, 
+  "source": "# coding: latin1\nx = '\u00e9\\n'\ny = u'\u00e9'\nz = '\u00e9'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "coding_second_line_only", 
+  "result": {
+   "dump": "Module(body=[Assign(targets=[Name(id='x', ctx=Store(), lineno=1, col_offset=0)], value=Num(n=1, lineno=1, col_offset=4), lineno=1, col_offset=0)])"
+  }, 
+  "source": "x = 1\n# coding: bogus\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "bom", 
+  "result": {
+   "dump": "Module(body=[Assign(targets=[Name(id='x', ctx=Store(), lineno=1, col_offset=0)], value=Str(s='\\xc3\\xa9', lineno=1, col_offset=4), lineno=1, col_offset=0), Assign(targets=[Name(id='y', ctx=Store(), lineno=2, col_offset=0)], value=Str(s=u'\\xe9', lineno=2, col_offset=4), lineno=2, col_offset=0)])"
+  }, 
+  "source": "\u00ef\u00bb\u00bfx = '\u00c3\u00a9'\ny = u'\u00c3\u00a9'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "bom_with_cookie", 
+  "result": {
+   "dump": "Module(body=[Assign(targets=[Name(id='x', ctx=Store(), lineno=2, col_offset=0)], value=Str(s=u'\\xe9', lineno=2, col_offset=4), lineno=2, col_offset=0)])"
+  }, 
+  "source": "\u00ef\u00bb\u00bf# coding: utf-8\nx = u'\u00c3\u00a9'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "no_coding_high_bytes", 
+  "result": {
+   "dump": "Module(body=[Assign(targets=[Name(id='x', ctx=Store(), lineno=1, col_offset=0)], value=Str(s='\\xe9', lineno=1, col_offset=4), lineno=1, col_offset=0), Assign(targets=[Name(id='y', ctx=Store(), lineno=2, col_offset=0)], value=Str(s=u'\\xe9', lineno=2, col_offset=4), lineno=2, col_offset=0)])"
+  }, 
+  "source": "x = '\u00e9'\ny = u'\u00e9'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "eval", 
+  "name": "eval", 
+  "result": {
+   "dump": "Expression(body=BinOp(left=Num(n=1, lineno=1, col_offset=0), op=Add(), right=Num(n=2, lineno=1, col_offset=4), lineno=1, col_offset=0))"
+  }, 
+  "source": "1 + 2"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "eval", 
+  "name": "eval_trailing_newlines", 
+  "result": {
+   "dump": "Expression(body=IfExp(test=Name(id='y', ctx=Load(), lineno=1, col_offset=5), body=Name(id='x', ctx=Load(), lineno=1, col_offset=0), orelse=Name(id='z', ctx=Load(), lineno=1, col_offset=12), lineno=1, col_offset=0))"
+  }, 
+  "source": "x if y else z\n\n\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "eval", 
+  "name": "eval_tuple", 
+  "result": {
+   "dump": "Expression(body=Tuple(elts=[Num(n=1, lineno=1, col_offset=0), Num(n=2, lineno=1, col_offset=3)], ctx=Load(), lineno=1, col_offset=0))"
+  }, 
+  "source": "1, 2"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "eval", 
+  "name": "eval_lambda", 
+  "result": {
+   "dump": "Expression(body=Lambda(args=arguments(args=[Name(id='x', ctx=Param(), lineno=1, col_offset=7)], vararg=None, kwarg=None, defaults=[]), body=Name(id='x', ctx=Load(), lineno=1, col_offset=10), lineno=1, col_offset=0))"
+  }, 
+  "source": "lambda x: x"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "single", 
+  "name": "single_simple", 
+  "result": {
+   "dump": "Interactive(body=[Assign(targets=[Name(id='x', ctx=Store(), lineno=1, col_offset=0)], value=Num(n=1, lineno=1, col_offset=4), lineno=1, col_offset=0)])"
+  }, 
+  "source": "x = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "single", 
+  "name": "single_multiple", 
+  "result": {
+   "dump": "Interactive(body=[Assign(targets=[Name(id='x', ctx=Store(), lineno=1, col_offset=0)], value=Num(n=1, lineno=1, col_offset=4), lineno=1, col_offset=0), Assign(targets=[Name(id='y', ctx=Store(), lineno=1, col_offset=7)], value=Num(n=2, lineno=1, col_offset=11), lineno=1, col_offset=7)])"
+  }, 
+  "source": "x = 1; y = 2\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "single", 
+  "name": "single_compound", 
+  "result": {
+   "dump": "Interactive(body=[If(test=Name(id='x', ctx=Load(), lineno=1, col_offset=3), body=[Pass( lineno=2, col_offset=2)], orelse=[], lineno=1, col_offset=0)])"
+  }, 
+  "source": "if x:\n  pass\n\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "single", 
+  "name": "single_ignores_rest", 
+  "result": {
+   "dump": "Interactive(body=[Assign(targets=[Name(id='x', ctx=Store(), lineno=1, col_offset=0)], value=Num(n=1, lineno=1, col_offset=4), lineno=1, col_offset=0)])"
+  }, 
+  "source": "x = 1\ny = 2\n"
+ }, 
+ {
+  "flags": 512, 
+  "mode": "exec", 
+  "name": "dedent_at_end", 
+  "result": {
+   "dump": "Module(body=[If(test=Num(n=1, lineno=1, col_offset=3), body=[Expr(value=Name(id='x', ctx=Load(), lineno=2, col_offset=2), lineno=2, col_offset=2)], orelse=[], lineno=1, col_offset=0)])"
+  }, 
+  "source": "if 1:\n  x"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "future_from_dot", 
+  "result": {
+   "dump": "Module(body=[ImportFrom(module=None, names=[alias(name='print_function', asname=None)], level=1, lineno=1, col_offset=0), Expr(value=Call(func=Name(id='print', ctx=Load(), lineno=2, col_offset=0), args=[Num(n=1, lineno=2, col_offset=6)], keywords=[keyword(arg='end', value=Str(s='', lineno=2, col_offset=13))], starargs=None, kwargs=None, lineno=2, col_offset=0), lineno=2, col_offset=0)])"
+  }, 
+  "source": "from . import print_function\nprint(1, end='')\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "future_parenthesized", 
+  "result": {
+   "dump": "Module(body=[ImportFrom(module='__future__', names=[alias(name='absolute_import', asname=None), alias(name='print_function', asname=None)], level=0, lineno=1, col_offset=0), Expr(value=Call(func=Name(id='print', ctx=Load(), lineno=2, col_offset=0), args=[Num(n=1, lineno=2, col_offset=6)], keywords=[keyword(arg='end', value=Str(s='', lineno=2, col_offset=13))], starargs=None, kwargs=None, lineno=2, col_offset=0), lineno=2, col_offset=0)])"
+  }, 
+  "source": "from __future__ import (absolute_import, print_function)\nprint(1, end='')\n"
+ }, 
+ {
+  "flags": 256, 
+  "mode": "exec", 
+  "name": "source_utf8", 
+  "result": {
+   "dump": "Module(body=[Assign(targets=[Name(id='x', ctx=Store(), lineno=1, col_offset=0)], value=Str(s=u'\\xe9', lineno=1, col_offset=4), lineno=1, col_offset=0), Assign(targets=[Name(id='y', ctx=Store(), lineno=2, col_offset=0)], value=Str(s='\\xc3\\xa9', lineno=2, col_offset=4), lineno=2, col_offset=0)])"
+  }, 
+  "source": "x = u'\u00c3\u00a9'\ny = '\u00c3\u00a9'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "nested_blocks", 
+  "result": {
+   "dump": "Module(body=[FunctionDef(name='f', args=arguments(args=[], vararg=None, kwarg=None, defaults=[]), body=[FunctionDef(name='g', args=arguments(args=[], vararg=None, kwarg=None, defaults=[]), body=[ClassDef(name='C', bases=[], body=[FunctionDef(name='h', args=arguments(args=[Name(id='self', ctx=Param(), lineno=4, col_offset=18)], vararg=None, kwarg=None, defaults=[]), body=[Return(value=Lambda(args=arguments(args=[], vararg=None, kwarg=None, defaults=[]), body=ListComp(elt=Name(id='x', ctx=Load(), lineno=5, col_offset=32), generators=[comprehension(target=Name(id='x', ctx=Store(), lineno=5, col_offset=38), iter=GeneratorExp(elt=Name(id='y', ctx=Load(), lineno=5, col_offset=44), generators=[comprehension(target=Name(id='y', ctx=Store(), lineno=5, col_offset=50), iter=Name(id='z', ctx=Load(), lineno=5, col_offset=55), ifs=[])], lineno=5, col_offset=44), ifs=[])], lineno=5, col_offset=32), lineno=5, col_offset=23), lineno=5, col_offset=16)], decorator_list=[], lineno=4, col_offset=12)], decorator_list=[], lineno=3, col_offset=8), Return(value=Name(id='C', ctx=Load(), lineno=6, col_offset=15), lineno=6, col_offset=8)], decorator_list=[], lineno=2, col_offset=4), Return(value=Name(id='g', ctx=Load(), lineno=7, col_offset=11), lineno=7, col_offset=4)], decorator_list=[], lineno=1, col_offset=0)])"
+  }, 
+  "source": "def f():\n    def g():\n        class C:\n            def h(self):\n                return lambda: [x for x in (y for y in z)]\n        return C\n    return g\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_literal", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to literal", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "1 = 2\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_call", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to function call", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "f() = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "delete_call", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't delete function call", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "del f()\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "augassign_tuple", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "illegal expression for augmented assignment", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "(a, b) += 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "augassign_list", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "illegal expression for augmented assignment", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "[a] += 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_operator", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to operator", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "x + 1 = 2\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_none", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "cannot assign to None", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "None = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_debug", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "cannot assign to __debug__", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "__debug__ = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "attribute_none", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "cannot assign to None", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "x.None = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "def_none", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "cannot assign to None", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "def None(): pass\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "class_none", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "cannot assign to None", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "class None: pass\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "param_none", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "cannot assign to None", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "def f(None): pass\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "vararg_none", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "cannot assign to None", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "def f(*None): pass\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "import_as_none", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "cannot assign to None", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "import a as None\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "from_import_none", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "cannot assign to None", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "from a import None\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "genexp_not_sole", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "Generator expression must be parenthesized if not sole argument", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "f(x for x in y, 1)\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "keyword_then_positional", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "non-keyword arg after keyword arg", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "f(a=1, b)\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "positional_after_star", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "only named arguments may follow *expression", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "f(*a, b)\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "keyword_repeated", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "keyword argument repeated", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "f(a=1, a=2)\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "keyword_expression", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "keyword can't be an expression", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "f(1=2)\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "keyword_lambda", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "lambda cannot contain assignment", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "f(lambda x: x = 1)\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "keyword_debug", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "cannot assign to __debug__", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "f(__debug__=1)\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "too_many_arguments", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "more than 255 arguments", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "f(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23, a24, a25, a26, a27, a28, a29, a30, a31, a32, a33, a34, a35, a36, a37, a38, a39, a40, a41, a42, a43, a44, a45, a46, a47, a48, a49, a50, a51, a52, a53, a54, a55, a56, a57, a58, a59, a60, a61, a62, a63, a64, a65, a66, a67, a68, a69, a70, a71, a72, a73, a74, a75, a76, a77, a78, a79, a80, a81, a82, a83, a84, a85, a86, a87, a88, a89, a90, a91, a92, a93, a94, a95, a96, a97, a98, a99, a100, a101, a102, a103, a104, a105, a106, a107, a108, a109, a110, a111, a112, a113, a114, a115, a116, a117, a118, a119, a120, a121, a122, a123, a124, a125, a126, a127, a128, a129, a130, a131, a132, a133, a134, a135, a136, a137, a138, a139, a140, a141, a142, a143, a144, a145, a146, a147, a148, a149, a150, a151, a152, a153, a154, a155, a156, a157, a158, a159, a160, a161, a162, a163, a164, a165, a166, a167, a168, a169, a170, a171, a172, a173, a174, a175, a176, a177, a178, a179, a180, a181, a182, a183, a184, a185, a186, a187, a188, a189, a190, a191, a192, a193, a194, a195, a196, a197, a198, a199, a200, a201, a202, a203, a204, a205, a206, a207, a208, a209, a210, a211, a212, a213, a214, a215, a216, a217, a218, a219, a220, a221, a222, a223, a224, a225, a226, a227, a228, a229, a230, a231, a232, a233, a234, a235, a236, a237, a238, a239, a240, a241, a242, a243, a244, a245, a246, a247, a248, a249, a250, a251, a252, a253, a254, a255)\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "default_then_plain", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "non-default argument follows default argument", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "def f(a=1, b): pass\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "parenthesized_default", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "parenthesized arg with default", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "def f((a)=1): pass\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "trailing_comma_import", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "trailing comma not allowed without surrounding parentheses", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "from a import b,\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_yield", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "assignment to yield expression not possible", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "x = yield = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_empty_tuple", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to ()", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "() = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_listcomp", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to list comprehension", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "[x for x in y] = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_dict", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to literal", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "{} = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_set", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to literal", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "{a} = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_repr", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to repr", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "`a` = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_ifexp", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to conditional expression", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "a if b else c = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_not", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to operator", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "not a = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_compare", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to comparison", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "a < b = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_genexp", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to generator expression", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "(x for x in y) = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_setcomp", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to set comprehension", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "{x for x in y} = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_dictcomp", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to dict comprehension", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "{x: y for x in z} = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "assign_lambda", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to lambda", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "lambda: 1 = 2\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "delete_operator", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't delete operator", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "del (a, b + 1)\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "for_literal", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to literal", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "for 1 in x: pass\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "with_literal", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to literal", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "with a as 1: pass\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "except_literal", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 3, 
+   "message": "can't assign to literal", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "try:\n    pass\nexcept E, 1:\n    pass\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "comprehension_literal", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "can't assign to literal", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "[x for 1 in y]\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "unterminated_string", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "EOL while scanning string literal", 
+   "offset": 8, 
+   "text": "x = 'abc\n"
+  }, 
+  "source": "x = 'abc\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "unterminated_triple", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "EOF while scanning triple-quoted string literal", 
+   "offset": 11, 
+   "text": "x = '''abc\n"
+  }, 
+  "source": "x = '''abc\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "line_continuation", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "unexpected character after line continuation character", 
+   "offset": 10, 
+   "text": "x = 1 \\ 2\n"
+  }, 
+  "source": "x = 1 \\ 2\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "hex_without_digits", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "invalid token", 
+   "offset": 2, 
+   "text": "0x\n"
+  }, 
+  "source": "0x\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "decimal_in_octal", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "invalid token", 
+   "offset": 2, 
+   "text": "09\n"
+  }, 
+  "source": "09\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "exponent_sign_only", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "invalid token", 
+   "offset": 3, 
+   "text": "1e+\n"
+  }, 
+  "source": "1e+\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "binary_digit", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "invalid token", 
+   "offset": 2, 
+   "text": "0b2\n"
+  }, 
+  "source": "0b2\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "octal_digit", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "invalid token", 
+   "offset": 2, 
+   "text": "0o8\n"
+  }, 
+  "source": "0o8\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "dollar", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "invalid syntax", 
+   "offset": 5, 
+   "text": "x = $\n"
+  }, 
+  "source": "x = $\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "expected_indent", 
+  "result": {
+   "error": "IndentationError", 
+   "lineno": 2, 
+   "message": "expected an indented block", 
+   "offset": 1, 
+   "text": "x\n"
+  }, 
+  "source": "if 1:\nx\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "unexpected_indent", 
+  "result": {
+   "error": "IndentationError", 
+   "lineno": 1, 
+   "message": "unexpected indent", 
+   "offset": 1, 
+   "text": " x\n"
+  }, 
+  "source": " x\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "unindent_mismatch", 
+  "result": {
+   "error": "IndentationError", 
+   "lineno": 3, 
+   "message": "unindent does not match any outer indentation level", 
+   "offset": 4, 
+   "text": "  y\n"
+  }, 
+  "source": "if 1:\n    x\n  y\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "tabs_unexpected_indent", 
+  "result": {
+   "error": "IndentationError", 
+   "lineno": 1, 
+   "message": "unexpected indent", 
+   "offset": 1, 
+   "text": "\tif 1:\n"
+  }, 
+  "source": "\tif 1:\n  \tx\n\t\ty"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "too_deep", 
+  "result": {
+   "error": "IndentationError", 
+   "lineno": 101, 
+   "message": "too many levels of indentation", 
+   "offset": 106, 
+   "text": "                                                                                                    if 1:\n"
+  }, 
+  "source": "if 1:\n if 1:\n  if 1:\n   if 1:\n    if 1:\n     if 1:\n      if 1:\n       if 1:\n        if 1:\n         if 1:\n          if 1:\n           if 1:\n            if 1:\n             if 1:\n              if 1:\n               if 1:\n                if 1:\n                 if 1:\n                  if 1:\n                   if 1:\n                    if 1:\n                     if 1:\n                      if 1:\n                       if 1:\n                        if 1:\n                         if 1:\n                          if 1:\n                           if 1:\n                            if 1:\n                             if 1:\n                              if 1:\n                               if 1:\n                                if 1:\n                                 if 1:\n                                  if 1:\n                                   if 1:\n                                    if 1:\n                                     if 1:\n                                      if 1:\n                                       if 1:\n                                        if 1:\n                                         if 1:\n                                          if 1:\n                                           if 1:\n                                            if 1:\n                                             if 1:\n                                              if 1:\n                                               if 1:\n                                                if 1:\n                                                 if 1:\n                                                  if 1:\n                                                   if 1:\n                                                    if 1:\n                                                     if 1:\n                                                      if 1:\n                                                       if 1:\n                                                        if 1:\n                                                         if 1:\n                                                          if 1:\n                                                           if 1:\n                                                            if 1:\n                                                             if 1:\n                                                              if 1:\n                                                               if 1:\n                                                                if 1:\n                                                                 if 1:\n                                                                  if 1:\n                                                                   if 1:\n                                                                    if 1:\n                                                                     if 1:\n                                                                      if 1:\n                                                                       if 1:\n                                                                        if 1:\n                                                                         if 1:\n                                                                          if 1:\n                                                                           if 1:\n                                                                            if 1:\n                                                                             if 1:\n                                                                              if 1:\n                                                                               if 1:\n                                                                                if 1:\n                                                                                 if 1:\n                                                                                  if 1:\n                                                                                   if 1:\n                                                                                    if 1:\n                                                                                     if 1:\n                                                                                      if 1:\n                                                                                       if 1:\n                                                                                        if 1:\n                                                                                         if 1:\n                                                                                          if 1:\n                                                                                           if 1:\n                                                                                            if 1:\n                                                                                             if 1:\n                                                                                              if 1:\n                                                                                               if 1:\n                                                                                                if 1:\n                                                                                                 if 1:\n                                                                                                  if 1:\n                                                                                                   if 1:\n                                                                                                    if 1:\n                                                                                                     pass\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "eof_in_def", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "invalid syntax", 
+   "offset": 7, 
+   "text": "def f(:\n"
+  }, 
+  "source": "def f(:\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "eval", 
+  "name": "eof_eval", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "unexpected EOF while parsing", 
+   "offset": 1, 
+   "text": "("
+  }, 
+  "source": "("
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "eof_multiline", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 2, 
+   "message": "invalid syntax", 
+   "offset": 3, 
+   "text": "1,\n"
+  }, 
+  "source": "x = (\n1,\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "invalid_syntax", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "invalid syntax", 
+   "offset": 5, 
+   "text": "x = = 1\n"
+  }, 
+  "source": "x = = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "invalid_second_line", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 2, 
+   "message": "invalid syntax", 
+   "offset": 5, 
+   "text": "y = )\n"
+  }, 
+  "source": "x = 1\ny = )\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "print_keyword_argument", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "invalid syntax", 
+   "offset": 13, 
+   "text": "print(1, end='')\n"
+  }, 
+  "source": "print(1, end='')\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "unicode_hex_escape", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "(unicode error) 'unicodeescape' codec can't decode bytes in position 0-2: truncated \\xXX escape", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "u'\\x4'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "unicode_unknown_name", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "(unicode error) 'unicodeescape' codec can't decode bytes in position 0-6: unknown Unicode character name", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "u'\\N{foo}'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "unicode_malformed_name", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "(unicode error) 'unicodeescape' codec can't decode bytes in position 0-1: malformed \\N character escape", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "u'\\N'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "unicode_out_of_range", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "(unicode error) 'unicodeescape' codec can't decode bytes in position 0-9: illegal Unicode character", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "u'\\U00110000'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "raw_unicode_truncated", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "(unicode error) 'rawunicodeescape' codec can't decode bytes in position 0-3: truncated \\uXXXX", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "ur'\\u12'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "str_hex_escape", 
+  "result": {
+   "error": "ValueError", 
+   "message": "invalid \\x escape"
+  }, 
+  "source": "'\\x4'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "unknown_encoding", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 0, 
+   "message": "unknown encoding: bogus", 
+   "offset": 0, 
+   "text": null
+  }, 
+  "source": "# coding: bogus\nx = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "ascii_decode_error", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 0, 
+   "message": "'ascii' codec can't decode byte 0xff in position 21: ordinal not in range(128)", 
+   "offset": 0, 
+   "text": null
+  }, 
+  "source": "# coding: ascii\nx = '\u00ff'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "bom_cookie_mismatch", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 0, 
+   "message": "encoding problem: iso-8859-1 with BOM", 
+   "offset": 0, 
+   "text": null
+  }, 
+  "source": "\u00ef\u00bb\u00bf# coding: latin-1\nx = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "utf8_unicode_literal_error", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 2, 
+   "message": "(unicode error) 'utf8' codec can't decode byte 0xff in position 0: invalid start byte", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "# coding: utf-8\nx = u'\u00ff'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "utf8_error_text", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 2, 
+   "message": "invalid syntax", 
+   "offset": 12, 
+   "text": "x = '\u00c3\u00a9' + $\n"
+  }, 
+  "source": "# coding: utf-8\nx = '\u00c3\u00a9' + $\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "latin1_error_text", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 2, 
+   "message": "invalid syntax", 
+   "offset": 11, 
+   "text": "x = '?' + $\n"
+  }, 
+  "source": "# coding: latin-1\nx = '\u00e9' + $\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "concat_non_ascii_unicode", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 1, 
+   "message": "(unicode error) 'ascii' codec can't decode byte 0xe9 in position 0: ordinal not in range(128)", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "x = '\u00e9' u'a'\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "parser_stack_overflow", 
+  "result": {
+   "error": "MemoryError", 
+   "message": ""
+  }, 
+  "source": "x = ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((1))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))\n"
+ }, 
+ {
+  "flags": 256, 
+  "mode": "exec", 
+  "name": "encoding_in_unicode_source", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 0, 
+   "message": "encoding declaration in Unicode string", 
+   "offset": null, 
+   "text": null
+  }, 
+  "source": "# coding: latin-1\nx = 1\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "multiline_string_error", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 2, 
+   "message": "invalid syntax", 
+   "offset": 17, 
+   "text": "x = '''a\nb''' + $\n"
+  }, 
+  "source": "x = '''a\nb''' + $\n"
+ }, 
+ {
+  "flags": 0, 
+  "mode": "exec", 
+  "name": "error_after_comment", 
+  "result": {
+   "error": "SyntaxError", 
+   "lineno": 2, 
+   "message": "invalid syntax", 
+   "offset": 7, 
+   "text": "y = 2 3\n"
+  }, 
+  "source": "x = 1 # c\ny = 2 3\n"
+ }
+]

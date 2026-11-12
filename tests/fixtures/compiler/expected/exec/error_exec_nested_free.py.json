@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "message", 
+  "filename": "error_exec_nested_free.py", 
+  "lineno": 2, 
+  "msg": "unqualified exec is not allowed in function 'outer' because it contains a nested function with free variables", 
+  "offset": null, 
+  "text": null, 
+  "type": "SyntaxError"
+ }, 
+ "filename": "error_exec_nested_free.py", 
+ "mode": "exec", 
+ "warnings": []
+}

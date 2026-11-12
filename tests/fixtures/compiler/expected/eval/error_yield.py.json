@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "location", 
+  "filename": "error_yield.py", 
+  "lineno": 1, 
+  "msg": "'yield' outside function", 
+  "offset": null, 
+  "text": null, 
+  "type": "SyntaxError"
+ }, 
+ "filename": "error_yield.py", 
+ "mode": "eval", 
+ "warnings": []
+}

@@ -1,0 +1,25 @@
+{
+ "error": null, 
+ "filename": "compile_warnings.py", 
+ "mode": "exec", 
+ "warnings": [
+  {
+   "category": "SyntaxWarning", 
+   "filename": "compile_warnings.py", 
+   "lineno": 2, 
+   "message": "name 'x' is assigned to before global declaration"
+  }, 
+  {
+   "category": "SyntaxWarning", 
+   "filename": "compile_warnings.py", 
+   "lineno": 6, 
+   "message": "name 'y' is assigned to before global declaration"
+  }, 
+  {
+   "category": "SyntaxWarning", 
+   "filename": "compile_warnings.py", 
+   "lineno": 9, 
+   "message": "assertion is always true, perhaps remove parentheses?"
+  }
+ ]
+}

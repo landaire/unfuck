@@ -1,0 +1,14 @@
+{
+ "error": {
+  "args": "message", 
+  "filename": "error_duplicate_arg.py", 
+  "lineno": 1, 
+  "msg": "duplicate argument 'a' in function definition", 
+  "offset": null, 
+  "text": null, 
+  "type": "SyntaxError"
+ }, 
+ "filename": "error_duplicate_arg.py", 
+ "mode": "exec", 
+ "warnings": []
+}
