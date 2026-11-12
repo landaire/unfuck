@@ -3,7 +3,6 @@ use code_graph::CodeGraph;
 use petgraph::stable_graph::NodeIndex;
 use pydis::opcode::py27::{self, Standard};
 use pydis::prelude::{Instruction, Opcode};
-use rayon::prelude::*;
 
 use py27_marshal::{Code, Obj};
 use smallvm::InstructionTracker;
@@ -12,7 +11,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use strings::CodeObjString;
 
 /// Representing code as a graph of basic blocks
@@ -259,44 +258,32 @@ pub fn dump_strings<'a>(
 /// Dumps all strings from a Code object. This will go over all of the `names`, variable names (`varnames`),
 /// `consts`, and all strings from any nested code objects.
 fn dump_codeobject_strings(pyc_filename: &Path, code: Arc<Code>) -> Vec<CodeObjString<'_>> {
-    let new_strings = Mutex::new(vec![]);
-    code.names.par_iter().for_each(|name| {
-        new_strings.lock().unwrap_or_else(|e| e.into_inner()).push(CodeObjString::new(
-            code.as_ref(),
-            pyc_filename,
-            crate::strings::StringType::Name,
-            name.to_string().as_ref(),
-        ))
-    });
+    let mut strings = Vec::new();
+    let mut pending = vec![code];
 
-    code.varnames.par_iter().for_each(|name| {
-        new_strings.lock().unwrap_or_else(|e| e.into_inner()).push(CodeObjString::new(
-            code.as_ref(),
-            pyc_filename,
-            crate::strings::StringType::VarName,
-            name.to_string().as_ref(),
-        ))
-    });
-
-    code.consts.as_ref().par_iter().for_each(|c| {
-        if let py27_marshal::Obj::String(s) = c {
-            new_strings.lock().unwrap_or_else(|e| e.into_inner()).push(CodeObjString::new(
-                code.as_ref(),
-                pyc_filename,
-                crate::strings::StringType::Const,
-                s.read().unwrap_or_else(|e| e.into_inner()).to_string().as_ref(),
-            ))
+    while let Some(code) = pending.pop() {
+        for name in code.names.iter() {
+            strings.push(CodeObjString::new(code.as_ref(), pyc_filename, crate::strings::StringType::Name, name.to_string().as_ref()));
         }
-    });
 
-    // We need to find and replace the code sections which may also be in the const data
-    code.consts.par_iter().for_each(|c| {
-        if let Obj::Code(const_code) = c {
-            // Call deobfuscate_bytecode first since the bytecode comes before consts and other data
-            let mut strings = dump_codeobject_strings(pyc_filename, Arc::new(const_code.read().unwrap_or_else(|e| e.into_inner()).clone()));
-            new_strings.lock().unwrap_or_else(|e| e.into_inner()).append(&mut strings);
+        for name in code.varnames.iter() {
+            strings.push(CodeObjString::new(code.as_ref(), pyc_filename, crate::strings::StringType::VarName, name.to_string().as_ref()));
         }
-    });
 
-    new_strings.into_inner().unwrap()
+        for constant in code.consts.iter() {
+            if let py27_marshal::Obj::String(s) = constant {
+                let text = s.read().unwrap_or_else(|e| e.into_inner()).to_string();
+                strings.push(CodeObjString::new(code.as_ref(), pyc_filename, crate::strings::StringType::Const, text.as_ref()));
+            }
+        }
+
+        // Reversed so nested code objects are visited in constant order.
+        for constant in code.consts.iter().rev() {
+            if let Obj::Code(const_code) = constant {
+                pending.push(Arc::new(const_code.read().unwrap_or_else(|e| e.into_inner()).clone()));
+            }
+        }
+    }
+
+    strings
 }
