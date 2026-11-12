@@ -10,6 +10,8 @@ use num_bigint::BigInt;
 
 use crate::interp::code::CodeObject;
 use crate::interp::hash::PyHash;
+use crate::interp::lifecycle::ReleaseLevel;
+use crate::interp::lifecycle::defer_items;
 use crate::interp::object::ClassData;
 use crate::interp::object::FunctionData;
 use crate::interp::object::GeneratorData;
@@ -423,11 +425,20 @@ impl From<&[Value]> for TupleItems {
 
 impl Drop for TupleItems {
     fn drop(&mut self) {
-        if let Some(items) = Rc::get_mut(&mut self.0) {
-            for item in items.iter_mut().rev() {
-                drop(std::mem::replace(item, Value::None));
-            }
+        let Some(items) = Rc::get_mut(&mut self.0) else {
+            return;
+        };
+
+        let Some(level) = ReleaseLevel::enter() else {
+            defer_items(items.iter_mut().rev().map(|item| std::mem::replace(item, Value::None)).collect());
+            return;
+        };
+
+        for item in items.iter_mut().rev() {
+            drop(std::mem::replace(item, Value::None));
         }
+
+        drop(level);
     }
 }
 

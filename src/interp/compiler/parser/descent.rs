@@ -17,10 +17,6 @@ use crate::interp::compiler::tokenizer;
 use crate::interp::compiler::tokenizer::Status;
 use crate::interp::compiler::tokenizer::Tokenizer;
 
-/// Stack the recursive rules may use before more is allocated.
-const RED_ZONE: usize = 64 * 1024;
-const STACK_GROWTH: usize = 2 * 1024 * 1024;
-
 /// The reserved words of the grammar. A NAME token spelling one of them is
 /// that keyword wherever it appears.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -434,15 +430,6 @@ impl Parser<'_> {
         Ok(())
     }
 
-    /// `node` for a rule through which the grammar recurses.
-    fn nested(
-        &mut self,
-        kind: u16,
-        body: impl FnOnce(&mut Self) -> Result<(), Stop>,
-    ) -> Result<(), Stop> {
-        stacker::maybe_grow(RED_ZONE, STACK_GROWTH, || self.node(kind, body))
-    }
-
     fn starts_atom(&mut self) -> Result<bool, Stop> {
         let starts = match self.peek()? {
             Terminal::Name => true,
@@ -698,7 +685,7 @@ impl Parser<'_> {
             return Err(self.reject());
         }
 
-        self.nested(symbol::FPDEF, |p| {
+        self.node(symbol::FPDEF, |p| {
             if p.accept(Terminal::Name)? {
                 return Ok(());
             }
@@ -723,7 +710,7 @@ impl Parser<'_> {
     }
 
     fn stmt(&mut self) -> Result<(), Stop> {
-        self.nested(symbol::STMT, |p| {
+        self.node(symbol::STMT, |p| {
             if p.starts_compound_stmt()? {
                 p.compound_stmt()
             } else {
@@ -1253,7 +1240,7 @@ impl Parser<'_> {
     }
 
     fn old_test(&mut self) -> Result<(), Stop> {
-        self.nested(symbol::OLD_TEST, |p| {
+        self.node(symbol::OLD_TEST, |p| {
             if !p.at_keyword(Keyword::Lambda)? {
                 return p.or_test();
             }
@@ -1272,7 +1259,7 @@ impl Parser<'_> {
     }
 
     fn test(&mut self) -> Result<(), Stop> {
-        self.nested(symbol::TEST, |p| {
+        self.node(symbol::TEST, |p| {
             if p.at_keyword(Keyword::Lambda)? {
                 return p.node(symbol::LAMBDEF, |p| {
                     p.shift();
@@ -1322,7 +1309,7 @@ impl Parser<'_> {
     }
 
     fn not_test(&mut self) -> Result<(), Stop> {
-        self.nested(symbol::NOT_TEST, |p| {
+        self.node(symbol::NOT_TEST, |p| {
             if !p.accept_keyword(Keyword::Not)? {
                 return p.comparison();
             }
@@ -1446,7 +1433,7 @@ impl Parser<'_> {
     }
 
     fn factor(&mut self) -> Result<(), Stop> {
-        self.nested(symbol::FACTOR, |p| {
+        self.node(symbol::FACTOR, |p| {
             if !matches!(
                 p.peek()?,
                 Terminal::Token(tokenizer::PLUS | tokenizer::MINUS | tokenizer::TILDE)
@@ -1754,7 +1741,7 @@ impl Parser<'_> {
             return Ok(());
         }
 
-        self.nested(symbol::LIST_ITER, |p| {
+        self.node(symbol::LIST_ITER, |p| {
             if for_clause {
                 return p.list_for();
             }
@@ -1790,7 +1777,7 @@ impl Parser<'_> {
             return Ok(());
         }
 
-        self.nested(symbol::COMP_ITER, |p| {
+        self.node(symbol::COMP_ITER, |p| {
             if for_clause {
                 return p.comp_for();
             }

@@ -1096,10 +1096,9 @@ impl Vm {
                     Payload::Dict(_) => {
                         let mut parts = Vec::new();
                         // The dict repr has no recursion check; only the native stack bounds
-                        // the nesting.
+                        // the nesting, as in CPython.
                         for (key, item) in self.dict_items(object)? {
-                            let entry = crate::interp::vm::ensure_stack(|| -> PyResult<String> { Ok(format!("{}: {}", self.repr_text(&key)?, self.repr_text(&item)?)) })?;
-                            parts.push(entry);
+                            parts.push(format!("{}: {}", self.repr_text(&key)?, self.repr_text(&item)?));
                         }
                         format!("{{{}}}", parts.join(", "))
                     }

@@ -14,6 +14,16 @@
 //! `HostFacts` and are configuration, not access. A denied `os.urandom`
 //! raises `NotImplementedError`, so `random` seeds from the clock instead,
 //! which fails in turn when `Clock` is denied.
+//!
+//! Python recursion recurses on the native stack, so the embedder runs the
+//! VM on a thread whose stack covers the recursion limit with a margin.
+//! Measured on x86-64, each level of the limit uses about 4.5 KiB of stack
+//! in an optimized build and 56 KiB in an unoptimized one, so the default
+//! limit of 1000 needs about 4.5 MiB or 56 MiB. Compiling source nested as
+//! deeply as the parser allows takes about 2.5 MiB or 13 MiB more. Native
+//! recursion that CPython does not check either, such as compiling deeply
+//! nested `_ast` trees or the repr of directly nested dicts, is bounded
+//! only by that stack.
 
 pub mod activation;
 pub mod attr;

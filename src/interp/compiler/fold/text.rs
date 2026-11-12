@@ -58,7 +58,7 @@ enum DigitMode {
 /// which `MAKE_FUNCTION` always consumes before an operation could fold
 /// them.
 pub(super) fn repr(object: &Object) -> Option<Vec<u8>> {
-    stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || match object {
+    match object {
         Object::None => Some(b"None".to_vec()),
         Object::Ellipsis => Some(b"Ellipsis".to_vec()),
         Object::Int(value) => Some(value.to_string().into_bytes()),
@@ -76,7 +76,7 @@ pub(super) fn repr(object: &Object) -> Option<Vec<u8>> {
         Object::Unicode(units) => Some(repr_unicode(units)),
         Object::Tuple(items) => repr_tuple(items),
         Object::Code(_) => None,
-    })
+    }
 }
 
 /// `str()`. `None` for code objects (see `repr`) and for `unicode`, which

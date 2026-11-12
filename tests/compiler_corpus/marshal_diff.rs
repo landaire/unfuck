@@ -5,8 +5,6 @@ use std::fmt::Write;
 
 use num_bigint::BigInt;
 
-const RED_ZONE: usize = 64 * 1024;
-const STACK_GROWTH: usize = 2 * 1024 * 1024;
 const HAVE_ARGUMENT: u8 = 90;
 const EXTENDED_ARG: u8 = 145;
 const REPR_LIMIT: usize = 120;
@@ -167,10 +165,6 @@ impl Decoder<'_> {
     }
 
     fn value(&mut self) -> Result<Value, DecodeError> {
-        stacker::maybe_grow(RED_ZONE, STACK_GROWTH, || self.value_inner())
-    }
-
-    fn value_inner(&mut self) -> Result<Value, DecodeError> {
         let code = self.byte()?;
 
         let value = match code {
@@ -320,7 +314,7 @@ impl Differ {
     }
 
     fn structure_equal(&self, expected: &Value, actual: &Value) -> bool {
-        stacker::maybe_grow(RED_ZONE, STACK_GROWTH, || match (expected, actual) {
+        match (expected, actual) {
             (Value::Str { value: left, form: left_form }, Value::Str { value: right, form: right_form }) => left == right && left_form.is_interned() == right_form.is_interned(),
             (Value::Tuple(left), Value::Tuple(right)) | (Value::List(left), Value::List(right)) | (Value::Set(left), Value::Set(right)) | (Value::FrozenSet(left), Value::FrozenSet(right)) => {
                 left.len() == right.len() && left.iter().zip(right).all(|(left, right)| self.structure_equal(left, right))
@@ -330,7 +324,7 @@ impl Differ {
             }
             (Value::Code(left), Value::Code(right)) => self.code(left, right, "").is_none(),
             _ => expected == actual,
-        })
+        }
     }
 
     fn value(&self, path: &str, expected: &Value, actual: &Value) -> Option<String> {
@@ -350,10 +344,6 @@ impl Differ {
     }
 
     fn code(&self, expected: &Code, actual: &Code, path: &str) -> Option<String> {
-        stacker::maybe_grow(RED_ZONE, STACK_GROWTH, || self.code_inner(expected, actual, path))
-    }
-
-    fn code_inner(&self, expected: &Code, actual: &Code, path: &str) -> Option<String> {
         if !self.same(&expected.code, &actual.code) {
             return Some(code_difference(path, expected, actual));
         }
@@ -634,7 +624,7 @@ fn write_items(text: &mut String, open: &str, items: &[Value], close: &str) {
 }
 
 fn write_repr(text: &mut String, value: &Value) {
-    stacker::maybe_grow(RED_ZONE, STACK_GROWTH, || match value {
+    match value {
         Value::Null => text.push_str("<null>"),
         Value::None => text.push_str("None"),
         Value::Ellipsis => text.push_str("Ellipsis"),
@@ -674,7 +664,7 @@ fn write_repr(text: &mut String, value: &Value) {
         Value::Code(code) => {
             let _ = write!(text, "<code {}>", code.display_name());
         }
-    });
+    }
 }
 
 const COMPARE_OPS: [&str; 12] = ["<", "<=", "==", "!=", ">", ">=", "in", "not in", "is", "is not", "exception match", "BAD"];

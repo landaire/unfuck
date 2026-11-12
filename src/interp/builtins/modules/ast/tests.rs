@@ -345,7 +345,7 @@ fn unrepresentable_values_halt() {
 
 /// A left-nested `a+a+...+a` chain far deeper than the native stack could
 /// hold with one frame per level. Derived equality recurses, so the check
-/// walks the chain; dropping the node objects recurses, so they are leaked.
+/// walks the chain.
 #[test]
 fn deep_chain_round_trips() {
     const DEPTH: usize = 20_000;
@@ -372,6 +372,4 @@ fn deep_chain_round_trips() {
     }
     assert_eq!(depth, DEPTH);
     assert_eq!(*node, load("a"));
-
-    std::mem::forget(object);
 }

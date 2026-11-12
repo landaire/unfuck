@@ -180,10 +180,8 @@ impl<'a> Validator<'a> {
         self.terminal(node, tokenizer::COMMA, ",")
     }
 
-    /// A rule applied through a growing stack, as trees nest as deep as
-    /// the parser allows.
     fn apply(&mut self, rule: Rule<'a>, node: u32) -> Outcome {
-        stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || rule(self, node))
+        rule(self, node)
     }
 
     /// Comma-separated elements, with an optional trailing comma, under a
@@ -1258,10 +1256,6 @@ impl<'a> Validator<'a> {
     }
 
     fn test(&mut self, node: u32) -> Outcome {
-        stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || self.test_inner(node))
-    }
-
-    fn test_inner(&mut self, node: u32) -> Outcome {
         if !self.expect_kind(node, symbol::TEST) {
             return Ok(false);
         }

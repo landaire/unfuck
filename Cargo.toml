@@ -37,7 +37,6 @@ rayon = { version = "1.5", optional = true }
 md-5 = "0.10"
 sha1 = "0.10"
 sha2 = "0.10"
-stacker = "0.1"
 
 [dev-dependencies]
 py27-marshal = { version = "0.6" }

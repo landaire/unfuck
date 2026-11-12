@@ -28,10 +28,6 @@ use crate::interp::compiler::symbol;
 use crate::interp::compiler::tokenizer;
 use crate::interp::compiler::tokenizer::Tokenizer;
 
-/// Stack the recursive conversions may use before more is allocated.
-const RED_ZONE: usize = 64 * 1024;
-const STACK_GROWTH: usize = 2 * 1024 * 1024;
-
 /// Why a tree could not be converted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BuildError {
@@ -473,10 +469,6 @@ impl Builder<'_> {
     }
 
     fn statement(&mut self, node: NodeRef<'_>) -> Built<Stmt> {
-        stacker::maybe_grow(RED_ZONE, STACK_GROWTH, || self.statement_inner(node))
-    }
-
-    fn statement_inner(&mut self, node: NodeRef<'_>) -> Built<Stmt> {
         let mut node = node;
         if node.kind() == symbol::STMT {
             node = child(node, 0)?;
@@ -1321,43 +1313,41 @@ impl Builder<'_> {
 
     /// A parenthesized parameter list: a tuple of names to store.
     fn unpacked_parameters(&mut self, fplist: NodeRef<'_>) -> Built<Expr> {
-        stacker::maybe_grow(RED_ZONE, STACK_GROWTH, || {
-            let mut elements = Vec::new();
-            for element in items(fplist) {
-                let mut fpdef = element;
-                let resolved = loop {
-                    if fpdef.len() != 3 {
-                        let name_node = child(fpdef, 0)?;
-                        let name = identifier(name_node)?;
-                        check_binding(fplist, &name.0)?;
-                        break expr(
-                            ExprKind::Name {
-                                id: name,
-                                ctx: ExprContext::Store,
-                            },
-                            name_node.location(),
-                        );
-                    }
-                    let inner = child(fpdef, 1)?;
-                    if inner.len() != 1 {
-                        break self.unpacked_parameters(inner)?;
-                    }
-                    fpdef = child(inner, 0)?;
-                };
-                elements.push(resolved);
-            }
+        let mut elements = Vec::new();
+        for element in items(fplist) {
+            let mut fpdef = element;
+            let resolved = loop {
+                if fpdef.len() != 3 {
+                    let name_node = child(fpdef, 0)?;
+                    let name = identifier(name_node)?;
+                    check_binding(fplist, &name.0)?;
+                    break expr(
+                        ExprKind::Name {
+                            id: name,
+                            ctx: ExprContext::Store,
+                        },
+                        name_node.location(),
+                    );
+                }
+                let inner = child(fpdef, 1)?;
+                if inner.len() != 1 {
+                    break self.unpacked_parameters(inner)?;
+                }
+                fpdef = child(inner, 0)?;
+            };
+            elements.push(resolved);
+        }
 
-            let mut tuple = expr(
-                ExprKind::Tuple {
-                    elts: elements,
-                    ctx: ExprContext::Store,
-                },
-                fplist.location(),
-            );
-            set_context(&mut tuple, ExprContext::Store, fplist)?;
+        let mut tuple = expr(
+            ExprKind::Tuple {
+                elts: elements,
+                ctx: ExprContext::Store,
+            },
+            fplist.location(),
+        );
+        set_context(&mut tuple, ExprContext::Store, fplist)?;
 
-            Ok(tuple)
-        })
+        Ok(tuple)
     }
 
     /// The items of a list node, each stored or deleted per `context` and
@@ -1393,13 +1383,9 @@ impl Builder<'_> {
         ))
     }
 
-    fn expr(&mut self, node: NodeRef<'_>) -> Built<Expr> {
-        stacker::maybe_grow(RED_ZONE, STACK_GROWTH, || self.expr_inner(node))
-    }
-
     /// Converts any expression-level node. A node with a single child
     /// stands for that child.
-    fn expr_inner(&mut self, node: NodeRef<'_>) -> Built<Expr> {
+    fn expr(&mut self, node: NodeRef<'_>) -> Built<Expr> {
         let mut node = node;
         loop {
             match node.kind() {

@@ -46,10 +46,6 @@ impl Compiler<'_> {
     }
 
     fn statement(&mut self, statement: &ast::Stmt) -> Result<(), CompileError> {
-        stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || self.statement_on_stack(statement))
-    }
-
-    fn statement_on_stack(&mut self, statement: &ast::Stmt) -> Result<(), CompileError> {
         self.set_line(statement.location.lineno);
 
         match &statement.kind {
@@ -220,26 +216,53 @@ impl Compiler<'_> {
     }
 
     /// A test whose truth is known at compile time only compiles the branch
-    /// taken.
-    fn if_statement(&mut self, test: &ast::Expr, body: &[ast::Stmt], orelse: &[ast::Stmt]) -> Result<(), CompileError> {
-        let end = self.allocate_block();
+    /// taken. An `elif` chain nests one `If` per clause however long it is,
+    /// so an `else` suite that is a lone `If` continues the loop.
+    fn if_statement<'a>(&mut self, mut test: &'a ast::Expr, mut body: &'a [ast::Stmt], mut orelse: &'a [ast::Stmt]) -> Result<(), CompileError> {
+        let mut outer_ends = Vec::new();
+        let mut end = self.allocate_block();
 
-        match constant_truth(test) {
-            Some(true) => self.statements(body)?,
-            Some(false) => self.statements(orelse)?,
-            None => {
-                let otherwise = if orelse.is_empty() { end } else { self.allocate_block() };
-                self.expression(test)?;
-                self.emit_jump(op::POP_JUMP_IF_FALSE, Jump::Absolute(otherwise));
-                self.statements(body)?;
-                self.emit_jump(op::JUMP_FORWARD, Jump::Relative(end));
-                if !orelse.is_empty() {
-                    self.continue_in(otherwise);
-                    self.statements(orelse)?;
+        loop {
+            let remaining = match constant_truth(test) {
+                Some(true) => {
+                    self.statements(body)?;
+                    &[][..]
                 }
-            }
+                Some(false) => orelse,
+                None => {
+                    let otherwise = if orelse.is_empty() { end } else { self.allocate_block() };
+                    self.expression(test)?;
+                    self.emit_jump(op::POP_JUMP_IF_FALSE, Jump::Absolute(otherwise));
+                    self.statements(body)?;
+                    self.emit_jump(op::JUMP_FORWARD, Jump::Relative(end));
+                    if !orelse.is_empty() {
+                        self.continue_in(otherwise);
+                    }
+                    orelse
+                }
+            };
+
+            let [statement] = remaining else {
+                self.statements(remaining)?;
+                break;
+            };
+            let StmtKind::If { test: inner_test, body: inner_body, orelse: inner_orelse } = &statement.kind else {
+                self.statement(statement)?;
+                break;
+            };
+
+            self.set_line(statement.location.lineno);
+            outer_ends.push(end);
+            end = self.allocate_block();
+            test = inner_test;
+            body = inner_body;
+            orelse = inner_orelse;
         }
+
         self.continue_in(end);
+        for end in outer_ends.into_iter().rev() {
+            self.continue_in(end);
+        }
 
         Ok(())
     }

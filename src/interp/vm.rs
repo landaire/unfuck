@@ -265,6 +265,10 @@ impl Vm {
         &self.finalizers
     }
 
+    /// The VM runs on the calling thread, whose stack must cover the
+    /// recursion limit: about 4.5 KiB per level in an optimized build and
+    /// 56 KiB in an unoptimized one, measured on x86-64. See the `interp`
+    /// module documentation.
     pub fn new(config: VmConfig, source: Box<dyn ModuleSource>) -> PyResult<Self> {
         let recursion_limit = config.recursion_limit;
         let vm = Self {
@@ -852,7 +856,7 @@ impl Vm {
 
         let depth = self.depth.get();
         self.depth.set(depth + 1);
-        let result = ensure_stack(body);
+        let result = body();
         self.depth.set(depth);
 
         result
@@ -891,17 +895,4 @@ impl Vm {
     pub fn name(&self, text: &str) -> PyBytes {
         PyBytes::from(text)
     }
-}
-
-/// Runs `body`, first switching to a new native stack segment when the
-/// current one is nearly exhausted. Python recursion recurses on the native
-/// stack, so the recursion limit rather than the size of the calling
-/// thread's stack bounds how deep evaluation goes. Every recursion check
-/// passes through here; `RED_ZONE` covers the most native stack evaluation
-/// uses between two checks.
-pub(crate) fn ensure_stack<T>(body: impl FnOnce() -> T) -> T {
-    const RED_ZONE: usize = 1024 * 1024;
-    const SEGMENT_SIZE: usize = 32 * 1024 * 1024;
-
-    stacker::maybe_grow(RED_ZONE, SEGMENT_SIZE, body)
 }

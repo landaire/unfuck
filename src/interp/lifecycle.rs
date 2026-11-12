@@ -15,9 +15,11 @@
 //! at points that depend on allocation counts; those objects stay alive
 //! here and their weak reference callbacks never run.
 //!
-//! CPython defers deallocation nested more than 50 levels deep
-//! (25 instances with dicts); in 2.7 instances deferred that way are only
-//! finalized by a later `gc.collect()`. Here nesting depth does not matter.
+//! Freeing nested more than 50 levels deep is deferred to the outermost
+//! free on the thread, as CPython's trashcan does, so a structure of any
+//! depth is freed on bounded native stack. CPython 2.7 finalizes instances
+//! deferred that way only at a later `gc.collect()`; here they are queued
+//! like any other.
 
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -78,6 +80,10 @@ thread_local! {
     static QUEUES: RefCell<Vec<Weak<FinalizerQueue>>> = const { RefCell::new(Vec::new()) };
     /// The serial number of the next VM on this thread.
     static NEXT_SERIAL: Cell<u32> = const { Cell::new(1) };
+    /// Frees in progress on this thread, each nested in the previous one.
+    static RELEASE_DEPTH: Cell<usize> = const { Cell::new(0) };
+    /// Frees set aside for the outermost free on this thread.
+    static DEFERRED: RefCell<Vec<Garbage>> = const { RefCell::new(Vec::new()) };
 }
 
 impl FinalizerQueue {
@@ -149,11 +155,11 @@ impl Drop for Object {
         let observable = !flags.contains(Lifecycle::RELEASED) && (flags.contains(Lifecycle::WEAKLY_REFERENCED) || may_define_finalizer(self));
         let queue = if observable { owner_queue(self.owner) } else { None };
         let Some(queue) = queue else {
-            self.release_contents();
+            self.release();
             return;
         };
         let Ok(mut pending) = queue.pending.try_borrow_mut() else {
-            self.release_contents();
+            self.release();
             return;
         };
 
@@ -171,17 +177,109 @@ impl Drop for Object {
 }
 
 impl Object {
-    /// Frees the slot values and then the instance dict, as
-    /// CPython does before the base type's deallocator, then a
-    /// list's or tuple's items. Freeing a deeply nested container recurses
-    /// on the native stack.
-    fn release_contents(&mut self) {
-        crate::interp::vm::ensure_stack(|| {
-            release_slots(self.class.get_mut().as_ref(), self.slots.get_mut());
-            drop(self.dict.get_mut().take());
-            release_items(&mut self.payload);
-        });
+    /// Frees the contents one free level deeper, or defers them to the
+    /// outermost free once the nesting is too deep.
+    fn release(&mut self) {
+        let contents = ObjectContents {
+            class: self.class.get_mut().take(),
+            dict: self.dict.get_mut().take(),
+            slots: std::mem::take(self.slots.get_mut()),
+            payload: std::mem::replace(&mut self.payload, Payload::Instance),
+        };
+
+        match ReleaseLevel::enter() {
+            Some(level) => {
+                contents.free();
+                drop(level);
+            }
+            None => defer(Garbage::Object(contents)),
+        }
     }
+}
+
+/// One level of nested frees on this thread. The outermost level frees
+/// the deferred contents before it ends.
+pub(crate) struct ReleaseLevel {
+    depth: usize,
+}
+
+impl ReleaseLevel {
+    /// Enters a free nested in those in progress, or `None` when it is
+    /// nested too deep and its contents must be deferred.
+    pub(crate) fn enter() -> Option<Self> {
+        // CPython's trashcan defers deallocations nested this deep.
+        const MAX_NESTED_RELEASES: usize = 50;
+
+        // Thread-local storage is gone only while the thread exits; freeing
+        // in place is all that remains.
+        let depth = RELEASE_DEPTH.try_with(Cell::get).unwrap_or(0);
+        if depth >= MAX_NESTED_RELEASES {
+            return None;
+        }
+
+        let _ = RELEASE_DEPTH.try_with(|current| current.set(depth + 1));
+
+        Some(Self { depth })
+    }
+}
+
+impl Drop for ReleaseLevel {
+    fn drop(&mut self) {
+        if self.depth == 0 {
+            while let Some(garbage) = DEFERRED.try_with(|deferred| deferred.borrow_mut().pop()).ok().flatten() {
+                garbage.free();
+            }
+        }
+
+        let _ = RELEASE_DEPTH.try_with(|current| current.set(self.depth));
+    }
+}
+
+/// The references an object held, taken out of it as it is freed.
+struct ObjectContents {
+    class: Option<ObjectRef>,
+    dict: Option<ObjectRef>,
+    slots: Box<[Option<Value>]>,
+    payload: Payload,
+}
+
+impl ObjectContents {
+    /// Frees the slot values and then the instance dict, as CPython does
+    /// before the base type's deallocator, then a list's or tuple's items,
+    /// the class, and the rest of the payload.
+    fn free(mut self) {
+        release_slots(self.class.as_ref(), &mut self.slots);
+        drop(self.dict.take());
+        release_items(&mut self.payload);
+        drop(self.class.take());
+    }
+}
+
+/// Contents whose free was deferred to the outermost free.
+enum Garbage {
+    Object(ObjectContents),
+    /// Tuple items, in the order they are freed.
+    Items(Vec<Value>),
+}
+
+impl Garbage {
+    fn free(self) {
+        match self {
+            Self::Object(contents) => contents.free(),
+            Self::Items(items) => drop(items),
+        }
+    }
+}
+
+/// Sets aside tuple items to be freed by the outermost free, in order.
+pub(crate) fn defer_items(items: Vec<Value>) {
+    defer(Garbage::Items(items));
+}
+
+fn defer(garbage: Garbage) {
+    // Without thread-local storage the closure is not run and drops the
+    // garbage in place.
+    let _ = DEFERRED.try_with(move |deferred| deferred.borrow_mut().push(garbage));
 }
 
 /// Clears the slot members of each class from `class` up to the

@@ -7,6 +7,7 @@ use num_bigint::BigInt;
 
 use crate::interp::code::op;
 use crate::interp::compiler::CompilerFlags;
+use crate::interp::compiler::assemble::BlockIndex;
 use crate::interp::compiler::assemble::Jump;
 use crate::interp::compiler::ast;
 use crate::interp::compiler::ast::ExprContext;
@@ -31,26 +32,56 @@ impl Compiler<'_> {
         Ok(())
     }
 
+    /// Compiles `expr`, taking chains such as `a + b + c` and `a.b.c` from a
+    /// worklist: they nest one level per operand however long the source
+    /// line is.
     pub(super) fn expression(&mut self, expr: &ast::Expr) -> Result<(), CompileError> {
-        stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || self.expression_on_stack(expr))
+        let mut steps = Vec::new();
+        self.expression_step(expr, &mut steps)?;
+
+        while let Some(step) = steps.pop() {
+            match step {
+                Step::Expr(expr) => self.expression_step(expr, &mut steps)?,
+                Step::Emit(opcode) => self.emit(opcode),
+                Step::Jump { opcode, jump } => self.emit_jump(opcode, jump),
+                Step::ContinueIn(block) => self.continue_in(block),
+                Step::Attribute { attribute, ctx } => self.attribute_access(attribute, ctx)?,
+                Step::Subscript { slice, ctx } => self.subscript_access(slice, ctx)?,
+                Step::Call { args, keywords, starargs, kwargs } => self.call_arguments(args, keywords, starargs, kwargs)?,
+            }
+        }
+
+        Ok(())
     }
 
-    fn expression_on_stack(&mut self, expr: &ast::Expr) -> Result<(), CompileError> {
+    /// Compiles `expr`, or pushes the steps that compile it.
+    fn expression_step<'a>(&mut self, expr: &'a ast::Expr, steps: &mut Vec<Step<'a>>) -> Result<(), CompileError> {
         self.advance_line(expr.location.lineno);
 
         match &expr.kind {
             ExprKind::BoolOp { op: operator, values } => self.short_circuit(*operator, values)?,
             ExprKind::BinOp { left, op: operator, right } => {
-                self.expression(left)?;
-                self.expression(right)?;
-                self.emit(self.binary_opcode(*operator));
+                steps.push(Step::Emit(self.binary_opcode(*operator)));
+                steps.push(Step::Expr(right));
+                steps.push(Step::Expr(left));
             }
             ExprKind::UnaryOp { op: operator, operand } => {
-                self.expression(operand)?;
-                self.emit(unary_opcode(*operator));
+                steps.push(Step::Emit(unary_opcode(*operator)));
+                steps.push(Step::Expr(operand));
             }
             ExprKind::Lambda { args, body } => self.lambda(expr, args, body)?,
-            ExprKind::IfExp { test, body, orelse } => self.conditional_expression(test, body, orelse)?,
+            ExprKind::IfExp { test, body, orelse } => {
+                let end = self.allocate_block();
+                let otherwise = self.allocate_block();
+
+                steps.push(Step::ContinueIn(end));
+                steps.push(Step::Expr(orelse));
+                steps.push(Step::ContinueIn(otherwise));
+                steps.push(Step::Jump { opcode: op::JUMP_FORWARD, jump: Jump::Relative(end) });
+                steps.push(Step::Expr(body));
+                steps.push(Step::Jump { opcode: op::POP_JUMP_IF_FALSE, jump: Jump::Absolute(otherwise) });
+                steps.push(Step::Expr(test));
+            }
             ExprKind::Dict { keys, values } => self.dict_display(keys, values)?,
             ExprKind::Set { elts } => {
                 self.expressions(elts)?;
@@ -64,25 +95,42 @@ impl Compiler<'_> {
                 if self.scope_kind() != BlockType::Function {
                     return Err(self.syntax_error("'yield' outside function"));
                 }
+                steps.push(Step::Emit(op::YIELD_VALUE));
                 match value {
-                    Some(value) => self.expression(value)?,
+                    Some(value) => steps.push(Step::Expr(value)),
                     None => self.load_constant(Object::None),
                 }
-                self.emit(op::YIELD_VALUE);
             }
             ExprKind::Compare { left, ops, comparators } => self.comparison(left, ops, comparators)?,
-            ExprKind::Call { func, args, keywords, starargs, kwargs } => self.call(func, args, keywords, starargs.as_deref(), kwargs.as_deref())?,
+            ExprKind::Call { func, args, keywords, starargs, kwargs } => {
+                steps.push(Step::Call { args, keywords, starargs: starargs.as_deref(), kwargs: kwargs.as_deref() });
+                steps.push(Step::Expr(func));
+            }
             ExprKind::Repr { value } => {
-                self.expression(value)?;
-                self.emit(op::UNARY_CONVERT);
+                steps.push(Step::Emit(op::UNARY_CONVERT));
+                steps.push(Step::Expr(value));
             }
             ExprKind::Num { n } => {
                 let number = self.number(n);
                 self.load_constant(number);
             }
             ExprKind::Str { s } => self.load_constant(Self::string(s)),
-            ExprKind::Attribute { value, attr, ctx } => self.attribute(value, attr, *ctx)?,
-            ExprKind::Subscript { value, slice, ctx } => self.subscript(value, slice, *ctx)?,
+            ExprKind::Attribute { value, attr, ctx } => {
+                if *ctx == ExprContext::AugStore {
+                    self.attribute_access(attr, *ctx)?;
+                } else {
+                    steps.push(Step::Attribute { attribute: attr, ctx: *ctx });
+                    steps.push(Step::Expr(value));
+                }
+            }
+            ExprKind::Subscript { value, slice, ctx } => match ctx {
+                ExprContext::AugStore => self.subscript_access(slice, *ctx)?,
+                ExprContext::AugLoad | ExprContext::Load | ExprContext::Store | ExprContext::Del => {
+                    steps.push(Step::Subscript { slice, ctx: *ctx });
+                    steps.push(Step::Expr(value));
+                }
+                ExprContext::Param => return Err(system_error("param invalid in subscript expression")),
+            },
             ExprKind::Name { id, ctx } => self.access_name(&id.0, *ctx)?,
             ExprKind::List { elts, ctx } => self.sequence(elts, *ctx, op::BUILD_LIST)?,
             ExprKind::Tuple { elts, ctx } => self.sequence(elts, *ctx, op::BUILD_TUPLE)?,
@@ -130,21 +178,6 @@ impl Compiler<'_> {
             self.emit_jump(decided, Jump::Absolute(end));
         }
         self.expression(last)?;
-        self.continue_in(end);
-
-        Ok(())
-    }
-
-    fn conditional_expression(&mut self, test: &ast::Expr, body: &ast::Expr, orelse: &ast::Expr) -> Result<(), CompileError> {
-        let end = self.allocate_block();
-        let otherwise = self.allocate_block();
-
-        self.expression(test)?;
-        self.emit_jump(op::POP_JUMP_IF_FALSE, Jump::Absolute(otherwise));
-        self.expression(body)?;
-        self.emit_jump(op::JUMP_FORWARD, Jump::Relative(end));
-        self.continue_in(otherwise);
-        self.expression(orelse)?;
         self.continue_in(end);
 
         Ok(())
@@ -204,11 +237,10 @@ impl Compiler<'_> {
         Ok(())
     }
 
-    /// The call argument holds the positional count in its low byte and
-    /// the keyword count in the next; `*args` and `**kwargs` select the
-    /// opcode.
-    fn call(&mut self, function: &ast::Expr, args: &[ast::Expr], keywords: &[ast::Keyword], starargs: Option<&ast::Expr>, kwargs: Option<&ast::Expr>) -> Result<(), CompileError> {
-        self.expression(function)?;
+    /// The arguments and call of the function on the stack. The call
+    /// argument holds the positional count in its low byte and the keyword
+    /// count in the next; `*args` and `**kwargs` select the opcode.
+    fn call_arguments(&mut self, args: &[ast::Expr], keywords: &[ast::Keyword], starargs: Option<&ast::Expr>, kwargs: Option<&ast::Expr>) -> Result<(), CompileError> {
         self.expressions(args)?;
         for keyword in keywords {
             self.load_constant(Self::identifier(&keyword.arg));
@@ -240,6 +272,11 @@ impl Compiler<'_> {
             self.expression(object)?;
         }
 
+        self.attribute_access(attribute, ctx)
+    }
+
+    /// The access of `attribute` on the object on the stack.
+    fn attribute_access(&mut self, attribute: &ast::Identifier, ctx: ExprContext) -> Result<(), CompileError> {
         match ctx {
             ExprContext::AugLoad => {
                 self.emit(op::DUP_TOP);
@@ -267,6 +304,11 @@ impl Compiler<'_> {
             ExprContext::Param => return Err(system_error("param invalid in subscript expression")),
         }
 
+        self.subscript_access(slice, ctx)
+    }
+
+    /// The access of `slice` on the object on the stack.
+    fn subscript_access(&mut self, slice: &ast::Slice, ctx: ExprContext) -> Result<(), CompileError> {
         let reloads = ctx == ExprContext::AugStore;
         match slice {
             ast::Slice::Index { value } if !reloads => self.expression(value)?,
@@ -414,6 +456,18 @@ impl Compiler<'_> {
             ast::Operator::FloorDiv => op::INPLACE_FLOOR_DIVIDE,
         }
     }
+}
+
+/// A pending part of compiling an expression.
+enum Step<'a> {
+    Expr(&'a ast::Expr),
+    /// An operation on operands already on the stack.
+    Emit(u8),
+    Jump { opcode: u8, jump: Jump },
+    ContinueIn(BlockIndex),
+    Attribute { attribute: &'a ast::Identifier, ctx: ExprContext },
+    Subscript { slice: &'a ast::Slice, ctx: ExprContext },
+    Call { args: &'a [ast::Expr], keywords: &'a [ast::Keyword], starargs: Option<&'a ast::Expr>, kwargs: Option<&'a ast::Expr> },
 }
 
 fn unary_opcode(operator: ast::UnaryOp) -> u8 {
