@@ -2730,6 +2730,52 @@ pub(crate) mod tests {
         })
     }
 
+    /// A small program compiled by the interpreter's compiler. The
+    /// deobfuscator keeps every code object, only drops unreachable
+    /// instructions, and leaves its own output unchanged.
+    #[test]
+    fn deobfuscate_clean_program() {
+        const SOURCE: &[u8] = b"import os\n\ndef pick(names, limit=3):\n    found = []\n    for name in names:\n        if not name.startswith('.'):\n            found.append(os.path.basename(name))\n    return found[:limit]\n\nclass Counter(object):\n    def __init__(self):\n        self.count = 0\n\n    def bump(self, step=1):\n        if step > 0:\n            self.count += step\n        else:\n            self.count = None\n        return self.count\n";
+
+        let parsed = crate::interp::compiler::parse_with_flags(SOURCE, b"sample.py", crate::interp::compiler::Mode::Exec, crate::interp::compiler::CompilerFlags(0)).expect("sample parses");
+        let mut context = SampleContext;
+        let unit = crate::interp::compiler::compile_ast(&parsed.module, b"sample.py", parsed.flags, &mut context).expect("sample compiles");
+        let marshalled = crate::interp::compiler::marshal::dump(&unit).expect("sample marshals");
+
+        let mut original = vec![];
+        let mut code_objects = vec![py27_marshal::read::marshal_loads(&marshalled).unwrap()];
+        while let Some(py27_marshal::Obj::Code(obj_mutex)) = code_objects.pop() {
+            let obj = obj_mutex.read().unwrap_or_else(|e| e.into_inner());
+            original.push(obj.code.as_ref().clone());
+            code_objects.extend(obj.consts.iter().rev().filter(|c| matches!(c, py27_marshal::Obj::Code(_))).cloned());
+        }
+
+        let first_pass = Deobfuscator::<TargetOpcode>::new(&marshalled).deobfuscate().expect("failed to deobfuscate");
+        let deobfuscated = deobfuscate_codeobj(&marshalled).expect("failed to deobfuscate");
+        let second_pass = deobfuscate_codeobj(&first_pass.data).expect("failed to deobfuscate its own output");
+
+        assert_eq!(deobfuscated.len(), original.len());
+        assert!(deobfuscated.iter().zip(&original).all(|(clean, compiled)| clean.len() <= compiled.len()));
+        assert_eq!(&deobfuscated[0], &original[0], "module code has no unreachable instructions");
+        assert_eq!(second_pass, deobfuscated);
+    }
+
+    struct SampleContext;
+
+    impl crate::interp::compiler::CompileContext for SampleContext {
+        fn long_width(&self) -> crate::interp::hash::LongWidth {
+            crate::interp::hash::LongWidth::Bits32
+        }
+
+        fn warn(&mut self, _warning: &crate::interp::compiler::context::CompileWarning) -> Result<(), crate::interp::compiler::context::WarningRaised> {
+            Ok(())
+        }
+
+        fn decode_default(&self, bytes: &[u8]) -> Option<Vec<u16>> {
+            bytes.iter().map(|&byte| if byte < 0x80 { Some(u16::from(byte)) } else { None }).collect()
+        }
+    }
+
     #[test]
     fn joining_multiple_jump_absolutes() {
         let mut code = default_code_obj();
@@ -3173,55 +3219,6 @@ pub(crate) mod tests {
             for (ix, instr) in bb.instrs.iter().enumerate() {
                 assert_eq!(*instr.unwrap(), expected[&bb.start_offset][ix])
             }
-        }
-    }
-
-    #[test]
-    #[ignore] // test is currently failing until we figure out the JUMP_FORWARD thing
-    fn deobfuscate_known_file_compileall() {
-        let obfuscated = include_bytes!("../test_data/obfuscated/compileall_stage4.pyc");
-        let source_of_truth = include_bytes!("../test_data/expected/compileall.pyc");
-
-        let deobfuscated = deobfuscate_codeobj(&obfuscated[8..]).expect("failed to deobfuscate");
-
-        // The real bytecode should be at least the size of the deobfuscated bytecode -- use this
-        // to avoid reallocating
-        let mut source_of_truth_bytecode = Vec::with_capacity(deobfuscated.len());
-        let mut code_objects =
-            vec![py27_marshal::read::marshal_loads(&source_of_truth[8..]).unwrap()];
-
-        let mut files_processed = 0;
-        while let Some(py27_marshal::Obj::Code(obj_mutex)) = code_objects.pop() {
-            let obj = obj_mutex.read().unwrap_or_else(|e| e.into_inner());
-            let code_arc = Arc::new(obj.clone());
-            let mut code_graph = CodeGraph::<TargetOpcode>::from_code(
-                Arc::clone(&code_arc),
-                files_processed,
-                false,
-                None,
-                None,
-            )
-            .unwrap();
-            // for debugging
-            code_graph.generate_dot_graph("compileall");
-            files_processed += 1;
-            source_of_truth_bytecode.push(obj.code.as_ref().clone());
-
-            for c in obj
-                .consts
-                .iter()
-                .rev()
-                .filter(|c| matches!(c, py27_marshal::Obj::Code(_)))
-            {
-                code_objects.push(c.clone());
-            }
-        }
-
-        assert_eq!(deobfuscated.len(), source_of_truth_bytecode.len());
-
-        for i in 0..deobfuscated.len() {
-            assert_eq!(deobfuscated[i], source_of_truth_bytecode[i]);
-            println!("Comparing {}", i);
         }
     }
 

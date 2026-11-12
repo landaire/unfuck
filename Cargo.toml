@@ -6,7 +6,7 @@ description = "Python 2.7 bytecode deobfuscator"
 license = "MIT"
 repository = "https://github.com/landaire/unfuck"
 readme = "README.md"
-exclude = ['img/', 'test_data/']
+exclude = ['img/']
 
 [[bin]]
 name = "unfuck"
